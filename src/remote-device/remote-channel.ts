@@ -71,6 +71,9 @@ const OFFLINE_SESSION_TIMEOUT_MS = 500;
 // already covers.
 const SOCKET_SETTLE_MAX_MS = 300;
 const SOCKET_SETTLE_POLL_MS = 20;
+const RECONNECT_BASE_DELAY_MS = 10000;
+const RECONNECT_MAX_DELAY_MS = 300000;
+const MAX_PROCESSED_CALL_IDS = 1000;
 
 export class RemoteChannel {
     private client: SupabaseClient | null = null;
@@ -115,6 +118,8 @@ export class RemoteChannel {
     private reconnectAttempt = 0;        // recreates since the last success
     private isRecreatingChannel = false; // re-entrancy guard
     private joiningSince: number | null = null; // start of an unbroken 'joining' run
+    private nextReconnectAt = 0;
+    private processedCallIds = new Set<string>();
 
     private _user: User | null = null;
     get user(): User | null { return this._user; }
@@ -464,6 +469,7 @@ export class RemoteChannel {
                     if (status === 'SUBSCRIBED') {
                         const recovered = this.reconnectAttempt;
                         this.reconnectAttempt = 0;
+                        this.nextReconnectAt = 0;
                         console.log(`✅ Channel subscribed${recovered > 0 ? ` (recovered after ${recovered} attempt${recovered === 1 ? '' : 's'})` : ''}`);
                         // Update device status on successful connection (queued, so
                         // it can't be overtaken by a teardown's status write).
@@ -502,6 +508,18 @@ export class RemoteChannel {
     /** Hand a call to device.ts, observing the rejection — the handler is async
      * and an unhandled rejection terminates the process. */
     private dispatchToolCall(payload: any): void {
+        const callId = payload?.new?.id;
+        if (typeof callId === 'string' && callId) {
+            if (this.processedCallIds.has(callId)) {
+                console.debug('[DEBUG] Ignoring duplicate realtime call:', callId);
+                return;
+            }
+            this.processedCallIds.add(callId);
+            if (this.processedCallIds.size > MAX_PROCESSED_CALL_IDS) {
+                const oldest = this.processedCallIds.values().next().value;
+                if (oldest) this.processedCallIds.delete(oldest);
+            }
+        }
         try {
             const maybePromise = this.onToolCall?.(payload) as unknown;
             if (maybePromise instanceof Promise) {
@@ -728,6 +746,9 @@ export class RemoteChannel {
             console.debug('[DEBUG] recreateChannel() skipped - already in progress');
             return;
         }
+        if (Date.now() < this.nextReconnectAt) {
+            return;
+        }
         this.isRecreatingChannel = true;
         this.reconnectAttempt++;
 
@@ -792,8 +813,13 @@ export class RemoteChannel {
                 await this.createChannel();
             }, RECREATE_TIMEOUT_MS, 'recreateChannel');
         } catch (err: any) {
+            const delay = Math.min(
+                RECONNECT_BASE_DELAY_MS * (2 ** Math.max(0, this.reconnectAttempt - 1)),
+                RECONNECT_MAX_DELAY_MS,
+            );
+            this.nextReconnectAt = Date.now() + delay;
             captureRemote('remote_channel_recreate_error', { errMsg: err?.message, attempt: this.reconnectAttempt });
-            console.debug(`[DEBUG] Channel recreation failed: ${err?.message} — ${this.connState()}`);
+            console.debug(`[DEBUG] Channel recreation failed: ${err?.message}; retry in ${delay}ms ? ${this.connState()}`);
             // Sustained failure: stop promising a transport we can't deliver, or
             // the server's presence overlay reports this device offline
             // authoritatively and overrides `status`.
@@ -1000,8 +1026,13 @@ export class RemoteChannel {
     }
 
     startHeartbeat(deviceId: string) {
-        console.debug('[DEBUG] Starting heartbeat for device:', deviceId);
+        if (this.heartbeatDeviceId === deviceId && this.connectionCheckInterval && this.heartbeatInterval) {
+            console.debug('[DEBUG] Heartbeat already active for device:', deviceId);
+            return;
+        }
+        this.stopHeartbeat();
         this.heartbeatDeviceId = deviceId;
+        console.debug('[DEBUG] Starting heartbeat for device:', deviceId);
         this.connectionCheckInterval = setInterval(() => {
             this.checkConnectionHealth();
         }, 10000);

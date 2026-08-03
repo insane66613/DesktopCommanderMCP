@@ -20,6 +20,30 @@ const mcpRoot = path.resolve(__dirname, '..', '..');
 const virtualNodeSessions = new Map<number, { timeout_ms: number }>();
 let virtualPidCounter = -1000; // Use negative PIDs for virtual sessions
 
+const DEFAULT_PROCESS_START_OUTPUT_LINE_LIMIT = 25;
+
+export function compactInitialProcessOutput(output: string, requestedLimit: unknown): string {
+  const parsedLimit = typeof requestedLimit === 'number' ? Math.trunc(requestedLimit) : DEFAULT_PROCESS_START_OUTPUT_LINE_LIMIT;
+  const limit = Math.max(5, Math.min(parsedLimit || DEFAULT_PROCESS_START_OUTPUT_LINE_LIMIT, 500));
+  const normalized = output.trimEnd();
+  if (!normalized) return '(no output)';
+
+  const lines = normalized.split(/\r?\n/);
+  if (lines.length <= limit) return normalized;
+
+  // Reserve one line for the omission marker so the rendered preview never
+  // exceeds the configured line limit.
+  const retainedLineCount = limit - 1;
+  const headCount = Math.min(5, Math.max(1, Math.floor(retainedLineCount / 4)));
+  const tailCount = retainedLineCount - headCount;
+  const omitted = lines.length - retainedLineCount;
+  return [
+    ...lines.slice(0, headCount),
+    `[${omitted} lines omitted from initial preview; use read_process_output for retained output]`,
+    ...lines.slice(-tailCount),
+  ].join('\n');
+}
+
 /**
  * Execute Node.js code via temp file (fallback when Python unavailable)
  * Creates temp .mjs file in MCP directory for ES module import access
@@ -150,10 +174,10 @@ export async function startProcess(args: unknown): Promise<ServerResult> {
     };
   }
 
+  const config = await configManager.getConfig();
   let shellUsed: string | undefined = parsed.data.shell;
 
   if (!shellUsed) {
-    const config = await configManager.getConfig();
     if (config.defaultShell) {
       shellUsed = config.defaultShell;
     } else {
@@ -172,7 +196,11 @@ export async function startProcess(args: unknown): Promise<ServerResult> {
     commandToRun,
     parsed.data.timeout_ms,
     shellUsed,
-    parsed.data.verbose_timing || false
+    parsed.data.verbose_timing || false,
+    {
+      visible: parsed.data.visible ?? false,
+      excludeSelf: parsed.data.exclude_self ?? false,
+    }
   );
 
   if (result.pid === -1) {
@@ -200,10 +228,15 @@ export async function startProcess(args: unknown): Promise<ServerResult> {
     timingMessage = formatTimingInfo(result.timingInfo);
   }
 
+  const previewOutput = compactInitialProcessOutput(
+    result.output,
+    config.processStartOutputLineLimit,
+  );
+
   return {
     content: [{
       type: "text",
-      text: `Process started with PID ${result.pid} (shell: ${shellUsed})\nInitial output:\n${result.output}${statusMessage}${timingMessage}`
+      text: `Process started with PID ${result.pid} (shell: ${shellUsed})\nInitial output:\n${previewOutput}${statusMessage}${timingMessage}`
     }],
   };
 }
@@ -277,33 +310,42 @@ export async function readProcessOutput(args: unknown): Promise<ServerResult> {
         }
 
         let resolved = false;
-        let interval: NodeJS.Timeout | null = null;
-        let timeout: NodeJS.Timeout | null = null;
-
-        const cleanup = () => {
-          if (interval) clearInterval(interval);
-          if (timeout) clearTimeout(timeout);
-        };
+        let timer: ReturnType<typeof setTimeout> | null = null;
 
         const resolveOnce = () => {
           if (resolved) return;
           resolved = true;
-          cleanup();
+          if (timer) clearTimeout(timer);
           resolve();
         };
 
-        // Poll for new output
-        interval = setInterval(() => {
+        // ponytail: bounded exponential backoff with jitter replaces the
+        // fixed 50ms interval. Starts at 30ms, max 500ms per tick, capped by
+        // total timeout_ms. Prevents tight-poll cascades when many reads
+        // coincide (e.g. multi-tool orchestration).
+        let delay = 30;
+        const maxDelay = 500;
+        const deadline = Date.now() + timeout_ms;
+
+        const poll = () => {
+          if (resolved) return;
           const newLineCount = terminalManager.getOutputLineCount(pid) || 0;
           if (newLineCount > session.lastReadIndex) {
             resolveOnce();
+            return;
           }
-        }, 50);
+          if (Date.now() >= deadline) {
+            resolveOnce();
+            return;
+          }
+          // Exponential backoff with 25% jitter
+          const jitter = delay * 0.25 * (Math.random() - 0.5);
+          const nextDelay = Math.min(delay + jitter, maxDelay);
+          timer = setTimeout(poll, nextDelay);
+          delay = Math.min(delay * 1.5, maxDelay);
+        };
 
-        // Timeout
-        timeout = setTimeout(() => {
-          resolveOnce();
-        }, timeout_ms);
+        poll();
       });
     };
 
@@ -486,21 +528,25 @@ export async function interactWithProcess(args: unknown): Promise<ServerResult> 
     const waitForResponse = (): Promise<void> => {
       return new Promise((resolve) => {
         let resolved = false;
-        let attempts = 0;
-        const pollIntervalMs = 50; // Poll every 50ms for faster response
-        const maxAttempts = Math.ceil(timeout_ms / pollIntervalMs);
-        let interval: NodeJS.Timeout | null = null;
-        let lastOutputLength = 0; // Track output length to detect new output
+        let attempt = 0;
+        // ponytail: bounded exponential backoff with jitter. Start at 30ms,
+        // cap at 500ms per tick, total bounded by timeout_ms. Replaces the
+        // fixed 50ms interval to prevent cascaded tight-poll when many
+        // concurrent interactions are driven (e.g. parallel REPL sessions).
+        let delay = 30;
+        const maxDelay = 500;
+        const deadline = Date.now() + timeout_ms;
+        let lastOutputLength = 0;
+        let timer: ReturnType<typeof setTimeout> | null = null;
 
-        let resolveOnce = () => {
+        const resolveOnce = () => {
           if (resolved) return;
           resolved = true;
-          if (interval) clearInterval(interval);
+          if (timer) clearTimeout(timer);
           resolve();
         };
 
-        // Fast-polling check - check every 50ms for quick responses
-        interval = setInterval(() => {
+        const poll = () => {
           if (resolved) return;
 
           // Use snapshot-based reading to handle REPL prompt line appending
@@ -523,7 +569,7 @@ export async function interactWithProcess(args: unknown): Promise<ServerResult> 
               });
             }
 
-            output = newOutput; // Replace with full output since snapshot
+            output = newOutput;
             lastOutputLength = newOutput.length;
 
             // Analyze current state
@@ -550,12 +596,21 @@ export async function interactWithProcess(args: unknown): Promise<ServerResult> 
             }
           }
 
-          attempts++;
-          if (attempts >= maxAttempts) {
+          if (Date.now() >= deadline) {
             exitReason = 'timeout';
             resolveOnce();
+            return;
           }
-        }, pollIntervalMs);
+
+          attempt++;
+          // Exponential backoff with 25% jitter
+          const jitter = delay * 0.25 * (Math.random() - 0.5);
+          const nextDelay = Math.min(delay + jitter, maxDelay);
+          timer = setTimeout(poll, nextDelay);
+          delay = Math.min(delay * 1.5, maxDelay);
+        };
+
+        poll();
       });
     };
     

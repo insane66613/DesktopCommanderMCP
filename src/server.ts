@@ -34,6 +34,8 @@ import {
     ReadFileArgsSchema,
     ReadMultipleFilesArgsSchema,
     WriteFileArgsSchema,
+    ReceiveFileArgsSchema,
+    ExportProjectFileArgsSchema,
     CreateDirectoryArgsSchema,
     ListDirectoryArgsSchema,
     MoveFileArgsSchema,
@@ -65,15 +67,17 @@ import { getPrompts } from './tools/prompts.js';
 import { trackToolCall } from './utils/trackTools.js';
 import { usageTracker } from './utils/usageTracker.js';
 import { processDockerPrompt } from './utils/dockerPrompt.js';
+import { dedupRequest } from './utils/request-dedup.js';
 import { toolHistory } from './utils/toolHistory.js';
 import { handleWelcomePageOnboarding, skipWelcomePageOnboarding } from './utils/welcome-onboarding.js';
 
 import { VERSION } from './version.js';
+import { outputSchemaForTool } from './output-schemas.js';
+import { enrichStructuredContent } from './structured-content.js';
 import { capture, capture_call_tool, runInUiOriginCallContext } from "./utils/capture.js";
 import { logToStderr, logger } from './utils/logger.js';
 import {
     buildUiToolMeta,
-    CONFIG_EDITOR_RESOURCE_URI,
     FILE_PREVIEW_RESOURCE_URI,
 } from './ui/contracts.js';
 import { listUiResources, readUiResource } from './ui/resources.js';
@@ -138,6 +142,10 @@ server.setRequestHandler(ListPromptsRequestSchema, async () => {
 // Store current client info (simple variable)
 let currentClient = { name: 'uninitialized', version: 'uninitialized' };
 
+// ponytail: cache the last computed tool list so repeated list_tools calls
+// (reconnect, UI re-render, multiple client init) don't recompute schemas.
+let _toolListCache: { key: string; tools: any[] } | null = null;
+
 // Tracks whether the in-flight tool call originated from a remote device.
 // Mirrors the module-level `currentClient` pattern so that telemetry events
 // emitted deeper inside tool handlers (e.g. server_start_process,
@@ -191,6 +199,10 @@ async function updateCurrentClient(clientInfo: { name?: string, version?: string
             name: clientInfo.name || currentClient.name,
             version: clientInfo.version || currentClient.version
         };
+
+        // Invalidate tool-list cache on identity change so the next
+        // list_tools call rebuilds with the correct client filter.
+        _toolListCache = null;
 
         // Configure transport for client-specific behavior only if name changed
         if (nameChanged) {
@@ -299,8 +311,17 @@ function shouldIncludeTool(toolName: string): boolean {
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
     try {
-        // logToStderr('debug', 'Generating tools list...');
         const showMcpUiPreviews = await shouldShowMcpUiPreviews();
+
+        // ponytail: cache the computed tool list per client identity. The
+        // only inputs that vary are showMcpUiPreviews (A/B test) and
+        // currentClient.name (shouldIncludeTool filter). Rebuild only when
+        // they change so repeated list_tools calls (reconnect / UI-init)
+        // don't rerun zodToJsonSchema calls on every invocation.
+        const clientKey = `${currentClient?.name ?? ''}:${showMcpUiPreviews}`;
+        if (_toolListCache?.key === clientKey) {
+            return { tools: _toolListCache.tools };
+        }
 
         // Build complete tools array
         const allTools = [
@@ -314,6 +335,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         - allowedDirectories (paths the server can access)
                         - fileReadLineLimit (max lines for read_file, default 1000)
                         - fileWriteLineLimit (max lines per write_file call, default 50)
+                        - processStartOutputLineLimit (initial command-preview lines, default 25)
                         - telemetryEnabled (boolean for telemetry opt-in/out)
                         - currentClient (information about the currently connected MCP client)
                         - clientHistory (history of all clients that have connected)
@@ -321,7 +343,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         - systemInfo (operating system and environment details)
                         ${CMD_PREFIX_DESCRIPTION}`,
                 inputSchema: zodToJsonSchema(GetConfigArgsSchema),
-                _meta: buildUiToolMeta(CONFIG_EDITOR_RESOURCE_URI, true, showMcpUiPreviews),
+                // Return plain structured configuration data by default. The config-editor
+                // resource remains registered for deliberate/on-demand use, but get_config
+                // no longer forces the widget to render on every invocation.
                 annotations: {
                     title: "Get Configuration",
                     readOnlyHint: true,
@@ -341,6 +365,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         - allowedDirectories (array of paths)
                         - fileReadLineLimit (number, max lines for read_file)
                         - fileWriteLineLimit (number, max lines per write_file call)
+                        - processStartOutputLineLimit (number, initial start_process preview lines)
                         - telemetryEnabled (boolean)
                         
                         IMPORTANT: Setting allowedDirectories to an empty array ([]) allows full access 
@@ -488,6 +513,120 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                     title: "Write File",
                     readOnlyHint: false,
                     destructiveHint: true,
+                    openWorldHint: false,
+                },
+            },
+            {
+                name: "receive_file",
+                description: `
+                        Receive and write a complete generated file in one tool call.
+
+                        Use this instead of write_file when ChatGPT needs to send a complete script,
+                        source file, config file, or other text artifact directly without manual copy/paste
+                        and without chunking by line count.
+
+                        INPUTS:
+                        - path: Absolute destination path.
+                        - content: Complete file content. Base64 is preferred for scripts because it avoids
+                          escaping issues with quotes, backticks, heredocs, and PowerShell syntax.
+                        - encoding: "base64" by default; "utf8" is also accepted.
+                        - mode: "rewrite" by default, or "append".
+                        - expectedSha256: Optional integrity check of the decoded UTF-8 content.
+                        - createParentDirectories: Optional; creates parent directories before writing.
+
+                        SAFETY:
+                        - Uses the same allowed-directory and symlink validation path as write_file.
+                        - Fails if expectedSha256 is supplied and does not match decoded content.
+
+                        ${PATH_GUIDANCE}
+                        ${CMD_PREFIX_DESCRIPTION}`,
+                inputSchema: zodToJsonSchema(ReceiveFileArgsSchema),
+                outputSchema: {
+                    type: "object",
+                    required: ["fileName", "filePath", "fileType", "sha256", "byteCount", "lineCount", "success"],
+                    properties: {
+                        fileName: { type: "string" },
+                        filePath: { type: "string" },
+                        path: { type: ["string", "null"] },
+                        name: { type: ["string", "null"] },
+                        fileType: { type: "string" },
+                        sha256: { type: "string" },
+                        byteCount: { type: ["integer", "number"] },
+                        lineCount: { type: ["integer", "number"] },
+                        success: { type: "boolean" },
+                        text: { type: ["string", "null"] },
+                        message: { type: ["string", "null"] },
+                        error: { type: ["string", "null"] },
+                    },
+                    additionalProperties: true,
+                },
+                _meta: buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true),
+                annotations: {
+                    title: "Receive File",
+                    readOnlyHint: false,
+                    destructiveHint: true,
+                    openWorldHint: false,
+                },
+            },
+            {
+                name: "export_project_file",
+                description: `
+                        Export the contents of an explicitly selected project/workspace file for code review, patching, refactoring, migration, or debugging. This is a read-only helper for files inside Desktop Commander allowed directories. It supports UTF-8 or base64 payloads, byte offsets, max byte limits, full-file SHA-256, and bounded transfer of large files. It is intended for project code and repository maintenance, not arbitrary system-file browsing.
+
+                        INPUTS:
+                        - path: Absolute source file path (required, must be a file not a directory).
+                        - encoding: "utf8" (default) for text, "base64" for binary-safe transfer.
+                        - offset: Optional byte offset for partial transfer (default 0).
+                        - maxBytes: Optional byte cap for returned payload, default 1 MiB, max 10 MiB.
+                        - allowSensitiveProjectFile: Optional, default false. Set true only when user explicitly requests a sensitive file (e.g., .env, private keys).
+                        - includeContent: Optional, default true. Set false to return metadata only (content=null).
+
+                        OUTPUT:
+                        - file metadata, sha256 of the full file, and returned payload content.
+                        - truncated=true when maxBytes prevents returning the full file.
+                        - returnedBytes = actual bytes in this response.
+                        - byteCount = full file size.
+                        - Use offset/maxBytes for pagination on large files.
+
+                        SENSITIVE FILE HANDLING:
+                        - By default blocks obvious credential/private-key files (.env, .env.*, id_rsa, *.pem, *.key, *.p12, *.pfx, credentials.json, token*.json, secrets.json, firebase-adminsdk*.json, service-account*.json).
+                        - Does NOT block normal project code, package files, lockfiles, configs, tsconfig, vite config, webpack config, eslint config, GitHub workflows, Dockerfiles, compose files, README files, scripts, patches, test fixtures.
+                        - Does NOT block .env.example, .env.sample, .env.template unless basename exactly matches a blocked pattern.
+                        - Error message guides user to re-run with allowSensitiveProjectFile=true only if explicitly requested.
+
+                        SAFETY:
+                        - Uses the same allowed-directory and symlink validation path as read_file/write_file.
+                        - Refuses directories.
+                        - Read-only (readOnlyHint: true).
+
+                        ${PATH_GUIDANCE}
+                        ${CMD_PREFIX_DESCRIPTION}`,
+                inputSchema: zodToJsonSchema(ExportProjectFileArgsSchema),
+                outputSchema: {
+                    type: "object",
+                    required: ["fileName", "filePath", "fileType", "encoding", "sha256", "byteCount", "returnedBytes", "offset", "truncated", "success"],
+                    properties: {
+                        fileName: { type: "string" },
+                        filePath: { type: "string" },
+                        fileType: { type: "string" },
+                        content: { type: ["string", "null"] },
+                        encoding: { type: "string", enum: ["utf8", "base64"] },
+                        sha256: { type: "string" },
+                        byteCount: { type: ["integer", "number"] },
+                        returnedBytes: { type: ["integer", "number"] },
+                        offset: { type: ["integer", "number"] },
+                        truncated: { type: "boolean" },
+                        success: { type: "boolean" },
+                        text: { type: ["string", "null"] },
+                        message: { type: ["string", "null"] },
+                        error: { type: ["string", "null"] },
+                    },
+                    additionalProperties: true,
+                },
+                _meta: buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true),
+                annotations: {
+                    title: "Export Project File",
+                    readOnlyHint: true,
                     openWorldHint: false,
                 },
             },
@@ -926,6 +1065,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         Process finished execution
                         Process running (use read_process_output)
 
+                        VISIBLE WINDOWS ON WINDOWS:
+                        Use visible: true when the user needs to see an external diagnostic console/window.
+                        Optional fields: keep_open, window_title.
+                        Important: visible child-window output is user-visible, but may not be capturable with read_process_output.
+                        Prefer these fields over hand-built cmd.exe start commands; cmd start treats the first quoted string as the window title.
+                        In PowerShell, use Start-Process semantics instead of assuming cmd's start syntax.
+
+                        SAFETY FOR PROCESS-MANAGEMENT COMMANDS:
+                        Use exclude_self: true as a safety hint when launching commands that find/kill processes by command line, port, or pattern.
+                        This helps avoid commands that accidentally match the Desktop Commander-launched process tree.
+                        Do not inline secrets in command strings; read secrets from local config files or environment variables inside the launched command.
+
                         PERFORMANCE DEBUGGING (verbose_timing parameter):
                         Set verbose_timing: true to get detailed timing information including:
                         - Exit reason (early_exit_quick_pattern, early_exit_periodic_check, process_exit, timeout)
@@ -1231,14 +1382,19 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             }
         ];
 
-        // Filter tools based on current client
-        const filteredTools = allTools.filter(tool => shouldIncludeTool(tool.name));
+        // Filter tools based on current client and attach native output schemas.
+        const filteredTools = allTools
+            .filter(tool => shouldIncludeTool(tool.name))
+            .map(tool => {
+                const outputSchema = outputSchemaForTool(tool.name);
+                return outputSchema ? { ...tool, outputSchema } : tool;
+            });
 
         // logToStderr('debug', `Returning ${filteredTools.length} tools (filtered from ${allTools.length} total) for client: ${currentClient?.name || 'unknown'}`);
 
-        return {
-            tools: filteredTools,
-        };
+        const tools = filteredTools;
+        _toolListCache = { key: clientKey, tools };
+        return { tools };
     } catch (error) {
         logToStderr('error', `Error in list_tools request handler: ${error}`);
         throw error;
@@ -1264,6 +1420,31 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
 });
 
 async function handleCallToolRequest(request: CallToolRequest): Promise<ServerResult> {
+    const { name, arguments: args } = request.params;
+
+    // Single-flight dedup for tools that are most affected by request
+    // amplification (LLM retry-after-strip, UI re-render, reconnect replay).
+    // ponytail: dedup only for read-only / idempotent tools; destructive
+    // tools (write_file, edit_block, etc.) must always execute.
+    const DEDUP_TOOLS = new Set([
+        'read_file',
+        'get_config',
+        'get_file_info',
+        'read_process_output',
+    ]);
+    if (DEDUP_TOOLS.has(name)) {
+        const { result } = await dedupRequest(name, args, () =>
+            handleCallToolRequestCore(request),
+        );
+        return result!;
+        // Stale duplicate (winner already settled) — return an empty placeholder.
+
+    }
+
+    return handleCallToolRequestCore(request);
+}
+
+async function handleCallToolRequestCore(request: CallToolRequest): Promise<ServerResult> {
     const { name, arguments: args } = request.params;
     const startTime = Date.now();
     // Hoisted above the try so the finally block can read them when emitting the
@@ -1488,6 +1669,14 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
                 result = await handlers.handleWriteFile(args);
                 break;
 
+            case "receive_file":
+                result = await handlers.handleReceiveFile(args);
+                break;
+
+            case "export_project_file":
+                result = await handlers.handleExportProjectFile(args);
+                break;
+
             case "write_pdf":
                 result = await handlers.handleWritePdf(args);
                 break;
@@ -1550,7 +1739,7 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
 
         // Track success or failure based on result
         if (name === 'track_ui_event') {
-            return result;
+            return result!;
         }
 
         if (result.isError) {
@@ -1662,7 +1851,7 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
             // Never let the advisory warning break an otherwise-successful call.
         }
 
-        return result;
+        return enrichStructuredContent(name, result);
     } catch (error) {
         isError = true;
         const errorMessage = error instanceof Error ? error.message : String(error);
@@ -1673,10 +1862,10 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
         capture('server_request_error', {
             error: errorMessage
         });
-        return {
+        return enrichStructuredContent(name, {
             content: [{ type: "text", text: `Error: ${errorMessage}` }],
             isError: true,
-        };
+        });
     } finally {
         // Single tool-call telemetry event, fired AFTER execution so it can carry
         // timing. In a finally so it still fires on the hard-crash path (the catch

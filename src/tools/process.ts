@@ -23,17 +23,33 @@ export async function listProcesses(): Promise<ServerResult> {
         } as ProcessInfo;
       });
 
+    const text = processes.map(p =>
+      `PID: ${p.pid}, Command: ${p.command}, CPU: ${p.cpu}, Memory: ${p.memory}`
+    ).join('\n');
+
     return {
       content: [{
         type: "text",
-        text: processes.map(p =>
-          `PID: ${p.pid}, Command: ${p.command}, CPU: ${p.cpu}, Memory: ${p.memory}`
-        ).join('\n')
+        text,
       }],
+      structuredContent: {
+        processes,
+        count: processes.length,
+        text,
+        success: true,
+      },
     };
   } catch (error) {
+    const text = `Error: Failed to list processes: ${error instanceof Error ? error.message : String(error)}`;
     return {
-      content: [{ type: "text", text: `Error: Failed to list processes: ${error instanceof Error ? error.message : String(error)}` }],
+      content: [{ type: "text", text }],
+      structuredContent: {
+        processes: [],
+        count: 0,
+        text,
+        success: false,
+        error: text,
+      },
       isError: true,
     };
   }

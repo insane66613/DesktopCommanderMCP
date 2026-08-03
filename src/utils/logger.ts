@@ -22,30 +22,11 @@ export function log(level: LogLevel, message: string, data?: any): void {
       // Always use MCP logging (will buffer if not initialized yet)
       global.mcpTransport.sendLog(level, message, data);
     } else {
-      // This should rarely happen, but fallback to create a JSON-RPC notification manually
-      const notification = {
-        jsonrpc: "2.0" as const,
-        method: "notifications/message",
-        params: {
-          level: level,
-          logger: "desktop-commander",
-          data: data ? { message, ...data } : message
-        }
-      };
-      process.stdout.write(JSON.stringify(notification) + '\n');
+      // Fallback to stderr logging
+      process.stderr.write(`[${level.toUpperCase()}] ${message}${data ? ' ' + JSON.stringify(data) : ''}\n`);
     }
   } catch (error) {
-    // Ultimate fallback - but this should be JSON-RPC too
-    const notification = {
-      jsonrpc: "2.0" as const,
-      method: "notifications/message", 
-      params: {
-        level: "error",
-        logger: "desktop-commander",
-        data: `[LOG-ERROR] Failed to log message: ${message}`
-      }
-    };
-    process.stdout.write(JSON.stringify(notification) + '\n');
+    process.stderr.write(`[LOG-ERROR] Failed to log message: ${message}\n`);
   }
 }
 
@@ -66,17 +47,8 @@ export const logger = {
 /**
  * Log to stderr during early initialization (before MCP is ready)
  * Use this for critical startup messages that must be visible
- * NOTE: This should also be JSON-RPC format
  */
 export function logToStderr(level: LogLevel, message: string): void {
-  const notification = {
-    jsonrpc: "2.0" as const,
-    method: "notifications/message",
-    params: {
-      level: level,
-      logger: "desktop-commander", 
-      data: message
-    }
-  };
-  process.stdout.write(JSON.stringify(notification) + '\n');
+  process.stderr.write(`[${level.toUpperCase()}] ${message}\n`);
 }
+

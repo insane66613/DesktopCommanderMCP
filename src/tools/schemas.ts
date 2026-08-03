@@ -32,6 +32,20 @@ export const StartProcessArgsSchema = z.object({
   // 'ui' marks widget-fired calls (e.g. open-in-folder/editor buttons);
   // excluded from tool-call telemetry (see isUiOriginCall in server.ts).
   origin: z.enum(['ui', 'llm']).optional(),
+  // Visible-window controls for Windows processes that need a user-visible
+  // console (e.g. diagnostic tools, installers). When visible=true the process
+  // runs with a detached console so stdout/stderr can surface to the user,
+  // but read_process_output may not capture that output.
+  // ponytail: these four booleans are the minimum surface; full window-style
+  // control (position, sizing) can be added if UI-integration tools demand it.
+  visible: z.boolean().optional().default(false),
+  keep_open: z.boolean().optional().default(false),
+  // Optional window title hint for Windows visible processes.
+  window_title: z.string().optional(),
+  // When true, the spawned process is excluded from Desktop Commander's own
+  // process-listing heuristics, reducing the chance of self-kill in commands
+  // that match by name/port/pattern.
+  exclude_self: z.boolean().optional().default(false),
 });
 
 export const ReadProcessOutputArgsSchema = z.object({
@@ -78,6 +92,24 @@ export const WriteFileArgsSchema = z.object({
   // 'ui' when fired by the file-preview UI, else 'llm'. 'ui' calls are
   // excluded from tool-call telemetry; see isUiOriginCall in server.ts.
   origin: z.enum(['ui', 'llm']).optional(),
+});
+
+export const ReceiveFileArgsSchema = z.object({
+  path: z.string(),
+  content: z.string(),
+  encoding: z.enum(['utf8', 'base64']).default('base64'),
+  mode: z.enum(['rewrite', 'append']).default('rewrite'),
+  expectedSha256: z.string().regex(/^[a-fA-F0-9]{64}$/).optional(),
+  createParentDirectories: z.boolean().optional().default(false),
+});
+
+export const ExportProjectFileArgsSchema = z.object({
+  path: z.string(),
+  encoding: z.enum(['utf8', 'base64']).default('utf8'),
+  offset: z.number().int().nonnegative().optional().default(0),
+  maxBytes: z.number().int().positive().max(10 * 1024 * 1024).optional().default(1024 * 1024),
+  allowSensitiveProjectFile: z.boolean().optional().default(false),
+  includeContent: z.boolean().optional().default(true),
 });
 
 // PDF modification schemas - exported for reuse
@@ -252,6 +284,8 @@ export const toolArgSchemas: Record<string, z.ZodTypeAny> = {
   read_file: ReadFileArgsSchema,
   read_multiple_files: ReadMultipleFilesArgsSchema,
   write_file: WriteFileArgsSchema,
+  receive_file: ReceiveFileArgsSchema,
+  export_project_file: ExportProjectFileArgsSchema,
   write_pdf: WritePdfArgsSchema,
   create_directory: CreateDirectoryArgsSchema,
   list_directory: ListDirectoryArgsSchema,

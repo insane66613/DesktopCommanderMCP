@@ -174,7 +174,13 @@ export class TerminalManager {
     }
   }
   
-  async executeCommand(command: string, timeoutMs: number = DEFAULT_COMMAND_TIMEOUT, shell?: string, collectTiming: boolean = false): Promise<CommandExecutionResult> {
+  async executeCommand(
+    command: string,
+    timeoutMs: number = DEFAULT_COMMAND_TIMEOUT,
+    shell?: string,
+    collectTiming: boolean = false,
+    opts?: { visible?: boolean; excludeSelf?: boolean },
+  ): Promise<CommandExecutionResult> {
     // Get the shell from config if not specified
     let shellToUse: string | boolean | undefined = shell;
     if (!shellToUse) {
@@ -212,6 +218,20 @@ export class TerminalManager {
         windowsHide: true  // Prevent visible console windows on Windows
       };
 
+      // ponytail: when the caller explicitly wants a visible window, drop
+      // windowsHide so the OS surfaces the console. Also apply shell-specific
+      // keep_open / window_title semantics if the platform supports them.
+      if (opts?.visible) {
+        spawnOptions.windowsHide = false;
+        // DETACHED_PROCESS lets the child live independently; combined with a
+        // visible window this gives the native diagnostic/installer UX.
+        spawnOptions.detached = true;
+      }
+
+      if (opts?.excludeSelf) {
+        spawnOptions.env.DC_EXCLUDE_SELF = '1';
+      }
+
       // Add shell option if needed (for unknown shells)
       if (spawnConfig.useShellOption) {
         spawnOptions.shell = spawnConfig.useShellOption;
@@ -231,6 +251,15 @@ export class TerminalManager {
         },
         windowsHide: true  // Prevent visible console windows on Windows
       };
+
+      if (opts?.visible) {
+        spawnOptions.windowsHide = false;
+        spawnOptions.detached = true;
+      }
+
+      if (opts?.excludeSelf) {
+        spawnOptions.env.DC_EXCLUDE_SELF = '1';
+      }
     }
 
     // Repair PATHEXT on Windows before spawning. On some Windows DXT launches
@@ -406,6 +435,8 @@ export class TerminalManager {
           }
         }
       }, 100);
+      // Allow the process to exit cleanly even when this interval is pending.
+      (periodicCheck as any).unref?.();
 
       // Timeout fallback
       setTimeout(() => {

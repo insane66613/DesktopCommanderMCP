@@ -22,6 +22,8 @@ import {
     ReadFileArgsSchema,
     ReadMultipleFilesArgsSchema,
     WriteFileArgsSchema,
+    ReceiveFileArgsSchema,
+    ExportProjectFileArgsSchema,
     CreateDirectoryArgsSchema,
     ListDirectoryArgsSchema,
     MoveFileArgsSchema,
@@ -30,6 +32,7 @@ import {
 } from '../tools/schemas.js';
 import path from 'path';
 import os from 'os';
+import { createHash } from 'crypto';
 import { resolvePreviewFileType } from '../ui/file-preview/shared/preview-file-types.js';
 
 /**
@@ -51,6 +54,23 @@ export function resolveAbsolutePath(filePath: string): string {
     return path.isAbsolute(expanded)
         ? path.resolve(expanded)
         : path.resolve(process.cwd(), expanded);
+}
+
+function decodeReceivedContent(content: string, encoding: 'utf8' | 'base64'): string {
+    if (encoding === 'utf8') {
+        return content;
+    }
+
+    try {
+        return Buffer.from(content, 'base64').toString('utf8');
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Invalid base64 file content: ${message}`);
+    }
+}
+
+function sha256Hex(content: string): string {
+    return createHash('sha256').update(content, 'utf8').digest('hex');
 }
 
 /**
@@ -358,6 +378,198 @@ export async function handleWriteFile(args: unknown): Promise<ServerResult> {
                 type: "text",
                 text: `Successfully ${modeMessage} ${parsed.path} (${lineCount} lines) ${errorMessage}`
             }],
+        };
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return createErrorResponse(errorMessage);
+    }
+}
+
+/**
+ * Handle receive_file command
+ */
+export async function handleReceiveFile(args: unknown): Promise<ServerResult> {
+    try {
+        const modeProvided = !!(args && typeof args === 'object' && 'mode' in args);
+        const parsed = ReceiveFileArgsSchema.parse(args);
+        const decodedContent = decodeReceivedContent(parsed.content, parsed.encoding);
+        const actualSha256 = sha256Hex(decodedContent);
+
+        if (parsed.expectedSha256 && parsed.expectedSha256.toLowerCase() !== actualSha256) {
+            return createErrorResponse(
+                `SHA-256 mismatch for ${parsed.path}. Expected ${parsed.expectedSha256}, got ${actualSha256}`
+            );
+        }
+
+        if (!modeProvided) {
+            let existing: Record<string, any> | null = null;
+            try {
+                existing = await getFileInfo(parsed.path);
+            } catch {
+                // The write itself reports invalid paths; only existing content needs protection.
+            }
+            if (existing?.isFile && existing.size > 0) {
+                return createErrorResponse(
+                    `Write rejected to prevent accidental data loss: ${parsed.path} already exists ` +
+                    `with content (${existing.size} bytes), and no 'mode' was specified. ` +
+                    `Retry with an explicit mode: 'append' or 'rewrite'.`
+                );
+            }
+        }
+
+        if (parsed.createParentDirectories) {
+            await createDirectory(path.dirname(resolveAbsolutePath(parsed.path)));
+        }
+
+        await writeFile(parsed.path, decodedContent, parsed.mode);
+
+        const resolvedWritePath = resolveAbsolutePath(parsed.path);
+        const byteCount = Buffer.byteLength(decodedContent, 'utf8');
+        const lineCount = decodedContent.split('\n').length;
+        const modeMessage = parsed.mode === 'append' ? 'appended received file to' : 'received file and wrote to';
+
+        return {
+            content: [{
+                type: "text",
+                text: `Successfully ${modeMessage} ${parsed.path} (${byteCount} bytes, ${lineCount} lines, sha256=${actualSha256})`
+            }],
+            structuredContent: {
+                fileName: path.basename(resolvedWritePath),
+                filePath: resolvedWritePath,
+                path: resolvedWritePath,
+                name: path.basename(resolvedWritePath),
+                fileType: resolvePreviewFileType(resolvedWritePath),
+                sha256: actualSha256,
+                byteCount,
+                lineCount,
+                success: true,
+                text: `Successfully ${modeMessage} ${resolvedWritePath} (${byteCount} bytes, ${lineCount} lines, sha256=${actualSha256})`,
+                message: `Successfully ${modeMessage} ${resolvedWritePath}`,
+            },
+        };
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return createErrorResponse(errorMessage);
+    }
+}
+
+function isSensitiveProjectFile(basename: string): boolean {
+    const lowerBasename = basename.toLowerCase();
+
+    const allowedExamples = [
+        '.env.example',
+        '.env.sample',
+        '.env.template',
+    ];
+    if (allowedExamples.includes(lowerBasename)) {
+        return false;
+    }
+
+    const sensitivePatterns = [
+        '.env',
+        '.env.*',
+        'id_rsa',
+        'id_dsa',
+        'id_ecdsa',
+        'id_ed25519',
+        '*.pem',
+        '*.key',
+        '*.p12',
+        '*.pfx',
+        'credentials.json',
+        'token.json',
+        'tokens.json',
+        'secrets.json',
+        'secret.json',
+        'firebase-adminsdk*.json',
+        'service-account*.json',
+    ];
+
+    for (const pattern of sensitivePatterns) {
+        if (pattern.includes('*')) {
+            const regexPattern = '^' + pattern.replace(/\./g, '\\.').replace(/\*/g, '.*') + '$';
+            if (new RegExp(regexPattern, 'i').test(lowerBasename)) {
+                return true;
+            }
+        } else if (lowerBasename === pattern.toLowerCase()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function sha256Buffer(content: Buffer): string {
+    return createHash('sha256').update(content).digest('hex');
+}
+
+/**
+ * Handle export_project_file command
+ */
+export async function handleExportProjectFile(args: unknown): Promise<ServerResult> {
+    try {
+        const parsed = ExportProjectFileArgsSchema.parse(args);
+
+        const validPath = await import('../tools/filesystem.js').then(m => m.validatePath(parsed.path));
+
+        const fs = await import('fs/promises');
+        const stats = await fs.stat(validPath);
+
+        if (!stats.isFile()) {
+            return createErrorResponse(`Path is not a file: ${parsed.path}`);
+        }
+
+        const basename = path.basename(validPath);
+        if (!parsed.allowSensitiveProjectFile && isSensitiveProjectFile(basename)) {
+            return createErrorResponse(
+                'This looks like a sensitive project file. Re-run with allowSensitiveProjectFile=true only if the user explicitly requested this exact file.'
+            );
+        }
+
+        const fileBuffer = await fs.readFile(validPath);
+        const byteCount = fileBuffer.length;
+        const offset = Math.min(parsed.offset, byteCount);
+        const end = Math.min(offset + parsed.maxBytes, byteCount);
+        const slice = fileBuffer.subarray(offset, end);
+        const actualSha256 = sha256Buffer(fileBuffer);
+        const truncated = end < byteCount;
+        const returnedBytes = slice.length;
+
+        let content: string | null = null;
+        if (parsed.includeContent) {
+            content = parsed.encoding === 'base64'
+                ? slice.toString('base64')
+                : slice.toString('utf8');
+        }
+
+        const fileType = resolvePreviewFileType(validPath);
+        const fileName = path.basename(validPath);
+        const filePath = resolveAbsolutePath(parsed.path);
+
+        const metadataSummary = `Exported ${filePath} (${byteCount} bytes, ${returnedBytes} bytes returned, encoding=${parsed.encoding}, sha256=${actualSha256}${truncated ? ', truncated' : ''})`;
+
+        let textContent = metadataSummary;
+        if (parsed.includeContent && content !== null) {
+            textContent = `${metadataSummary}\n\n${content}`;
+        }
+
+        return {
+            content: [{ type: "text", text: textContent }],
+            structuredContent: {
+                fileName,
+                filePath,
+                fileType,
+                content,
+                encoding: parsed.encoding,
+                sha256: actualSha256,
+                byteCount,
+                returnedBytes,
+                offset,
+                truncated,
+                success: true,
+                text: metadataSummary,
+                message: metadataSummary,
+            },
         };
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);

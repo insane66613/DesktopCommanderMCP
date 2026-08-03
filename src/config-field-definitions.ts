@@ -38,6 +38,11 @@ export const CONFIG_FIELD_DEFINITIONS = {
     description: 'Maximum number of lines that can be written in one edit operation. This helps prevent accidental oversized writes and keeps file changes predictable.',
     valueType: 'number',
   },
+  processStartOutputLineLimit: {
+    label: 'Command Preview Limit',
+    description: 'Maximum number of initial command-output lines shown by start_process. Full output remains available through read_process_output.',
+    valueType: 'number',
+  },
 } as const satisfies Record<string, ConfigFieldDefinition>;
 
 export type ConfigFieldKey = keyof typeof CONFIG_FIELD_DEFINITIONS;

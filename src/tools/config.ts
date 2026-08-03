@@ -3,6 +3,7 @@ import { SetConfigValueArgsSchema } from './schemas.js';
 import { getSystemInfo } from '../utils/system-info.js';
 import { currentClient } from '../server.js';
 import { featureFlagManager } from '../utils/feature-flags.js';
+import { getDedupCounters } from '../utils/request-dedup.js';
 import { access, readFile } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import {
@@ -112,7 +113,10 @@ export async function getConfig() {
       systemInfo: {
         ...systemInfo,
         memory
-      }
+      },
+      _metrics: {
+        dedup: getDedupCounters(),
+      },
     };
     const availableShells = await detectAvailableShells(systemInfo);
     
@@ -132,7 +136,7 @@ export async function getConfig() {
           const value = (configWithSystemInfo as Record<string, unknown>)[key];
           return {
             key,
-            value,
+            value: value === undefined ? null : value,
             valueType: definition.valueType,
             editable: true,
           };
@@ -219,6 +223,43 @@ export async function setConfigValue(args: unknown) {
         if (!Array.isArray(valueToStore)) {
           console.error(`Value for ${parsed.data.key} is still not an array, converting to array`);
           valueToStore = [String(valueToStore)];
+        }
+      }
+
+      // Normalize and validate numeric configuration fields.
+      if (fieldDefinition.valueType === 'number') {
+        if (typeof valueToStore === 'string' && valueToStore.trim() !== '') {
+          valueToStore = Number(valueToStore);
+        }
+
+        if (typeof valueToStore !== 'number' || !Number.isFinite(valueToStore) || !Number.isInteger(valueToStore)) {
+          return {
+            content: [{
+              type: "text",
+              text: `Value for ${parsed.data.key} must be a finite integer.`
+            }],
+            isError: true
+          };
+        }
+
+        if (valueToStore <= 0) {
+          return {
+            content: [{
+              type: "text",
+              text: `Value for ${parsed.data.key} must be greater than zero.`
+            }],
+            isError: true
+          };
+        }
+
+        if (parsed.data.key === 'processStartOutputLineLimit' && (valueToStore < 5 || valueToStore > 500)) {
+          return {
+            content: [{
+              type: "text",
+              text: 'Value for processStartOutputLineLimit must be between 5 and 500 lines.'
+            }],
+            isError: true
+          };
         }
       }
 
