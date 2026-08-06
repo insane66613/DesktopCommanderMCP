@@ -12,7 +12,12 @@ export async function getUsageStats(): Promise<ServerResult> {
       content: [{
         type: "text",
         text: summary
-      }]
+      }],
+      structuredContent: {
+        text: summary,
+        success: true,
+        stats: await usageTracker.getStats(),
+      },
     };
   } catch (error) {
     return {

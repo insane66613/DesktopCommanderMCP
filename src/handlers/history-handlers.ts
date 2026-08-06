@@ -37,7 +37,14 @@ export async function handleGetRecentToolCalls(args: unknown): Promise<ServerRes
       content: [{
         type: "text",
         text: `${summary}\n\n${historyJson}`
-      }]
+      }],
+      structuredContent: {
+        summary,
+        calls,
+        count: calls.length,
+        text: `${summary}\n\n${historyJson}`,
+        success: true,
+      },
     };
   } catch (error) {
     return {

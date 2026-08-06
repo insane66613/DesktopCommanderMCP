@@ -22,6 +22,48 @@ let virtualPidCounter = -1000; // Use negative PIDs for virtual sessions
 
 const DEFAULT_PROCESS_START_OUTPUT_LINE_LIMIT = 25;
 
+const PROCESS_LAUNCH_DEDUP_MS = 3_000;
+const PROCESS_LAUNCH_WINDOW_MS = 30_000;
+const PROCESS_LAUNCH_WINDOW_LIMIT = 12;
+const recentProcessLaunches: number[] = [];
+const recentProcessLaunchKeys = new Map<string, number>();
+
+export function processLaunchAdmission(args: {
+  command: string;
+  shell?: string;
+  origin?: string;
+  visible?: boolean;
+}): { allowed: boolean; reason?: string; retryAfterMs?: number } {
+  const now = Date.now();
+  const key = JSON.stringify([args.origin ?? 'llm', args.command, args.shell ?? '', args.visible ?? false]);
+  const previous = recentProcessLaunchKeys.get(key);
+  if (previous !== undefined && now - previous < PROCESS_LAUNCH_DEDUP_MS) {
+    return {
+      allowed: false,
+      reason: 'identical launch suppressed',
+      retryAfterMs: PROCESS_LAUNCH_DEDUP_MS - (now - previous),
+    };
+  }
+
+  while (recentProcessLaunches.length && now - recentProcessLaunches[0] >= PROCESS_LAUNCH_WINDOW_MS) {
+    recentProcessLaunches.shift();
+  }
+  if (recentProcessLaunches.length >= PROCESS_LAUNCH_WINDOW_LIMIT) {
+    return {
+      allowed: false,
+      reason: 'launch rate limit reached',
+      retryAfterMs: PROCESS_LAUNCH_WINDOW_MS - (now - recentProcessLaunches[0]),
+    };
+  }
+
+  recentProcessLaunchKeys.set(key, now);
+  recentProcessLaunches.push(now);
+  for (const [candidate, timestamp] of recentProcessLaunchKeys) {
+    if (now - timestamp >= PROCESS_LAUNCH_DEDUP_MS) recentProcessLaunchKeys.delete(candidate);
+  }
+  return { allowed: true };
+}
+
 export function compactInitialProcessOutput(output: string, requestedLimit: unknown): string {
   const parsedLimit = typeof requestedLimit === 'number' ? Math.trunc(requestedLimit) : DEFAULT_PROCESS_START_OUTPUT_LINE_LIMIT;
   const limit = Math.max(5, Math.min(parsedLimit || DEFAULT_PROCESS_START_OUTPUT_LINE_LIMIT, 500));
@@ -126,6 +168,31 @@ export async function startProcess(args: unknown): Promise<ServerResult> {
     return {
       content: [{ type: "text", text: `Error: Invalid arguments for start_process: ${parsed.error}` }],
       isError: true,
+    };
+  }
+
+  const admission = processLaunchAdmission(parsed.data);
+  if (!admission.allowed) {
+    const retryAfterMs = Math.max(1, admission.retryAfterMs ?? PROCESS_LAUNCH_DEDUP_MS);
+    const text = `Process launch suppressed: ${admission.reason}. Retry after ${retryAfterMs}ms.`;
+    capture('server_start_process_suppressed', {
+      reason: admission.reason,
+      retryAfterMs,
+    });
+    return {
+      content: [{ type: "text", text }],
+      structuredContent: {
+        pid: null,
+        text,
+        output: text,
+        isBlocked: false,
+        isFinished: true,
+        exitCode: null,
+        state: 'finished',
+        success: true,
+        suppressed: true,
+        retryAfterMs,
+      },
     };
   }
 
@@ -769,12 +836,17 @@ export async function listSessions(): Promise<ServerResult> {
 
   const allSessions = [...realSessionsText, ...virtualSessionsText];
 
+  const text = allSessions.length === 0
+    ? 'No active sessions'
+    : allSessions.join('\n');
+
   return {
-    content: [{
-      type: "text",
-      text: allSessions.length === 0
-        ? 'No active sessions'
-        : allSessions.join('\n')
-    }],
+    content: [{ type: "text", text }],
+    structuredContent: {
+      sessions: [...sessions, ...virtualSessions],
+      count: sessions.length + virtualSessions.length,
+      text,
+      success: true,
+    },
   };
 }
