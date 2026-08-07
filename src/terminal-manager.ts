@@ -1,10 +1,12 @@
 import { spawn } from 'child_process';
+import { existsSync } from 'fs';
 import path from 'path';
 import { TerminalSession, CommandExecutionResult, ActiveSession, TimingInfo, OutputEvent } from './types.js';
 import { DEFAULT_COMMAND_TIMEOUT } from './config.js';
 import { configManager } from './config-manager.js';
 import {capture} from "./utils/capture.js";
 import { analyzeProcessState } from './utils/process-detection.js';
+import { commandManager } from './command-manager.js';
 
 /**
  * Standard Windows PATHEXT value, used to repair a corrupted PATHEXT before
@@ -17,6 +19,19 @@ import { analyzeProcessState } from './utils/process-detection.js';
  * etc. (and even full-path .exe invocations under PowerShell). See issue #481.
  */
 const STANDARD_PATHEXT = '.COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC';
+
+export const WINDOWS_POWERSHELL_7_PATH = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe';
+const WINDOWS_POWERSHELL_5_DISABLED_MESSAGE = 'Error: Windows PowerShell 5.1 is disabled. Use PowerShell 7 (pwsh.exe).';
+
+export function resolveWindowsPowerShell7Fallback(): string | null {
+  if (process.platform !== 'win32') return null;
+  return existsSync(WINDOWS_POWERSHELL_7_PATH) ? WINDOWS_POWERSHELL_7_PATH : null;
+}
+
+function powershell5DisabledResult(): CommandExecutionResult {
+  return { pid: -1, output: WINDOWS_POWERSHELL_5_DISABLED_MESSAGE, isBlocked: false };
+}
+
 
 /**
  * Return a healthy PATHEXT for spawned Windows shells.
@@ -107,13 +122,9 @@ function getShellSpawnArgs(shellPath: string, command: string): ShellSpawnConfig
     };
   }
   
-  // Windows PowerShell 5.1 (no login flag support)
+  // Windows PowerShell 5.1 is never a valid execution shell.
   if (shellName === 'powershell' || shellName === 'powershell.exe') {
-    return { 
-      executable: shellPath, 
-      args: ['-Command', command],
-      useShellOption: false 
-    };
+    throw new Error(WINDOWS_POWERSHELL_5_DISABLED_MESSAGE);
   }
   
   // CMD
@@ -181,29 +192,46 @@ export class TerminalManager {
     collectTiming: boolean = false,
     opts?: { visible?: boolean; excludeSelf?: boolean },
   ): Promise<CommandExecutionResult> {
-    // Get the shell from config if not specified
+    // Get the shell from config if not specified. On Windows, never delegate
+    // an unresolved default to Node's `shell: true` path (cmd.exe): establish
+    // PowerShell 7 explicitly or fail closed.
     let shellToUse: string | boolean | undefined = shell;
     if (!shellToUse) {
       try {
         const config = await configManager.getConfig();
-        shellToUse = config.defaultShell || true;
+        shellToUse = config.defaultShell;
       } catch (error) {
-        // If there's an error getting the config, fall back to default
-        shellToUse = true;
+        shellToUse = undefined;
       }
     }
 
-    // Fail closed if a caller explicitly selects Windows PowerShell 5.1.
-    // SanityCloud/DesktopCommander uses PowerShell 7 (pwsh.exe) on Windows.
-    if (process.platform === 'win32' && typeof shellToUse === 'string') {
-      const selectedShell = path.basename(shellToUse).toLowerCase();
-      if (selectedShell === 'powershell' || selectedShell === 'powershell.exe') {
+    if (process.platform === 'win32' && (typeof shellToUse !== 'string' || !shellToUse.trim())) {
+      const pwsh7 = resolveWindowsPowerShell7Fallback();
+      if (!pwsh7) {
         return {
           pid: -1,
-          output: 'Error: Windows PowerShell 5.1 is disabled. Use PowerShell 7 (pwsh.exe).',
+          output: `Error: PowerShell 7 is required but was not found at ${WINDOWS_POWERSHELL_7_PATH}. Refusing to fall back to cmd.exe or Windows PowerShell 5.1.`,
           isBlocked: false
         };
       }
+      shellToUse = pwsh7;
+    } else if (!shellToUse) {
+      shellToUse = true;
+    }
+
+    // Fail closed if a caller selects Windows PowerShell 5.1 as the shell.
+    if (process.platform === 'win32' && typeof shellToUse === 'string') {
+      const selectedShell = path.basename(shellToUse).toLowerCase();
+      if (selectedShell === 'powershell' || selectedShell === 'powershell.exe') {
+        return powershell5DisabledResult();
+      }
+    }
+
+    // Enforce the same invariant on the command body itself. This closes
+    // shell-wrapper bypasses such as `cmd /c powershell.exe ...` and
+    // `pwsh -Command "powershell.exe ..."` while allowing literal mentions.
+    if (process.platform === 'win32' && commandManager.isLegacyWindowsPowerShellInvocation(command)) {
+      return powershell5DisabledResult();
     }
 
     // For REPL interactions, we need to ensure stdin, stdout, and stderr are properly configured
