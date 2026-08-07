@@ -45,6 +45,25 @@ export function isTelemetryDisabledValue(value: unknown): boolean {
   return normalizeTelemetryEnabledValue(value) === false;
 }
 
+export function normalizeWindowsDefaultShellValue(value: unknown): unknown {
+  if (os.platform() !== 'win32' || typeof value !== 'string') {
+    return value;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return value;
+  }
+
+  const unquoted = trimmed.replace(/^['"]|['"]$/g, '');
+  const executable = path.win32.basename(unquoted).toLowerCase();
+  if (executable === 'powershell' || executable === 'powershell.exe') {
+    return 'pwsh.exe';
+  }
+
+  return value;
+}
+
 /**
  * Singleton config manager for the server
  */
@@ -85,6 +104,24 @@ class ConfigManager {
         this.config = JSON.parse(configData);
         this._isFirstRun = false;
 
+        let configNeedsSave = false;
+        const normalizedDefaultShell = normalizeWindowsDefaultShellValue(this.config.defaultShell);
+        if (normalizedDefaultShell !== this.config.defaultShell) {
+          this.config.defaultShell = normalizedDefaultShell as string;
+          configNeedsSave = true;
+        }
+
+        if (os.platform() === 'win32') {
+          const blockedCommands = new Set(this.config.blockedCommands ?? []);
+          for (const legacyShell of ['powershell', 'powershell.exe']) {
+            if (!blockedCommands.has(legacyShell)) {
+              blockedCommands.add(legacyShell);
+              configNeedsSave = true;
+            }
+          }
+          this.config.blockedCommands = [...blockedCommands];
+        }
+
         // Configs created before this marker existed must not receive the
         // welcome page retroactively when client eligibility changes later.
         // New configs get this field from getDefaultConfig() and remain
@@ -92,6 +129,10 @@ class ConfigManager {
         if (this.config['welcomeOnboardingEligible'] === undefined) {
           this.config['welcomeOnboardingEligible'] = false;
           this.config['pendingWelcomeOnboarding'] = false;
+          configNeedsSave = true;
+        }
+
+        if (configNeedsSave) {
           await this.saveConfig();
         }
       } catch (error) {
@@ -259,6 +300,9 @@ class ConfigManager {
     if (key === 'telemetryEnabled') {
       value = normalizeTelemetryEnabledValue(value);
     }
+    if (key === 'defaultShell') {
+      value = normalizeWindowsDefaultShellValue(value);
+    }
     
     // Special handling for telemetry opt-out
     if (key === 'telemetryEnabled' && isTelemetryDisabledValue(value)) {
@@ -296,6 +340,9 @@ class ConfigManager {
    */
   async setValueNonBlocking(key: string, value: any): Promise<void> {
     await this.init();
+    if (key === 'defaultShell') {
+      value = normalizeWindowsDefaultShellValue(value);
+    }
     this.config[key] = value;
     this.scheduleSave();
   }
@@ -305,6 +352,9 @@ class ConfigManager {
    */
   async updateConfig(updates: Partial<ServerConfig>): Promise<ServerConfig> {
     await this.init();
+    if (Object.prototype.hasOwnProperty.call(updates, 'defaultShell')) {
+      updates.defaultShell = normalizeWindowsDefaultShellValue(updates.defaultShell) as string;
+    }
     this.config = { ...this.config, ...updates };
     await this.saveConfig();
     return { ...this.config };

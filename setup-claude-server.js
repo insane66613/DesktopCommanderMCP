@@ -96,10 +96,12 @@ async function initConfigFile() {
                     "sc",        // Service Control manager
                     "runas",     // Execute command as another user
                     "cipher",    // Encrypt/decrypt files or wipe data
-                    "takeown"    // Take ownership of files
+                    "takeown",   // Take ownership of files
+                    "powershell", // Windows PowerShell 5.1 is intentionally disabled
+                    "powershell.exe"
                 ],
                 clientId: uniqueUserId, // Use the generated UUID as client ID
-                defaultShell: platform() === 'win32' ? 'powershell.exe' : '/bin/sh',
+                defaultShell: platform() === 'win32' ? 'pwsh.exe' : '/bin/sh',
                 allowedDirectories: [],
                 telemetryEnabled: true, // Default to opt-out approach (telemetry on by default)
                 fileWriteLineLimit: 50,  // Default line limit for file write operations (changed from 100)

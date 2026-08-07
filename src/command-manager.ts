@@ -11,11 +11,14 @@ class CommandManager {
     isLegacyWindowsPowerShellInvocation(command: string): boolean {
         if (process.platform !== 'win32') return false;
 
-        // Fail closed on any explicit Windows PowerShell executable reference,
-        // including quoted absolute paths and nested invocations via cmd/pwsh.
-        // PowerShell 7 uses pwsh(.exe) and is intentionally not matched.
-        const normalized = command.replace(/[`^]/g, '').toLowerCase();
-        return /(^|[\\/\s;&|('"=])powershell(?:\.exe)?(?=$|[\\/\s;&|)'"])/i.test(normalized);
+        // Inspect executable positions only. A literal mention such as a Git
+        // commit message containing "PowerShell" must not be treated as an
+        // invocation. extractCommands() also descends into cmd/pwsh command
+        // arguments so actual nested Windows PowerShell execution is denied.
+        const normalized = command.replace(/[`^]/g, '');
+        return this.extractCommands(normalized).some(
+            (candidate) => candidate === 'powershell' || candidate === 'powershell.exe'
+        );
     }
 
     extractCommands(commandString: string): string[] {
@@ -146,8 +149,7 @@ class CommandManager {
                     if (commandString.startsWith(separator, i)) {
                         // We found a separator - extract the command before it
                         if (currentCmd.trim()) {
-                            const baseCommand = this.extractBaseCommand(currentCmd.trim());
-                            if (baseCommand) commands.push(baseCommand);
+                            commands.push(...this.extractSegmentCommands(currentCmd.trim()));
                         }
 
                         // Move past the separator
@@ -165,8 +167,7 @@ class CommandManager {
 
             // Don't forget to add the last command
             if (currentCmd.trim()) {
-                const baseCommand = this.extractBaseCommand(currentCmd.trim());
-                if (baseCommand) commands.push(baseCommand);
+                commands.push(...this.extractSegmentCommands(currentCmd.trim()));
             }
 
             // Remove duplicates and return
@@ -179,6 +180,54 @@ class CommandManager {
             const baseCmd = this.extractBaseCommand(commandString);
             return baseCmd ? [baseCmd] : [];
         }
+    }
+
+    private extractSegmentCommands(commandStr: string): string[] {
+        const baseCommand = this.extractBaseCommand(commandStr);
+        if (!baseCommand) return [];
+
+        const commands = [baseCommand];
+        if (process.platform !== 'win32') return commands;
+
+        const nestedCommand = this.extractNestedWindowsShellCommand(commandStr, baseCommand);
+        if (nestedCommand) {
+            commands.push(...this.extractCommands(nestedCommand));
+        }
+
+        return commands;
+    }
+
+    private extractNestedWindowsShellCommand(commandStr: string, baseCommand: string): string | null {
+        const cmdWrappers = new Set(['cmd', 'cmd.exe']);
+        const pwshWrappers = new Set(['pwsh', 'pwsh.exe']);
+        if (!cmdWrappers.has(baseCommand) && !pwshWrappers.has(baseCommand)) {
+            return null;
+        }
+
+        const withoutEnvVars = commandStr.replace(/\w+=\S+\s*/g, '').trim();
+        const withoutInvocationOperator = withoutEnvVars.replace(/^&\s*/, '').trim();
+        const tokens = withoutInvocationOperator.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+        if (tokens.length < 2) return null;
+
+        const commandSwitches = cmdWrappers.has(baseCommand)
+            ? new Set(['/c', '/k'])
+            : new Set(['-command', '-c', '-commandwithargs']);
+        const switchIndex = tokens.findIndex((token, index) => {
+            if (index === 0) return false;
+            return commandSwitches.has(token.replace(/^['"]|['"]$/g, '').toLowerCase());
+        });
+        if (switchIndex < 0 || switchIndex + 1 >= tokens.length) return null;
+
+        let nestedCommand = tokens.slice(switchIndex + 1).join(' ').trim();
+        if (
+            nestedCommand.length >= 2 &&
+            ((nestedCommand.startsWith('"') && nestedCommand.endsWith('"')) ||
+             (nestedCommand.startsWith("'") && nestedCommand.endsWith("'")))
+        ) {
+            nestedCommand = nestedCommand.slice(1, -1).trim();
+        }
+
+        return nestedCommand || null;
     }
 
     // This extracts the actual command name from a command string
