@@ -193,6 +193,19 @@ export class TerminalManager {
       }
     }
 
+    // Fail closed if a caller explicitly selects Windows PowerShell 5.1.
+    // SanityCloud/DesktopCommander uses PowerShell 7 (pwsh.exe) on Windows.
+    if (process.platform === 'win32' && typeof shellToUse === 'string') {
+      const selectedShell = path.basename(shellToUse).toLowerCase();
+      if (selectedShell === 'powershell' || selectedShell === 'powershell.exe') {
+        return {
+          pid: -1,
+          output: 'Error: Windows PowerShell 5.1 is disabled. Use PowerShell 7 (pwsh.exe).',
+          isBlocked: false
+        };
+      }
+    }
+
     // For REPL interactions, we need to ensure stdin, stdout, and stderr are properly configured
     // Note: No special stdio options needed here, Node.js handles pipes by default
 

@@ -54,6 +54,15 @@ async function runTests() {
         assert.ok(cmds8.includes('ls'), 'FAIL: should extract "ls" and ignore $MYVAR');
         assert.ok(!cmds8.includes('$MYVAR'), 'FAIL: should not include $MYVAR as a command');
 
+        // Test 9: PowerShell invocation operator + quoted absolute path must normalize.
+        const cmds9 = commandManager.extractCommands("& 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' -NoProfile");
+        console.log('  quoted Windows PowerShell path =>', cmds9);
+        assert.ok(cmds9.includes('powershell.exe'), 'FAIL: should extract powershell.exe from quoted absolute path');
+
+        // Test 10: hard legacy-PowerShell detector catches nested/full-path forms but not pwsh.
+        assert.strictEqual(commandManager.isLegacyWindowsPowerShellInvocation("cmd /c C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile"), true);
+        assert.strictEqual(commandManager.isLegacyWindowsPowerShellInvocation('pwsh.exe -NoProfile'), false);
+
         console.log('\nAll tests passed!');
     } catch (error) {
         console.error('Test failed:', error.message);

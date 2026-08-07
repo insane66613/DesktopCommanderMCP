@@ -514,7 +514,7 @@ export function getSystemInfo(): SystemInfo {
     
     if (isWindows) {
         platformName = 'Windows';
-        defaultShell = 'powershell.exe';
+        defaultShell = 'pwsh.exe';
         pathSeparator = '\\';
         examplePaths = {
             home: 'C:\\Users\\username',
@@ -722,8 +722,8 @@ Container: ${docker.containerEnvironment.containerName}`;
         
 WINDOWS-SPECIFIC TROUBLESHOOTING:
 - If Node.js/Python commands fail with "not recognized" errors:
-  * Try different shells: specify shell parameter as "cmd" or "powershell.exe"
-  * PowerShell may have execution policy restrictions for some tools
+  * Try different shells: specify shell parameter as "cmd" or "pwsh.exe"
+  * PowerShell 7 may have execution policy restrictions for some tools
   * CMD typically has better compatibility with development tools
   * Use set_config_value to change defaultShell if needed
 - Windows services and processes use different commands (Get-Process vs ps)
