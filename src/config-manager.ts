@@ -166,11 +166,13 @@ class ConfigManager {
         "sc",        // Service Control manager
         "runas",     // Execute command as another user
         "cipher",    // Encrypt/decrypt files or wipe data
-        "takeown"    // Take ownership of files
+        "takeown",   // Take ownership of files
+        "powershell", // Windows PowerShell 5.1 is intentionally disabled
+        "powershell.exe"
       ],
       defaultShell: (() => {
         if (os.platform() === 'win32') {
-          return 'powershell.exe';
+          return 'pwsh.exe';
         }
         // Use user's actual shell from environment
         // On macOS, default to zsh (default since Catalina) since process.env.SHELL

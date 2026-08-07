@@ -36,11 +36,11 @@ async function detectAvailableShells(systemInfo: ReturnType<typeof getSystemInfo
   if (systemInfo.isWindows) {
     add(process.env.ComSpec ?? '');
     const systemRoot = process.env.SystemRoot ?? 'C:\\Windows';
+    const programFiles = process.env.ProgramFiles ?? 'C:\\Program Files';
     const candidates = [
-      `${systemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`,
+      `${programFiles}\\PowerShell\\7\\pwsh.exe`,
       `${systemRoot}\\System32\\cmd.exe`,
       `${systemRoot}\\System32\\bash.exe`,
-      'powershell.exe',
       'pwsh.exe',
       'cmd.exe',
       'bash.exe',

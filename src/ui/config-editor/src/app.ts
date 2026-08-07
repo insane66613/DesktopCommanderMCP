@@ -340,7 +340,7 @@ function getShellOptions(payload: ConfigEditorPayload | null, currentShell: stri
     const baseOptions = hintedShells.length > 0
         ? hintedShells
         : isWindows
-            ? ['powershell.exe', 'pwsh.exe', 'cmd.exe', 'bash.exe']
+            ? ['pwsh.exe', 'cmd.exe', 'bash.exe']
             : isMacOS
                 ? ['/bin/zsh', '/bin/bash', '/bin/sh', '/usr/bin/fish', 'zsh', 'bash', 'sh', 'fish']
                 : ['/bin/bash', '/bin/sh', '/usr/bin/fish', '/bin/zsh', 'bash', 'sh', 'fish', 'zsh'];

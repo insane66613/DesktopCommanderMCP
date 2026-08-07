@@ -28,7 +28,7 @@ export function buildOpenInFolderCommand(filePath: string, isLikelyUrl: (filePat
     if (userAgent.includes('win')) {
         const escapedForPowerShell = trimmedPath.replace(/'/g, "''");
         const script = `Start-Process -FilePath explorer.exe -ArgumentList @('/select,','${escapedForPowerShell}')`;
-        return `powershell.exe -NoProfile -NonInteractive -EncodedCommand ${encodePowerShellCommand(script)}`;
+        return `pwsh.exe -NoProfile -NonInteractive -EncodedCommand ${encodePowerShellCommand(script)}`;
     }
     if (userAgent.includes('mac')) {
         return `open -R ${shellQuote(trimmedPath)}`;
@@ -56,7 +56,7 @@ export function buildOpenInEditorCommand(
     if (userAgent.includes('win')) {
         const escapedForPowerShell = trimmedPath.replace(/'/g, "''");
         const script = `Start-Process -FilePath '${escapedForPowerShell}'`;
-        return `powershell.exe -NoProfile -NonInteractive -EncodedCommand ${encodePowerShellCommand(script)}`;
+        return `pwsh.exe -NoProfile -NonInteractive -EncodedCommand ${encodePowerShellCommand(script)}`;
     }
     if (userAgent.includes('mac')) {
         return `open ${shellQuote(trimmedPath)}`;

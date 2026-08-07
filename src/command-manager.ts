@@ -8,6 +8,16 @@ class CommandManager {
         return command.split(' ')[0].toLowerCase().trim();
     }
 
+    isLegacyWindowsPowerShellInvocation(command: string): boolean {
+        if (process.platform !== 'win32') return false;
+
+        // Fail closed on any explicit Windows PowerShell executable reference,
+        // including quoted absolute paths and nested invocations via cmd/pwsh.
+        // PowerShell 7 uses pwsh(.exe) and is intentionally not matched.
+        const normalized = command.replace(/[`^]/g, '').toLowerCase();
+        return /(^|[\\/\s;&|('"=])powershell(?:\.exe)?(?=$|[\\/\s;&|)'"])/i.test(normalized);
+    }
+
     extractCommands(commandString: string): string[] {
         try {
             // Trim any leading/trailing whitespace
@@ -180,8 +190,11 @@ class CommandManager {
             // If nothing remains after removing env vars, return null
             if (!withoutEnvVars) return null;
 
-            // Get the first token (the command)
-            const tokens = withoutEnvVars.split(/\s+/);
+            // Tokenize while preserving quoted executable paths (for example
+            // & 'C:\\Windows\\...\\powershell.exe'). Strip the PowerShell
+            // invocation operator before identifying the executable.
+            const withoutInvocationOperator = withoutEnvVars.replace(/^&\s*/, '').trim();
+            const tokens = withoutInvocationOperator.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
             let firstToken = null;
 
             // Find the first valid token (skip variables)
@@ -217,8 +230,10 @@ class CommandManager {
                 return null;
             }
 
-            // strip path prefix so /usr/bin/sudo gets caught as "sudo"
-            const baseName = path.basename(firstToken);
+            // Strip surrounding quotes before normalizing the path basename so
+            // quoted absolute executables are checked against the blocklist.
+            const normalizedToken = firstToken.replace(/^['"]|['"]$/g, '');
+            const baseName = path.basename(normalizedToken);
             return baseName.toLowerCase();
         } catch (error) {
             capture('Error extracting base command');
@@ -228,6 +243,13 @@ class CommandManager {
 
     async validateCommand(command: string): Promise<boolean> {
         try {
+            // Windows PowerShell 5.1 is not an allowed execution dependency.
+            // Reject it independently of the configurable command blocklist so
+            // quoted/full-path/nested invocations cannot downgrade the shell.
+            if (this.isLegacyWindowsPowerShellInvocation(command)) {
+                return false;
+            }
+
             // Get blocked commands from config
             const config = await configManager.getConfig();
             const blockedCommands = config.blockedCommands || [];
