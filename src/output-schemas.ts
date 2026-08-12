@@ -157,7 +157,10 @@ const SEARCH_LIST_OUTPUT_SCHEMA: JsonSchema = {
 export const OUTPUT_SCHEMAS: Record<string, JsonSchema> = {
   get_config: GET_CONFIG_OUTPUT_SCHEMA,
   set_config_value: ACTION_RESULT_SCHEMA,
-  read_file: READ_FILE_OUTPUT_SCHEMA,
+  // File-preview handlers emit structuredContent only for origin:'ui' calls.
+  // Advertising an outputSchema for ordinary model-facing calls makes MCP
+  // hosts reject their valid text-only results before the model can consume
+  // them. Widget-originated calls still carry their rich preview metadata.
   read_multiple_files: {
     type: 'object',
     required: ['summary', 'success'],
@@ -169,11 +172,8 @@ export const OUTPUT_SCHEMAS: Record<string, JsonSchema> = {
     },
     additionalProperties: true,
   },
-  write_file: FILE_PREVIEW_OUTPUT_SCHEMA,
-  edit_block: FILE_PREVIEW_OUTPUT_SCHEMA,
   write_pdf: ACTION_RESULT_SCHEMA,
   create_directory: ACTION_RESULT_SCHEMA,
-  list_directory: FILE_PREVIEW_OUTPUT_SCHEMA,
   move_file: ACTION_RESULT_SCHEMA,
   get_file_info: {
     type: 'object',

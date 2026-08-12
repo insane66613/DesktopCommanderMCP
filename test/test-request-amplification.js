@@ -216,21 +216,29 @@ async function testHeartbeatStartIsIdempotent() {
   console.log('\n--- Test: heartbeat start is idempotent ---');
   const originalSetInterval = globalThis.setInterval;
   const originalClearInterval = globalThis.clearInterval;
-  let created = 0;
-  globalThis.setInterval = () => ({ id: ++created });
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  let intervalsCreated = 0;
+  let timeoutsCreated = 0;
+  globalThis.setInterval = () => ({ kind: 'interval', id: ++intervalsCreated });
   globalThis.clearInterval = () => {};
+  globalThis.setTimeout = () => ({ kind: 'timeout', id: ++timeoutsCreated });
+  globalThis.clearTimeout = () => {};
   try {
     const channel = new RemoteChannel();
     channel.sendHeartbeat = async () => {};
     channel.startHeartbeat('device-1');
     channel.startHeartbeat('device-1');
-    assert.strictEqual(created, 2, 'Repeated start for the same device must not create duplicate timers');
+    assert.strictEqual(intervalsCreated, 1, 'Repeated start must keep one connection-health interval');
+    assert.strictEqual(timeoutsCreated, 1, 'Repeated start must keep one self-rescheduling heartbeat timeout');
     channel.stopHeartbeat();
   } finally {
     globalThis.setInterval = originalSetInterval;
     globalThis.clearInterval = originalClearInterval;
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
   }
-  console.log('  PASS: one health timer and one database timer');
+  console.log('  PASS: one health interval and one database timeout');
 }
 
 async function testRealtimeCallIdDeduplication() {
@@ -262,7 +270,7 @@ async function testRealtimeCallIdDeduplication() {
   channel.deviceId = 'device-1';
   channel.onToolCall = () => { dispatched++; };
 
-  await channel.createChannel();
+  channel.createLegacyChannel();
   const payload = { new: { id: 'call-1', tool_name: 'read_file', arguments: {} } };
   realtimeHandler(payload);
   realtimeHandler(payload);
