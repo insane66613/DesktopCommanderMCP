@@ -5,6 +5,35 @@
 
 import assert from 'assert';
 import { commandManager } from '../dist/command-manager.js';
+import { configManager } from '../dist/config-manager.js';
+import { forceTerminate, interactWithProcess, startProcess } from '../dist/tools/improved-process-tools.js';
+
+function extractPid(result) {
+    const match = result.content[0].text.match(/Process started with PID (\d+)/);
+    return match ? parseInt(match[1], 10) : null;
+}
+
+async function testInteractiveBlockedCommandValidation() {
+    const originalConfig = await configManager.getConfig();
+    await configManager.setValue('blockedCommands', ['rm']);
+
+    const startResult = await startProcess({ command: 'node -i', timeout_ms: 5000 });
+    const processId = extractPid(startResult);
+    assert.ok(processId, `Failed to start Node REPL: ${startResult.content[0].text}`);
+
+    try {
+        const result = await interactWithProcess({
+            pid: processId,
+            input: 'rm',
+            timeout_ms: 2000
+        });
+        assert.strictEqual(result.isError, true, 'Blocked interactive input should be rejected');
+        assert.match(result.content[0].text, /blocked command/i, 'Blocked input should report the policy rejection');
+    } finally {
+        await forceTerminate({ pid: processId });
+        await configManager.updateConfig(originalConfig);
+    }
+}
 
 async function runTests() {
     // mock config with blocked commands
@@ -62,6 +91,9 @@ async function runTests() {
         // Test 10: hard legacy-PowerShell detector catches nested/full-path forms but not pwsh.
         assert.strictEqual(commandManager.isLegacyWindowsPowerShellInvocation("cmd /c C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile"), true);
         assert.strictEqual(commandManager.isLegacyWindowsPowerShellInvocation('pwsh.exe -NoProfile'), false);
+
+        // Test 11: interact_with_process must enforce blockedCommands before stdin write.
+        await testInteractiveBlockedCommandValidation();
 
         console.log('\nAll tests passed!');
     } catch (error) {
