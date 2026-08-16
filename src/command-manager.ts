@@ -2,6 +2,48 @@ import path from 'path';
 import {configManager} from './config-manager.js';
 import {capture} from "./utils/capture.js";
 
+class CommandParsingLimitError extends Error {}
+
+const MAX_RECURSION_DEPTH = 20;
+const ENV_ASSIGNMENT_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+function tokenizeRespectingQuotes(str: string): string[] {
+    const tokens: string[] = [];
+    let current = '';
+    let inQuote = false;
+    let quoteChar = '';
+    let escaped = false;
+
+    for (const ch of str) {
+        if (escaped) {
+            current += ch;
+            escaped = false;
+            continue;
+        }
+        if (ch === '\\') {
+            escaped = true;
+            current += ch;
+            continue;
+        }
+        if ((ch === '"' || ch === "'") && (!inQuote || ch === quoteChar)) {
+            inQuote = !inQuote;
+            quoteChar = inQuote ? ch : '';
+            current += ch;
+            continue;
+        }
+        if (!inQuote && /\s/.test(ch)) {
+            if (current) {
+                tokens.push(current);
+                current = '';
+            }
+            continue;
+        }
+        current += ch;
+    }
+    if (current) tokens.push(current);
+    return tokens;
+}
+
 class CommandManager {
 
     getBaseCommand(command: string) {
@@ -21,7 +63,11 @@ class CommandManager {
         );
     }
 
-    extractCommands(commandString: string): string[] {
+    extractCommands(commandString: string, depth: number = 0): string[] {
+        if (depth > MAX_RECURSION_DEPTH) {
+            capture('command_parser_depth_exceeded', { depth });
+            throw new CommandParsingLimitError('Command nesting depth exceeded maximum allowed limit');
+        }
         try {
             // Trim any leading/trailing whitespace
             commandString = commandString.trim();
@@ -73,14 +119,26 @@ class CommandManager {
                     const startIndex = i;
                     let openParens = 1;
                     let j = i + 2; // skip past $(
+                    let parenEscaped = false;
                     while (j < commandString.length && openParens > 0) {
-                        if (commandString[j] === '(') openParens++;
-                        if (commandString[j] === ')') openParens--;
+                        const current = commandString[j];
+                        if (parenEscaped) {
+                            parenEscaped = false;
+                            j++;
+                            continue;
+                        }
+                        if (current === '\\') {
+                            parenEscaped = true;
+                            j++;
+                            continue;
+                        }
+                        if (current === '(') openParens++;
+                        if (current === ')') openParens--;
                         j++;
                     }
                     if (j <= commandString.length && openParens === 0) {
                         const subContent = commandString.substring(i + 2, j - 1);
-                        const subCommands = this.extractCommands(subContent);
+                        const subCommands = this.extractCommands(subContent, depth + 1);
                         commands.push(...subCommands);
                         i = j - 1;
                         if (!inQuote) {
@@ -96,12 +154,25 @@ class CommandManager {
                 if (char === '`') {
                     const startIndex = i;
                     let j = i + 1;
-                    while (j < commandString.length && commandString[j] !== '`') {
+                    let backtickEscaped = false;
+                    while (j < commandString.length) {
+                        const current = commandString[j];
+                        if (backtickEscaped) {
+                            backtickEscaped = false;
+                            j++;
+                            continue;
+                        }
+                        if (current === '\\') {
+                            backtickEscaped = true;
+                            j++;
+                            continue;
+                        }
+                        if (current === '`') break;
                         j++;
                     }
                     if (j < commandString.length) {
                         const subContent = commandString.substring(i + 1, j);
-                        const subCommands = this.extractCommands(subContent);
+                        const subCommands = this.extractCommands(subContent, depth + 1);
                         commands.push(...subCommands);
                         i = j;
                         if (!inQuote) {
@@ -124,9 +195,21 @@ class CommandManager {
                     // Find the matching closing parenthesis
                     let openParens = 1;
                     let j = i + 1;
+                    let subshellEscaped = false;
                     while (j < commandString.length && openParens > 0) {
-                        if (commandString[j] === '(') openParens++;
-                        if (commandString[j] === ')') openParens--;
+                        const current = commandString[j];
+                        if (subshellEscaped) {
+                            subshellEscaped = false;
+                            j++;
+                            continue;
+                        }
+                        if (current === '\\') {
+                            subshellEscaped = true;
+                            j++;
+                            continue;
+                        }
+                        if (current === '(') openParens++;
+                        if (current === ')') openParens--;
                         j++;
                     }
 
@@ -134,7 +217,7 @@ class CommandManager {
                     if (j <= commandString.length && openParens === 0) {
                         const subshellContent = commandString.substring(i + 1, j - 1);
                         // Recursively extract commands from the subshell
-                        const subCommands = this.extractCommands(subshellContent);
+                        const subCommands = this.extractCommands(subshellContent, depth + 1);
                         commands.push(...subCommands);
 
                         // Move position past the subshell
@@ -173,6 +256,9 @@ class CommandManager {
             // Remove duplicates and return
             return [...new Set(commands)];
         } catch (error) {
+            if (error instanceof CommandParsingLimitError) {
+                throw error;
+            }
             // If anything goes wrong, log the error but return the basic command to not break execution
             capture('server_request_error', {
                 error: 'Error extracting commands'
@@ -233,21 +319,24 @@ class CommandManager {
     // This extracts the actual command name from a command string
     extractBaseCommand(commandStr: string): string | null {
         try {
-            // Remove environment variables (patterns like KEY=value)
-            const withoutEnvVars = commandStr.replace(/\w+=\S+\s*/g, '').trim();
+            const withoutInvocationOperator = commandStr.trim().replace(/^&\s*/, '').trim();
+            const tokens = tokenizeRespectingQuotes(withoutInvocationOperator);
+            let startIdx = 0;
+            while (startIdx < tokens.length) {
+                const token = tokens[startIdx];
+                if (token === 'export' || ENV_ASSIGNMENT_PATTERN.test(token)) {
+                    startIdx++;
+                    continue;
+                }
+                break;
+            }
 
-            // If nothing remains after removing env vars, return null
-            if (!withoutEnvVars) return null;
+            if (startIdx >= tokens.length) return null;
 
-            // Tokenize while preserving quoted executable paths (for example
-            // & 'C:\\Windows\\...\\powershell.exe'). Strip the PowerShell
-            // invocation operator before identifying the executable.
-            const withoutInvocationOperator = withoutEnvVars.replace(/^&\s*/, '').trim();
-            const tokens = withoutInvocationOperator.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
             let firstToken = null;
 
             // Find the first valid token (skip variables)
-            for (let i = 0; i < tokens.length; i++) {
+            for (let i = startIdx; i < tokens.length; i++) {
                 const token = tokens[i];
                 
                 // Skip dollar-prefixed tokens (variables) but not $() command substitutions

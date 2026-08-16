@@ -92,7 +92,37 @@ async function runTests() {
         assert.strictEqual(commandManager.isLegacyWindowsPowerShellInvocation("cmd /c C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile"), true);
         assert.strictEqual(commandManager.isLegacyWindowsPowerShellInvocation('pwsh.exe -NoProfile'), false);
 
-        // Test 11: interact_with_process must enforce blockedCommands before stdin write.
+        // Test 11: export + env assignment must not mask the real command.
+        const cmds11 = commandManager.extractCommands('export PATH=/usr/bin rm -rf /');
+        assert.ok(cmds11.includes('rm'), 'FAIL: should extract rm past export/env prefixes');
+        assert.ok(!cmds11.includes('export'), 'FAIL: export is a shell prefix, not the executed command');
+
+        // Test 12: quoted env values containing spaces must remain one prefix token.
+        const cmds12 = commandManager.extractCommands('FOO="a b" rm -rf /');
+        assert.ok(cmds12.includes('rm'), 'FAIL: should extract rm past a quoted env assignment');
+
+        // Test 13: multiple leading env assignments must all be skipped.
+        const cmds13 = commandManager.extractCommands('A=1 B=2 rm -rf /');
+        assert.ok(cmds13.includes('rm'), 'FAIL: should extract rm past multiple env assignments');
+
+        // Test 14: ordinary nested substitutions must remain supported.
+        const cmds14 = commandManager.extractCommands('$($($(rm -rf /)))');
+        assert.ok(cmds14.includes('rm'), 'FAIL: should extract rm from reasonable nesting');
+
+        // Test 15: pathological nesting must fail closed instead of exhausting recursion.
+        const deeplyNested = '$('.repeat(25) + 'rm -rf /' + ')'.repeat(25);
+        assert.throws(
+            () => commandManager.extractCommands(deeplyNested),
+            /nesting depth|maximum allowed limit/i,
+            'FAIL: excessive nesting must throw a policy/parser limit error'
+        );
+        assert.strictEqual(
+            await commandManager.validateCommand(deeplyNested),
+            false,
+            'FAIL: validation must fail closed when the parser hits its nesting limit'
+        );
+
+        // Test 16: interact_with_process must enforce blockedCommands before stdin write.
         await testInteractiveBlockedCommandValidation();
 
         console.log('\nAll tests passed!');
