@@ -290,13 +290,35 @@ class CommandManager {
         }
     }
 
-    private splitExecutableSegments(commandString: string): string[] {
+    private splitExecutableSegments(commandString: string, shell?: string): string[] {
         const segments: string[] = [];
         let current = '';
         let quote: '"' | "'" | null = null;
+        let escaped = false;
+        const shellName = (shell ?? (process.platform === 'win32' ? 'pwsh.exe' : '')).toLowerCase();
+        const escapeChar = process.platform === 'win32'
+            ? (shellName.includes('cmd') ? '^' : '`')
+            : '\\';
 
         for (let i = 0; i < commandString.length; i++) {
             const char = commandString[i];
+            if (escaped) {
+                current += char;
+                escaped = false;
+                continue;
+            }
+            if (char === escapeChar) {
+                const next = commandString[i + 1];
+                if (next === '\r' || next === '\n') {
+                    current += ' ';
+                    if (next === '\r' && commandString[i + 2] === '\n') i += 2;
+                    else i += 1;
+                    continue;
+                }
+                current += char;
+                escaped = true;
+                continue;
+            }
             if ((char === '"' || char === "'") && quote === null) {
                 quote = char;
                 current += char;
@@ -325,8 +347,46 @@ class CommandManager {
         return segments;
     }
 
-    getUnsafeInlineInterpreterReason(command: string): string | null {
-        for (const segment of this.splitExecutableSegments(command)) {
+    private findPythonInlineSwitch(args: string[]): string | null {
+        const optionsWithValues = new Set(['-W', '-X', '--check-hash-based-pycs']);
+        for (let i = 0; i < args.length; i++) {
+            const arg = args[i];
+            if (!arg) continue;
+            if (arg === '--') return null;
+            if (arg === '-c' || /^-c.+/.test(arg)) return arg;
+            if (arg === '-m' || /^-m.+/.test(arg)) return null;
+            if (!arg.startsWith('-')) return null;
+            if (optionsWithValues.has(arg)) i++;
+        }
+        return null;
+    }
+
+    private findNodeInlineSwitch(args: string[]): string | null {
+        const optionsWithValues = new Set([
+            '-r', '--require', '--loader', '--experimental-loader', '--import', '--conditions',
+            '--input-type', '--inspect-port', '--openssl-config', '--icu-data-dir', '--title',
+            '--stack-trace-limit', '--max-old-space-size', '--max-semi-space-size', '--env-file',
+            '--env-file-if-exists', '--watch-path', '--test-name-pattern', '--test-reporter',
+            '--test-reporter-destination', '--test-shard', '--test-timeout', '--redirect-warnings',
+            '--diagnostic-dir', '--report-dir', '--report-filename', '--cpu-prof-dir', '--cpu-prof-name',
+            '--heap-prof-dir', '--heap-prof-name', '--snapshot-blob',
+        ]);
+        for (let i = 0; i < args.length; i++) {
+            const arg = args[i];
+            if (!arg) continue;
+            if (arg === '--') return null;
+            if (
+                arg === '-e' || arg === '--eval' || arg.startsWith('--eval=') || /^-e.+/.test(arg) ||
+                arg === '-p' || arg === '--print' || arg.startsWith('--print=') || /^-p.+/.test(arg)
+            ) return arg;
+            if (!arg.startsWith('-')) return null;
+            if (optionsWithValues.has(arg)) i++;
+        }
+        return null;
+    }
+
+    getUnsafeInlineInterpreterReason(command: string, shell?: string): string | null {
+        for (const segment of this.splitExecutableSegments(command, shell)) {
             const withoutEnvVars = segment.replace(/\w+=\S+\s*/g, '').trim();
             const normalized = withoutEnvVars.replace(/^&\s*/, '').trim();
             const tokens = normalized.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
@@ -337,22 +397,19 @@ class CommandManager {
             const args = tokens.slice(1).map((token) => token.replace(/^['"]|['"]$/g, ''));
 
             if (['python', 'python.exe', 'python3', 'python3.exe', 'py', 'py.exe'].includes(executable)) {
-                const inlineSwitch = args.find((arg) => arg === '-c' || /^-c.+/.test(arg));
+                const inlineSwitch = this.findPythonInlineSwitch(args);
                 if (inlineSwitch) return `inline interpreter invocation ${executable} ${inlineSwitch}`;
             }
 
             if (['node', 'node.exe'].includes(executable)) {
-                const inlineSwitch = args.find((arg) =>
-                    arg === '-e' || arg === '--eval' || arg.startsWith('--eval=') || /^-e.+/.test(arg) ||
-                    arg === '-p' || arg === '--print' || arg.startsWith('--print=') || /^-p.+/.test(arg)
-                );
+                const inlineSwitch = this.findNodeInlineSwitch(args);
                 if (inlineSwitch) return `inline interpreter invocation ${executable} ${inlineSwitch}`;
             }
 
             if (process.platform === 'win32' && ['cmd', 'cmd.exe', 'pwsh', 'pwsh.exe'].includes(executable)) {
                 const nested = this.extractNestedWindowsShellCommand(segment, executable);
                 if (nested) {
-                    const nestedReason = this.getUnsafeInlineInterpreterReason(nested);
+                    const nestedReason = this.getUnsafeInlineInterpreterReason(nested, executable);
                     if (nestedReason) return nestedReason;
                 }
             }

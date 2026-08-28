@@ -171,7 +171,7 @@ export async function startProcess(args: unknown): Promise<ServerResult> {
     };
   }
 
-  const unsafeInlineReason = commandManager.getUnsafeInlineInterpreterReason(parsed.data.command);
+  const unsafeInlineReason = commandManager.getUnsafeInlineInterpreterReason(parsed.data.command, parsed.data.shell);
   if (unsafeInlineReason) {
     const text = `Error: Unsafe inline interpreter code blocked before shell launch (${unsafeInlineReason}). Use receive_file to write a standalone .py/.js script (Base64 preferred for shell-sensitive content), then call start_process with the script path. For small source edits, use edit_block.`;
     capture('server_start_process_unsafe_inline_code', {
