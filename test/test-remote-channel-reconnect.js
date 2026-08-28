@@ -371,6 +371,10 @@ async function main() {
       for (let i = 0; i < 7; i++) {
         await rc.recreateChannel();
         if (rc.channel) rc.channel.state = 'errored';
+        // Production health checks wait until nextReconnectAt before retrying.
+        // This unit test skips wall-clock time, so make the next simulated
+        // health tick due instead of having the cooldown suppress the loop.
+        rc.nextReconnectAt = 0;
       }
     });
 

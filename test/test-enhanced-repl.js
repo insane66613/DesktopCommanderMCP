@@ -1,5 +1,5 @@
 import assert from 'assert';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { startProcess, readProcessOutput, forceTerminate, interactWithProcess } from '../dist/tools/improved-process-tools.js';
 
 /**
@@ -7,14 +7,18 @@ import { startProcess, readProcessOutput, forceTerminate, interactWithProcess } 
  * @returns {string} 'python3' or 'python'
  */
 function getPythonCommand() {
+  const probe = process.platform === 'win32'
+    ? (command) => execFileSync('where.exe', [command], { stdio: 'ignore' })
+    : (command) => execFileSync('sh', ['-c', `command -v ${command}`], { stdio: 'ignore' });
+
   try {
     // Prefer python3 if available
-    execSync('command -v python3', { stdio: 'ignore' });
+    probe('python3');
     return 'python3';
   } catch (e) {
     // Fallback to python
     try {
-      execSync('command -v python', { stdio: 'ignore' });
+      probe('python');
       return 'python';
     } catch (error) {
       throw new Error('Neither python3 nor python command is available in the PATH');
@@ -37,7 +41,9 @@ async function testEnhancedREPL() {
   const result = await startProcess({
     command: `${pythonCommand} -i`,
     timeout_ms: 10000,
-    shell: '/bin/bash'
+    // This test exercises REPL transport, not shell profile loading. cmd.exe is
+    // deterministic on Windows; bash remains the Unix test shell.
+    shell: process.platform === 'win32' ? 'cmd.exe' : '/bin/bash'
   });
   
   console.log('Result from start_process:', result);

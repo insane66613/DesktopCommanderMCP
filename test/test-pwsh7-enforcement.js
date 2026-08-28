@@ -15,6 +15,20 @@ const nestedPwshLegacy = 'pwsh.exe -NoProfile -Command "powershell.exe -NoProfil
 const literalCommitMessage = 'git commit -m "fix(windows): make PowerShell 7 shell policy durable"';
 const literalEcho = 'echo powershell.exe';
 
+async function waitForProcessOutput(pid, pattern, timeoutMs = 20000) {
+  const deadline = Date.now() + timeoutMs;
+  let output = '';
+  while (Date.now() < deadline) {
+    const page = terminalManager.readOutputPaginated(pid, 0, 1000);
+    if (page) {
+      output = page.lines.join('\n');
+      if (pattern.test(output) || page.isComplete) break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return output;
+}
+
 const legacyAllowed = await commandManager.validateCommand(legacy);
 const pwshAllowed = await commandManager.validateCommand(pwsh);
 const fullPwshAllowed = await commandManager.validateCommand(quotedFullPwsh);
@@ -73,7 +87,13 @@ if (process.platform === 'win32') {
       3000,
     );
     assert.notStrictEqual(fallbackExecution.pid, -1, 'config failure must still establish PS7');
-    assert.match(fallbackExecution.output, /7/, 'fallback execution must run under PowerShell 7');
+    // A login profile may emit startup text and take longer than the initial
+    // executeCommand observation window. Verify the eventual process output
+    // rather than assuming the version marker is the first line emitted.
+    const fallbackOutput = /7/.test(fallbackExecution.output)
+      ? fallbackExecution.output
+      : await waitForProcessOutput(fallbackExecution.pid, /7/);
+    assert.match(fallbackOutput, /7/, 'fallback execution must run under PowerShell 7');
   } finally {
     configManager.getConfig = originalGetConfig;
   }

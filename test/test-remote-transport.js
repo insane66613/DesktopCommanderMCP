@@ -462,7 +462,12 @@ await test('sustained recreate failure withdraws the transport capability', asyn
   rc.createLegacyChannel = () => { order.push('legacy'); };
   rc.channel = makeChannelState('errored');
 
-  for (let i = 0; i < 3; i++) await rc.recreateChannel();
+  for (let i = 0; i < 3; i++) {
+    await rc.recreateChannel();
+    // Production retries are driven only after nextReconnectAt. This test
+    // advances the simulated health-check clock without sleeping 10s+.
+    rc.nextReconnectAt = 0;
+  }
 
   // Also proves the recreate reached createChannel rather than dying earlier,
   // and that the legacy net is rebuilt first and on every attempt.
@@ -508,7 +513,10 @@ await test('a hanging capability withdrawal cannot pin the recreate guard', asyn
   const realWithTimeout = rc.withTimeout.bind(rc);
   rc.withTimeout = (op, _ms, name) => realWithTimeout(op, 20, name);
 
-  for (let i = 0; i < 3; i++) await rc.recreateChannel();
+  for (let i = 0; i < 3; i++) {
+    await rc.recreateChannel();
+    rc.nextReconnectAt = 0;
+  }
 
   assert(rc.isRecreatingChannel === false, 'the guard must be released even if the write hangs');
 });
