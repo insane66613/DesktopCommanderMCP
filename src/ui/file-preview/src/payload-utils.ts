@@ -36,6 +36,33 @@ export function buildRenderPayload(
     return { ...meta, content: text };
 }
 
+export interface ReplayHydrationDecision {
+    payload?: RenderPayload;
+    suppressToolResultRefresh: boolean;
+}
+
+/**
+ * A persisted payload belongs to a widget instance that has already rendered
+ * this historical tool call. Reuse it during host replay instead of issuing a
+ * second origin:'ui' read_file request when the replayed tool-result arrives.
+ *
+ * Path matching is deliberately strict: cached content from another tool card
+ * must never be substituted for the requested file.
+ */
+export function getReplayHydrationDecision(
+    cachedPayload: RenderPayload | undefined,
+    requestedPath: string | undefined,
+): ReplayHydrationDecision {
+    if (!cachedPayload || !requestedPath || cachedPayload.filePath !== requestedPath) {
+        return { suppressToolResultRefresh: false };
+    }
+
+    return {
+        payload: cachedPayload,
+        suppressToolResultRefresh: true,
+    };
+}
+
 export function extractToolText(value: unknown): string | undefined {
     if (!isObjectRecord(value)) {
         return undefined;

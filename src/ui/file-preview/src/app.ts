@@ -21,7 +21,14 @@ import {
 } from './markdown/conflict-dialog.js';
 import type { RenderPayload } from './model.js';
 import { attachPanelActions } from './panel-actions.js';
-import { extractRenderPayload, extractToolText, getFileExtensionForAnalytics, isLikelyUrl, isPreviewStructuredContent } from './payload-utils.js';
+import {
+    extractRenderPayload,
+    extractToolText,
+    getFileExtensionForAnalytics,
+    getReplayHydrationDecision,
+    isLikelyUrl,
+    isPreviewStructuredContent,
+} from './payload-utils.js';
 import type { HtmlPreviewMode } from './types.js';
 
 let isExpanded = false;
@@ -482,6 +489,10 @@ export function bootstrapApp(): void {
     const widgetState = createWidgetStateStorage<RenderPayload>(
         (value): value is RenderPayload => isPreviewStructuredContent(value) && typeof (value as any).content === 'string'
     );
+    // Capture persisted state before host callbacks can replay tool-input. On
+    // some hosts ontoolinput arrives before onConnected; waiting until
+    // onConnected turns every historical preview card into a fresh read_file.
+    const bootstrapCachedPayload = widgetState.read();
 
     const renderAndSync = (payload?: RenderPayload): void => {
         if (payload) {
@@ -514,7 +525,7 @@ export function bootstrapApp(): void {
         renderApp(container, currentPayload, currentHtmlMode, isExpanded);
     };
 
-    let pendingCachedPayload: RenderPayload | undefined;
+    let pendingCachedPayload: RenderPayload | undefined = bootstrapCachedPayload;
     let lastToolInputArgs: Record<string, unknown> | undefined;
     // The mutation tool that produced the current tool call, if any — stamped
     // onto the pulled payload so telemetry attributes to write_file/edit_block
@@ -577,23 +588,26 @@ export function bootstrapApp(): void {
     });
 
     app.ontoolinput = (params) => {
-        const requestedPath = typeof params.arguments?.path === 'string' ? params.arguments.path : undefined;
         const readArgs = pickReadArgs(params.arguments);
+        const requestedPath = typeof readArgs?.path === 'string'
+            ? readArgs.path
+            : typeof params.arguments?.path === 'string'
+                ? params.arguments.path
+                : undefined;
         lastMutationTool = inferMutationTool(params.arguments);
         if (readArgs) {
             // Retained so mutations (which pull at tool-result time) know what
             // to re-read — faithfully reproducing offset/length/sheet/range.
             lastToolInputArgs = readArgs;
         }
-        if (
-            !initialStateResolved
-            && pendingCachedPayload
-            && requestedPath
-            && pendingCachedPayload.filePath === requestedPath
-        ) {
-            const cached = pendingCachedPayload;
+        const replayDecision = getReplayHydrationDecision(pendingCachedPayload, requestedPath);
+        if (!initialStateResolved && replayDecision.payload) {
             pendingCachedPayload = undefined;
-            resolveInitialState(cached);
+            // This widget already rendered this historical tool call. Mark it as
+            // rendered so the host's replayed tool-result cannot trigger a
+            // redundant read_file immediately afterward.
+            renderedForCurrentInput = replayDecision.suppressToolResultRefresh;
+            resolveInitialState(replayDecision.payload);
             return;
         }
 
@@ -763,7 +777,9 @@ export function bootstrapApp(): void {
         },
         onConnected: () => {
             currentHostContext = app.getHostContext() as Record<string, unknown> | undefined;
-            pendingCachedPayload = widgetState.read() ?? undefined;
+            if (!initialStateResolved && !pendingCachedPayload) {
+                pendingCachedPayload = widgetState.read() ?? undefined;
+            }
         },
     }).catch(() => {
         renderStatusState(container, 'Failed to connect to host.');

@@ -304,6 +304,75 @@ async function testWidgetCallToolSingleFlight() {
   console.log('  PASS: identical calls share one in-flight request');
 }
 
+async function testPreviewReplayHydrationUsesPersistedPayloadWithoutRefresh() {
+  console.log('\n--- Test: replayed file preview hydrates from persisted payload without refresh ---');
+  const payloadUtils = await import('../dist/ui/file-preview/src/payload-utils.js');
+  assert.strictEqual(
+    typeof payloadUtils.getReplayHydrationDecision,
+    'function',
+    'preview hydration decision helper must exist',
+  );
+
+  const cached = {
+    filePath: 'C:\\tmp\\example.txt',
+    fileType: 'text',
+    content: 'historical snapshot',
+  };
+  const decision = payloadUtils.getReplayHydrationDecision(cached, 'C:\\tmp\\example.txt');
+
+  assert.strictEqual(decision.payload, cached, 'matching persisted payload must be reused');
+  assert.strictEqual(
+    decision.suppressToolResultRefresh,
+    true,
+    'historical replay must not trigger a second read_file when tool-result is replayed',
+  );
+
+  const mismatch = payloadUtils.getReplayHydrationDecision(cached, 'C:\\tmp\\other.txt');
+  assert.strictEqual(mismatch.payload, undefined, 'cache from a different path must not be reused');
+  assert.strictEqual(mismatch.suppressToolResultRefresh, false);
+
+  console.log('  PASS: replay hydration reuses matching cache and suppresses redundant refresh');
+}
+
+async function testUiPreviewReadCircuitBreakerRequiresQuietPeriod() {
+  console.log('\n--- Test: UI preview read burst trips circuit breaker until traffic is quiet ---');
+  const { UiPreviewReadCircuitBreaker, isUiPreviewReadCall } = await import('../dist/utils/ui-preview-read-guard.js');
+  assert.strictEqual(isUiPreviewReadCall('read_file', { origin: 'ui' }), true);
+  assert.strictEqual(isUiPreviewReadCall('read_file', { origin: 'llm' }), false);
+  assert.strictEqual(isUiPreviewReadCall('edit_block', { origin: 'ui' }), false);
+  let now = 0;
+  const guard = new UiPreviewReadCircuitBreaker({
+    burstLimit: 4,
+    burstWindowMs: 1250,
+    quietPeriodMs: 1500,
+    now: () => now,
+  });
+
+  for (const timestamp of [0, 250, 500, 750]) {
+    now = timestamp;
+    assert.strictEqual(guard.tryAcquire().allowed, true, `request at ${timestamp}ms should be allowed`);
+  }
+
+  now = 1000;
+  const tripped = guard.tryAcquire();
+  assert.strictEqual(tripped.allowed, false, 'fifth rapid UI read must trip the circuit breaker');
+  assert.strictEqual(tripped.retryAfterMs, 1500);
+
+  now = 1250;
+  assert.strictEqual(guard.tryAcquire().allowed, false, 'continued replay traffic must remain blocked');
+
+  now = 2600;
+  assert.strictEqual(
+    guard.tryAcquire().allowed,
+    false,
+    'each blocked replay request must extend the quiet period',
+  );
+
+  now = 4101;
+  assert.strictEqual(guard.tryAcquire().allowed, true, 'traffic resumes after a full quiet period');
+  console.log('  PASS: stale preview replay bursts are bounded and normal reads resume after quiet');
+}
+
 async function testUiEventDuplicateSuppression() {
   console.log('\n--- Test: duplicate UI events are suppressed briefly ---');
   const calls = [];
@@ -367,6 +436,8 @@ async function main() {
     { name: 'remote/heartbeat-idempotent', fn: testHeartbeatStartIsIdempotent },
     { name: 'remote/call-id-dedup', fn: testRealtimeCallIdDeduplication },
     { name: 'widget/single-flight', fn: testWidgetCallToolSingleFlight },
+    { name: 'widget/replay-hydration', fn: testPreviewReplayHydrationUsesPersistedPayloadWithoutRefresh },
+    { name: 'widget/ui-read-circuit-breaker', fn: testUiPreviewReadCircuitBreakerRequiresQuietPeriod },
     { name: 'ui-event/dedup', fn: testUiEventDuplicateSuppression },
     { name: 'remote/reconnect-backoff', fn: testReconnectUsesBoundedBackoff },
   ];

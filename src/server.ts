@@ -68,6 +68,7 @@ import { trackToolCall } from './utils/trackTools.js';
 import { usageTracker } from './utils/usageTracker.js';
 import { processDockerPrompt } from './utils/dockerPrompt.js';
 import { dedupRequest } from './utils/request-dedup.js';
+import { isUiPreviewReadCall, UiPreviewReadCircuitBreaker } from './utils/ui-preview-read-guard.js';
 import { toolHistory } from './utils/toolHistory.js';
 import { handleWelcomePageOnboarding, skipWelcomePageOnboarding } from './utils/welcome-onboarding.js';
 
@@ -82,6 +83,8 @@ import {
 } from './ui/contracts.js';
 import { listUiResources, readUiResource } from './ui/resources.js';
 import { shouldShowMcpUiPreviews } from './utils/mcp-ui-ab-test.js';
+
+const uiPreviewReadCircuitBreaker = new UiPreviewReadCircuitBreaker();
 
 // Store startup messages to send after initialization
 const deferredMessages: Array<{ level: string, message: string }> = [];
@@ -1419,7 +1422,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
     // UI interactions are tracked separately via mcp_ui_event.
     const isUiOriginCall = !!(args && typeof args === 'object' && (args as any).origin === 'ui');
     if (isUiOriginCall) {
-        return runInUiOriginCallContext(() => handleCallToolRequest(request));
+        return runInUiOriginCallContext(() => {
+            if (isUiPreviewReadCall(request.params.name, args)) {
+                const decision = uiPreviewReadCircuitBreaker.tryAcquire();
+                if (!decision.allowed) {
+                    if (decision.tripped) {
+                        logToStderr(
+                            'warning',
+                            `Suppressing file-preview replay burst; waiting ${decision.retryAfterMs}ms of quiet UI read traffic.`,
+                        );
+                    }
+                    return Promise.resolve({
+                        content: [{
+                            type: 'text',
+                            text: `Preview refresh suppressed during replay burst. Retry after ${decision.retryAfterMs ?? 0}ms.`,
+                        }],
+                    });
+                }
+            }
+            return handleCallToolRequest(request);
+        });
     }
     return handleCallToolRequest(request);
 });
