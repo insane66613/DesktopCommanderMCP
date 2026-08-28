@@ -290,6 +290,77 @@ class CommandManager {
         }
     }
 
+    private splitExecutableSegments(commandString: string): string[] {
+        const segments: string[] = [];
+        let current = '';
+        let quote: '"' | "'" | null = null;
+
+        for (let i = 0; i < commandString.length; i++) {
+            const char = commandString[i];
+            if ((char === '"' || char === "'") && quote === null) {
+                quote = char;
+                current += char;
+                continue;
+            }
+            if (char === quote) {
+                quote = null;
+                current += char;
+                continue;
+            }
+            if (quote === null) {
+                const separator = ['\r\n', '\n', '\r', '&&', '||', ';', '|', '&'].find((candidate) =>
+                    commandString.startsWith(candidate, i)
+                );
+                if (separator) {
+                    if (current.trim()) segments.push(current.trim());
+                    current = '';
+                    i += separator.length - 1;
+                    continue;
+                }
+            }
+            current += char;
+        }
+
+        if (current.trim()) segments.push(current.trim());
+        return segments;
+    }
+
+    getUnsafeInlineInterpreterReason(command: string): string | null {
+        for (const segment of this.splitExecutableSegments(command)) {
+            const withoutEnvVars = segment.replace(/\w+=\S+\s*/g, '').trim();
+            const normalized = withoutEnvVars.replace(/^&\s*/, '').trim();
+            const tokens = normalized.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+            const executableToken = tokens[0];
+            if (!executableToken) continue;
+
+            const executable = path.basename(executableToken.replace(/^['"]|['"]$/g, '')).toLowerCase();
+            const args = tokens.slice(1).map((token) => token.replace(/^['"]|['"]$/g, ''));
+
+            if (['python', 'python.exe', 'python3', 'python3.exe', 'py', 'py.exe'].includes(executable)) {
+                const inlineSwitch = args.find((arg) => arg === '-c' || /^-c.+/.test(arg));
+                if (inlineSwitch) return `inline interpreter invocation ${executable} ${inlineSwitch}`;
+            }
+
+            if (['node', 'node.exe'].includes(executable)) {
+                const inlineSwitch = args.find((arg) =>
+                    arg === '-e' || arg === '--eval' || arg.startsWith('--eval=') || /^-e.+/.test(arg) ||
+                    arg === '-p' || arg === '--print' || arg.startsWith('--print=') || /^-p.+/.test(arg)
+                );
+                if (inlineSwitch) return `inline interpreter invocation ${executable} ${inlineSwitch}`;
+            }
+
+            if (process.platform === 'win32' && ['cmd', 'cmd.exe', 'pwsh', 'pwsh.exe'].includes(executable)) {
+                const nested = this.extractNestedWindowsShellCommand(segment, executable);
+                if (nested) {
+                    const nestedReason = this.getUnsafeInlineInterpreterReason(nested);
+                    if (nestedReason) return nestedReason;
+                }
+            }
+        }
+
+        return null;
+    }
+
     async validateCommand(command: string): Promise<boolean> {
         try {
             // Windows PowerShell 5.1 is not an allowed execution dependency.

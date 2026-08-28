@@ -1072,6 +1072,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         Prefer these fields over hand-built cmd.exe start commands; cmd start treats the first quoted string as the window title.
                         In PowerShell, use Start-Process semantics instead of assuming cmd's start syntax.
 
+                        SHELL-SAFE SOURCE EXECUTION:
+                        Inline interpreter source is rejected before shell launch for python/python3/py -c and node -e/--eval/-p/--print.
+                        Use receive_file to write a standalone .py/.js script (Base64 preferred for shell-sensitive content), then start_process with the script path.
+                        Use edit_block for small source edits instead of transporting source code through nested shell quoting.
+
                         SAFETY FOR PROCESS-MANAGEMENT COMMANDS:
                         Use exclude_self: true as a safety hint when launching commands that find/kill processes by command line, port, or pattern.
                         This helps avoid commands that accidentally match the Desktop Commander-launched process tree.

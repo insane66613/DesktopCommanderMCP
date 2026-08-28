@@ -1,5 +1,9 @@
 import assert from 'assert';
+import { fileURLToPath } from 'url';
 import { startProcess, readProcessOutput, interactWithProcess } from '../dist/tools/improved-process-tools.js';
+
+const PROCESS_FIXTURE = fileURLToPath(new URL('./samples/process-output-fixture.js', import.meta.url));
+const TEST_SHELL = process.platform === 'win32' ? 'cmd.exe' : undefined;
 
 /**
  * Test suite for process output pagination features
@@ -23,7 +27,8 @@ async function testNewOutputBehavior() {
   
   // Start a long-running process that outputs incrementally
   const startResult = await startProcess({
-    command: 'node -e "let i=0; setInterval(() => { console.log(\'tick\' + i++); if(i>5) process.exit(0); }, 200)"',
+    command: `node "${PROCESS_FIXTURE}" ticks 200 6`,
+    shell: TEST_SHELL,
     timeout_ms: 500  // Return before completion
   });
   
@@ -62,7 +67,8 @@ async function testAbsoluteOffset() {
   console.log('\n📋 Test 2: Absolute position (positive offset)...');
   
   const startResult = await startProcess({
-    command: "node -e \"for(let i=0; i<10; i++) console.log('line' + i)\"",
+    command: `node "${PROCESS_FIXTURE}" lines 10 line`,
+    shell: TEST_SHELL,
     timeout_ms: 3000
   });
   
@@ -90,7 +96,8 @@ async function testTailBehavior() {
   console.log('\n📋 Test 3: Tail behavior (negative offset)...');
   
   const startResult = await startProcess({
-    command: "node -e \"for(let i=0; i<20; i++) console.log('line' + i)\"",
+    command: `node "${PROCESS_FIXTURE}" lines 20 line`,
+    shell: TEST_SHELL,
     timeout_ms: 3000
   });
   
@@ -118,7 +125,8 @@ async function testLengthLimit() {
   console.log('\n📋 Test 4: Length limit enforcement...');
   
   const startResult = await startProcess({
-    command: "node -e \"for(let i=0; i<100; i++) console.log('line' + i)\"",
+    command: `node "${PROCESS_FIXTURE}" lines 100 line`,
+    shell: TEST_SHELL,
     timeout_ms: 3000
   });
   
@@ -147,7 +155,8 @@ async function testRuntimeInfo() {
   console.log('\n📋 Test 5: Runtime info for completed processes...');
   
   const startResult = await startProcess({
-    command: "node -e \"setTimeout(() => console.log('done'), 500)\"",
+    command: `node "${PROCESS_FIXTURE}" delayed 500 done`,
+    shell: TEST_SHELL,
     timeout_ms: 200  // Return before completion
   });
   
@@ -216,7 +225,8 @@ async function testReReadOutput() {
   console.log('\n📋 Test 7: Re-reading output with absolute offset...');
   
   const startResult = await startProcess({
-    command: "node -e \"for(let i=0; i<5; i++) console.log('data' + i)\"",
+    command: `node "${PROCESS_FIXTURE}" lines 5 data`,
+    shell: TEST_SHELL,
     timeout_ms: 3000
   });
   

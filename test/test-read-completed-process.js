@@ -1,5 +1,9 @@
 import assert from 'assert';
+import { fileURLToPath } from 'url';
 import { startProcess, readProcessOutput } from '../dist/tools/improved-process-tools.js';
+
+const PROCESS_FIXTURE = fileURLToPath(new URL('./samples/process-output-fixture.js', import.meta.url));
+const TEST_SHELL = process.platform === 'win32' ? 'cmd.exe' : undefined;
 
 /**
  * Proper test for read_process_output on completed processes
@@ -14,7 +18,8 @@ async function testReadCompletedProcessOutput() {
   // Start echo command with delay, but timeout before echo happens
   const startResult = await startProcess({
     // Cross-platform delay + output using Node
-    command: 'node -e "setTimeout(() => console.log(\'SUCCESS MESSAGE\'), 1000)"',
+    command: `node "${PROCESS_FIXTURE}" delayed 1000 "SUCCESS MESSAGE"`,
+    shell: TEST_SHELL,
     timeout_ms: 500  // Returns before the output happens
   });
   
@@ -48,7 +53,8 @@ async function testImmediateCompletion() {
   console.log('Testing immediate completion...');
   
   const startResult = await startProcess({
-    command: 'node -e "console.log(\'IMMEDIATE OUTPUT\')"',
+    command: `node "${PROCESS_FIXTURE}" immediate "IMMEDIATE OUTPUT"`,
+    shell: TEST_SHELL,
     timeout_ms: 2000
   });
   
