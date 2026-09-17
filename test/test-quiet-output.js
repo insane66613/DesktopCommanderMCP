@@ -22,6 +22,7 @@ assert.equal(previewLines[0], 'line-1');
 assert.equal(previewLines.at(-1), 'line-60');
 
 assert.equal(CONFIG_FIELD_DEFINITIONS.processStartOutputLineLimit.valueType, 'number');
+assert.equal(CONFIG_FIELD_DEFINITIONS.mcpUiPreviewsEnabled.valueType, 'boolean');
 const resourceUris = listUiResources().map((resource) => resource.uri);
 assert.ok(resourceUris.includes('ui://desktop-commander/config-editor'));
 
@@ -36,5 +37,9 @@ assert.ok(!getConfigDefinition.includes('openai/outputTemplate'));
 const builtConfigTool = fs.readFileSync(path.join(repoRoot, 'dist', 'tools', 'config.js'), 'utf8');
 assert.match(builtConfigTool, /processStartOutputLineLimit/);
 assert.match(builtConfigTool, /between 5 and 500 lines/);
+
+const builtMcpUiDecision = fs.readFileSync(path.join(repoRoot, 'dist', 'utils', 'mcp-ui-ab-test.js'), 'utf8');
+assert.match(builtMcpUiDecision, /mcpUiPreviewsEnabled/);
+assert.match(builtMcpUiDecision, /userSetting === false/);
 
 console.log('quiet-output regression checks passed');

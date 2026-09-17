@@ -339,6 +339,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         - fileReadLineLimit (max lines for read_file, default 1000)
                         - fileWriteLineLimit (max lines per write_file call, default 50)
                         - processStartOutputLineLimit (initial command-preview lines, default 25)
+                        - mcpUiPreviewsEnabled (boolean user override for rich MCP preview widgets)
                         - telemetryEnabled (boolean for telemetry opt-in/out)
                         - currentClient (information about the currently connected MCP client)
                         - clientHistory (history of all clients that have connected)
@@ -369,6 +370,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         - fileReadLineLimit (number, max lines for read_file)
                         - fileWriteLineLimit (number, max lines per write_file call)
                         - processStartOutputLineLimit (number, initial start_process preview lines)
+                        - mcpUiPreviewsEnabled (boolean, show rich MCP preview widgets)
                         - telemetryEnabled (boolean)
                         
                         IMPORTANT: Setting allowedDirectories to an empty array ([]) allows full access 

@@ -43,6 +43,11 @@ export const CONFIG_FIELD_DEFINITIONS = {
     description: 'Maximum number of initial command-output lines shown by start_process. Full output remains available through read_process_output.',
     valueType: 'number',
   },
+  mcpUiPreviewsEnabled: {
+    label: 'MCP UI Previews',
+    description: 'Show rich MCP preview widgets for supported Desktop Commander tools. Turn this off to use normal tool results without preview widgets.',
+    valueType: 'boolean',
+  },
 } as const satisfies Record<string, ConfigFieldDefinition>;
 
 export type ConfigFieldKey = keyof typeof CONFIG_FIELD_DEFINITIONS;
