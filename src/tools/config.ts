@@ -242,21 +242,21 @@ export async function setConfigValue(args: unknown) {
           };
         }
 
-        if (valueToStore <= 0) {
+        if (parsed.data.key === 'processStartOutputLineLimit') {
+          if (valueToStore !== 0 && (valueToStore < 5 || valueToStore > 500)) {
+            return {
+              content: [{
+                type: "text",
+                text: 'Value for processStartOutputLineLimit must be zero (disabled) or between 5 and 500 lines.'
+              }],
+              isError: true
+            };
+          }
+        } else if (valueToStore <= 0) {
           return {
             content: [{
               type: "text",
               text: `Value for ${parsed.data.key} must be greater than zero.`
-            }],
-            isError: true
-          };
-        }
-
-        if (parsed.data.key === 'processStartOutputLineLimit' && (valueToStore < 5 || valueToStore > 500)) {
-          return {
-            content: [{
-              type: "text",
-              text: 'Value for processStartOutputLineLimit must be between 5 and 500 lines.'
             }],
             isError: true
           };

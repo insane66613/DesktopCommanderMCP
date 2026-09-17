@@ -12,6 +12,7 @@ const repoRoot = path.resolve(here, '..');
 
 assert.equal(compactInitialProcessOutput('', 25), '(no output)');
 assert.equal(compactInitialProcessOutput('one\ntwo', 25), 'one\ntwo');
+assert.equal(compactInitialProcessOutput('one\ntwo', 0), '', 'zero disables the initial process output preview');
 
 const sixtyLines = Array.from({ length: 60 }, (_, index) => `line-${index + 1}`).join('\n');
 const preview = compactInitialProcessOutput(sixtyLines, 25);
@@ -23,6 +24,7 @@ assert.equal(previewLines.at(-1), 'line-60');
 
 assert.equal(CONFIG_FIELD_DEFINITIONS.processStartOutputLineLimit.valueType, 'number');
 assert.equal(CONFIG_FIELD_DEFINITIONS.mcpUiPreviewsEnabled.valueType, 'boolean');
+assert.equal(CONFIG_FIELD_DEFINITIONS.filePreviewsEnabled.valueType, 'boolean');
 const resourceUris = listUiResources().map((resource) => resource.uri);
 assert.ok(resourceUris.includes('ui://desktop-commander/config-editor'));
 
@@ -36,7 +38,9 @@ assert.ok(!getConfigDefinition.includes('openai/outputTemplate'));
 
 const builtConfigTool = fs.readFileSync(path.join(repoRoot, 'dist', 'tools', 'config.js'), 'utf8');
 assert.match(builtConfigTool, /processStartOutputLineLimit/);
-assert.match(builtConfigTool, /between 5 and 500 lines/);
+assert.match(builtConfigTool, /zero \(disabled\) or between 5 and 500 lines/);
+assert.match(builtServer, /showFilePreviews/);
+assert.match(builtServer, /File preview UI is disabled by configuration/);
 
 const builtMcpUiDecision = fs.readFileSync(path.join(repoRoot, 'dist', 'utils', 'mcp-ui-ab-test.js'), 'utf8');
 assert.match(builtMcpUiDecision, /mcpUiPreviewsEnabled/);

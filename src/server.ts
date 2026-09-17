@@ -61,6 +61,7 @@ import {
     buildUnsupportedParamsWarning,
 } from './utils/unsupportedParams.js';
 import { getConfig, setConfigValue } from './tools/config.js';
+import { configManager } from './config-manager.js';
 import { getUsageStats } from './tools/usage.js';
 import { giveFeedbackToDesktopCommander } from './tools/feedback.js';
 import { getPrompts } from './tools/prompts.js';
@@ -85,6 +86,14 @@ import { listUiResources, readUiResource } from './ui/resources.js';
 import { shouldShowMcpUiPreviews } from './utils/mcp-ui-ab-test.js';
 
 const uiPreviewReadCircuitBreaker = new UiPreviewReadCircuitBreaker();
+const FILE_PREVIEW_UI_TOOL_NAMES = new Set([
+    'read_file',
+    'write_file',
+    'receive_file',
+    'export_project_file',
+    'list_directory',
+    'edit_block',
+]);
 
 // Store startup messages to send after initialization
 const deferredMessages: Array<{ level: string, message: string }> = [];
@@ -315,13 +324,12 @@ function shouldIncludeTool(toolName: string): boolean {
 server.setRequestHandler(ListToolsRequestSchema, async () => {
     try {
         const showMcpUiPreviews = await shouldShowMcpUiPreviews();
+        const config = await configManager.getConfig();
+        const showFilePreviews = showMcpUiPreviews && config.filePreviewsEnabled !== false;
 
-        // ponytail: cache the computed tool list per client identity. The
-        // only inputs that vary are showMcpUiPreviews (A/B test) and
-        // currentClient.name (shouldIncludeTool filter). Rebuild only when
-        // they change so repeated list_tools calls (reconnect / UI-init)
-        // don't rerun zodToJsonSchema calls on every invocation.
-        const clientKey = `${currentClient?.name ?? ''}:${showMcpUiPreviews}`;
+        // Cache inputs include both the global MCP UI decision and the dedicated
+        // file-preview override so live config changes invalidate tool metadata.
+        const clientKey = `${currentClient?.name ?? ''}:${showMcpUiPreviews}:${showFilePreviews}`;
         if (_toolListCache?.key === clientKey) {
             return { tools: _toolListCache.tools };
         }
@@ -338,7 +346,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         - allowedDirectories (paths the server can access)
                         - fileReadLineLimit (max lines for read_file, default 1000)
                         - fileWriteLineLimit (max lines per write_file call, default 50)
-                        - processStartOutputLineLimit (initial command-preview lines, default 25)
+                        - processStartOutputLineLimit (initial command-preview lines; 0 disables, default 25)
+                        - filePreviewsEnabled (boolean user override for interactive file previews)
                         - mcpUiPreviewsEnabled (boolean user override for rich MCP preview widgets)
                         - telemetryEnabled (boolean for telemetry opt-in/out)
                         - currentClient (information about the currently connected MCP client)
@@ -369,7 +378,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         - allowedDirectories (array of paths)
                         - fileReadLineLimit (number, max lines for read_file)
                         - fileWriteLineLimit (number, max lines per write_file call)
-                        - processStartOutputLineLimit (number, initial start_process preview lines)
+                        - processStartOutputLineLimit (number, initial start_process preview lines; 0 disables)
+                        - filePreviewsEnabled (boolean, show interactive file-preview UI)
                         - mcpUiPreviewsEnabled (boolean, show rich MCP preview widgets)
                         - telemetryEnabled (boolean)
                         
@@ -445,7 +455,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         ${PATH_GUIDANCE}
                         ${CMD_PREFIX_DESCRIPTION}`,
                 inputSchema: zodToJsonSchema(ReadFileArgsSchema),
-                _meta: buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true, showMcpUiPreviews),
+                _meta: buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true, showFilePreviews),
                 annotations: {
                     title: "Read File or URL",
                     readOnlyHint: true,
@@ -513,7 +523,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         ${PATH_GUIDANCE}
                         ${CMD_PREFIX_DESCRIPTION}`,
                 inputSchema: zodToJsonSchema(WriteFileArgsSchema),
-                _meta: buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true, showMcpUiPreviews),
+                _meta: buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true, showFilePreviews),
                 annotations: {
                     title: "Write File",
                     readOnlyHint: false,
@@ -565,7 +575,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                     },
                     additionalProperties: true,
                 },
-                _meta: buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true),
+                _meta: buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true, showFilePreviews),
                 annotations: {
                     title: "Receive File",
                     readOnlyHint: false,
@@ -628,7 +638,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                     },
                     additionalProperties: true,
                 },
-                _meta: buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true),
+                _meta: buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true, showFilePreviews),
                 annotations: {
                     title: "Export Project File",
                     readOnlyHint: true,
@@ -748,7 +758,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         ${PATH_GUIDANCE}
                         ${CMD_PREFIX_DESCRIPTION}`,
                 inputSchema: zodToJsonSchema(ListDirectoryArgsSchema),
-                _meta: buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true, showMcpUiPreviews),
+                _meta: buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true, showFilePreviews),
                 annotations: {
                     title: "List Directory Contents",
                     readOnlyHint: true,
@@ -1008,7 +1018,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         ${PATH_GUIDANCE}
                         ${CMD_PREFIX_DESCRIPTION}`,
                 inputSchema: zodToJsonSchema(EditBlockArgsSchema),
-                _meta: buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true, showMcpUiPreviews),
+                _meta: buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true, showFilePreviews),
                 annotations: {
                     title: "Edit Block",
                     readOnlyHint: false,
@@ -1424,6 +1434,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
     // UI interactions are tracked separately via mcp_ui_event.
     const isUiOriginCall = !!(args && typeof args === 'object' && (args as any).origin === 'ui');
     if (isUiOriginCall) {
+        const config = await configManager.getConfig();
+        if (config.filePreviewsEnabled === false && FILE_PREVIEW_UI_TOOL_NAMES.has(request.params.name)) {
+            return {
+                content: [{
+                    type: 'text',
+                    text: 'File preview UI is disabled by configuration.',
+                }],
+            };
+        }
         return runInUiOriginCallContext(() => {
             if (isUiPreviewReadCall(request.params.name, args)) {
                 const decision = uiPreviewReadCircuitBreaker.tryAcquire();
