@@ -195,8 +195,10 @@ async function runTests() {
     // not answer within 500 ms. The script refreshes it and keeps nothing.
     const session = standIn.login({ accessExpiresInSec: -60 });
     writeLoggedInHome(home, standIn, session);
-    const script = spawn(process.execPath, [OFFLINE_UPDATE, standIn.deviceId, standIn.url, standIn.anonKey, session.access_token, session.refresh_token], {
-      cwd: PROJECT_ROOT, env, stdio: 'ignore', windowsHide: true,
+    const script = spawn(process.execPath, [OFFLINE_UPDATE, standIn.deviceId, standIn.url, standIn.anonKey], {
+      cwd: PROJECT_ROOT,
+      env: { ...env, SUPABASE_ACCESS_TOKEN: session.access_token, SUPABASE_REFRESH_TOKEN: session.refresh_token },
+      stdio: 'ignore', windowsHide: true,
     });
     const code = await new Promise((resolve) => script.on('exit', resolve));
     assert.ok(standIn.rotations() === 1,

@@ -279,6 +279,8 @@ export async function startRemoteStandIn({ accessTtlSec = 3600, reuseIntervalSec
   });
   // Realtime is out of scope: refuse the websocket instead of leaving it hanging
   server.on('upgrade', (request, socket) => {
+    // Killing a test device can reset the refused upgrade while it is closing.
+    socket.on('error', () => socket.destroy());
     socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
   });
 

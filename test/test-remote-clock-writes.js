@@ -40,6 +40,7 @@ function makeClient(writes) {
     const builder = {
       select() { return builder; },
       eq() { return builder; },
+      abortSignal() { return builder; },
       maybeSingle() { return builder; },
       update(values) {
         update = values;

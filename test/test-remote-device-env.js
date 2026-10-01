@@ -12,6 +12,9 @@
  * command that prints a variable set only in the device's environment.
  */
 import assert from 'assert';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { DesktopCommanderIntegration } from '../dist/remote-device/desktop-commander-integration.js';
 import { runIfMain } from './helpers/run-if-main.js';
 
@@ -19,12 +22,16 @@ const MARKER = 'DC_TEST_DEVICE_ENV';
 
 export default async function runTests() {
   process.env[MARKER] = 'set-for-the-device';
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'dc-remote-env-'));
+  const fixture = path.join(dir, 'print-env.cjs');
+  writeFileSync(fixture, `console.log([process.env.${MARKER}, process.env.DC_REMOTE_DEVICE].join('/'));`);
   const integration = new DesktopCommanderIntegration();
   try {
     await integration.initialize();
     const result = await integration.callClientTool('start_process', {
-      command: `node -e "console.log([process.env.${MARKER}, process.env.DC_REMOTE_DEVICE].join('/'))"`,
+      command: `node "${fixture}"`,
       timeout_ms: 10000,
+      shell: process.platform === 'win32' ? 'cmd.exe' : '/bin/sh',
     });
     const text = result.content?.[0]?.text ?? '';
     assert(text.includes('set-for-the-device/true'),
@@ -33,6 +40,7 @@ export default async function runTests() {
   } finally {
     await integration.shutdown();
     delete process.env[MARKER];
+    rmSync(dir, { recursive: true, force: true });
   }
   return true;
 }
