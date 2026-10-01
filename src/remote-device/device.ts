@@ -10,6 +10,7 @@ import path from 'path';
 import lockfile from 'proper-lockfile';
 import { captureRemote } from '../utils/capture.js';
 import { writeFileAtomic } from '../utils/atomic-write.js';
+import { exitProcess } from '../utils/exit-process.js';
 
 export interface MCPDeviceOptions {
     persistSession?: boolean;
@@ -130,7 +131,7 @@ export class MCPDevice {
             if (this.isShuttingDown) {
                 console.log(`\n${signal} received, but already shutting down...`);
                 // Force exit if we get multiple signals
-                process.exit(1);
+                exitProcess(1);
                 return;
             }
 
@@ -139,17 +140,17 @@ export class MCPDevice {
             // Force exit after 5 seconds if graceful shutdown hangs
             const forceExit = setTimeout(() => {
                 console.error('\n⚠️ Graceful shutdown timed out, forcing exit...');
-                process.exit(1);
+                exitProcess(1);
             }, 5000);
 
             try {
                 await this.shutdown();
                 clearTimeout(forceExit);
-                process.exit(0);
+                exitProcess(0);
             } catch (error) {
                 console.error('Error during shutdown:', error);
                 await captureRemote('remote_device_shutdown_handler_error', { error });
-                process.exit(1);
+                exitProcess(1);
             }
         };
 
@@ -162,7 +163,7 @@ export class MCPDevice {
             handleShutdown('SIGINT').catch((error) => {
                 console.error('Fatal error during shutdown:', error);
                 captureRemote('remote_device_shutdown_handler_error', { error, signal: 'SIGINT' }).catch(() => { });
-                process.exit(1);
+                exitProcess(1);
             });
         });
 
@@ -170,7 +171,7 @@ export class MCPDevice {
             handleShutdown('SIGTERM').catch((error) => {
                 console.error('Fatal error during shutdown:', error);
                 captureRemote('remote_device_shutdown_handler_error', { error, signal: 'SIGTERM' }).catch(() => { });
-                process.exit(1);
+                exitProcess(1);
             });
         });
     }
@@ -331,7 +332,7 @@ export class MCPDevice {
             }
             await captureRemote('remote_device_startup_failed', { error });
             await this.shutdown();
-            process.exit(1);
+            exitProcess(1);
         }
     }
 
@@ -644,7 +645,7 @@ export class MCPDevice {
                 setTimeout(async () => {
                     console.log('🛑 Remote shutdown requested. Exiting...');
                     await this.shutdown();
-                    process.exit(0);
+                    exitProcess(0);
                 }, 1000);
             } else {
                 // Execute other tools using desktop integration
