@@ -31,8 +31,8 @@ interface Experiment {
   variants: WeightedVariant[];
 }
 
-// Cache for variant assignments (loaded once per session)
-const variantCache: Record<string, string> = {};
+// Experiment names come from remote JSON, including names such as __proto__.
+const variantCache: Record<string, string> = Object.create(null);
 
 /**
  * Get experiments config from feature flags.
@@ -43,7 +43,7 @@ const variantCache: Record<string, string> = {};
  */
 function getExperiments(): Record<string, Experiment> {
   const raw = featureFlagManager.get('experiments', {});
-  const experiments: Record<string, Experiment> = {};
+  const experiments: Record<string, Experiment> = Object.create(null);
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return experiments;
 
   for (const [name, experiment] of Object.entries<any>(raw)) {
