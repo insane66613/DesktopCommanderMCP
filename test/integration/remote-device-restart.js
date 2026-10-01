@@ -201,6 +201,7 @@ async function runTests() {
       stdio: 'ignore', windowsHide: true,
     });
     const code = await new Promise((resolve) => script.on('exit', resolve));
+    assert.equal(code, 0, 'the offline script should finish its update and exit cleanly');
     assert.ok(standIn.rotations() === 1,
       `setup: the shutdown script was meant to refresh the saved token (exit ${code}; ${standIn.describe()})`);
 
