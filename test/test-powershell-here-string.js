@@ -87,4 +87,3 @@ assert.strictEqual(commandManager.getUnsafeInlineInterpreterReason(inertInline),
     'Inline guard must skip inert here-string source containing apostrophes');
 assert.match(commandManager.getUnsafeInlineInterpreterReason(inertInline + '\nnode -e "1"'), /inline interpreter/i,
     'Inline guard must still inspect the statement following the here-string');
-
