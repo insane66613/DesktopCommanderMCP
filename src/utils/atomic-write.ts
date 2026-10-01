@@ -33,9 +33,12 @@ async function writeThroughTempFile(filePath: string, data: string | Uint8Array,
     try {
       await handle.writeFile(data, { encoding: options.encoding ?? 'utf8' });
       await handle.sync();
-    } finally {
-      await handle.close();
+    } catch (error) {
+      // Closing is still attempted, but must not hide the write/flush failure.
+      await handle.close().catch(() => {});
+      throw error;
     }
+    await handle.close();
     await renameWithRetry(tempPath, filePath);
   } finally {
     // After a successful rename the temp file is gone (ENOENT); after a failed

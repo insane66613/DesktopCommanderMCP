@@ -69,6 +69,33 @@ async function testFlushedBeforeRename() {
 
 export default async function runTests() {
   await testFlushedBeforeRename();
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'dc-atomic-errors-')));
+  const target = path.join(dir, 'config.json');
+  const originalOpen = fsp.open;
+  try {
+    for (const failure of ['writeFile', 'sync', 'close']) {
+      fs.writeFileSync(target, 'previous content');
+      const primary = new Error(`primary ${failure} failure`);
+      const closeError = new Error('secondary close failure');
+      let closed = false;
+      fsp.open = async (...args) => {
+        const handle = await originalOpen(...args);
+        const close = handle.close.bind(handle);
+        if (failure !== 'close') handle[failure] = async () => { throw primary; };
+        handle.close = async () => { await close(); closed = true; throw closeError; };
+        return handle;
+      };
+      await assert.rejects(writeFileAtomic(target, 'new content'),
+        (error) => error === (failure === 'close' ? closeError : primary));
+      assert.ok(closed, 'the handle must still be closed');
+      assert.equal(fs.readFileSync(target, 'utf8'), 'previous content');
+      assert.equal(fs.existsSync(`${target}.${process.pid}.tmp`), false, 'failed temp writes are removed');
+    }
+    console.log('✓ write/flush failures retain their cause when close also fails; close-only failure is reported');
+  } finally {
+    fsp.open = originalOpen;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
   return true;
 }
 
