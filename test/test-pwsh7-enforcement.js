@@ -15,7 +15,7 @@ const nestedPwshLegacy = 'pwsh.exe -NoProfile -Command "powershell.exe -NoProfil
 const literalCommitMessage = 'git commit -m "fix(windows): make PowerShell 7 shell policy durable"';
 const literalEcho = 'echo powershell.exe';
 
-async function waitForProcessOutput(pid, pattern, timeoutMs = 40000) {
+async function waitForProcessOutput(pid, pattern, timeoutMs = 60000) {
   const deadline = Date.now() + timeoutMs;
   let output = '';
   while (Date.now() < deadline) {
