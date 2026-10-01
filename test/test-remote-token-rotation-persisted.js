@@ -35,7 +35,8 @@
  *   npm run build && node test/test-remote-token-rotation-persisted.js
  */
 import assert from 'node:assert';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import fsPromises from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { MCPDevice } from '../dist/remote-device/device.js';
@@ -150,6 +151,7 @@ const tokenIs = (want) => (config) => config?.session?.refresh_token === want;
 let failures = 0;
 async function test(name, fn) {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'dc-661-'));
+    const shutdownListeners = ['SIGINT', 'SIGTERM'].map(signal => [signal, new Set(process.listeners(signal))]);
     try {
         await fn(path.join(dir, 'device.json'));
         console.log(`✅ PASS  ${name}`);
@@ -157,6 +159,9 @@ async function test(name, fn) {
         failures++;
         console.error(`🔴 FAIL  ${name}\n     ${error.message}`);
     } finally {
+        for (const [signal, original] of shutdownListeners) {
+            for (const listener of process.listeners(signal)) if (!original.has(listener)) process.removeListener(signal, listener);
+        }
         rmSync(dir, { recursive: true, force: true });
     }
 }
@@ -279,6 +284,38 @@ await test('a save with no session available does not wipe the token on disk', a
         'a save that finds no session writes session:null, replacing a usable token with nothing. ' +
         'Clearing is what clearPersistedConfig() is for'
     );
+});
+
+await test('a stale revocation lookup cannot remove or overwrite a newer login', async (configPath) => {
+    const { device } = await makeDevice(configPath);
+    const replacement = JSON.stringify({ deviceId: 'new-device', session: { access_token: 'new-access', refresh_token: 'new-refresh' } });
+    writeFileSync(configPath, replacement);
+    await device.clearPersistedConfig();
+    assert.strictEqual(readFileSync(configPath, 'utf8'), replacement, 'revocation must preserve the newer identity');
+    await device.savePersistedConfig({ access_token: 'old-access', refresh_token: 'old-refresh' });
+    assert.strictEqual(readFileSync(configPath, 'utf8'), replacement, 'the old run must not save over the replacement later');
+});
+
+await test('a failed config removal preserves its snapshot; a successful one permits fresh authorization', async (configPath) => {
+    const { device } = await makeDevice(configPath);
+    const snapshot = device.configTextOnDisk;
+    const remove = fsPromises.rm;
+    fsPromises.rm = async (file, ...options) => {
+        if (file === configPath) throw Object.assign(new Error('removal denied'), { code: 'EACCES' });
+        return remove(file, ...options);
+    };
+    try {
+        await device.clearPersistedConfig();
+        assert.strictEqual(device.configTextOnDisk, snapshot, 'failed removal must retain the comparison snapshot');
+    } finally {
+        fsPromises.rm = remove;
+    }
+    await device.clearPersistedConfig();
+    assert.strictEqual(existsSync(configPath), false);
+    assert.strictEqual(device.configTextOnDisk, undefined);
+    device.deviceId = 'fresh-device';
+    await device.savePersistedConfig({ access_token: 'fresh-access', refresh_token: 'fresh-refresh' });
+    assert.strictEqual(readPersisted(configPath).deviceId, 'fresh-device');
 });
 
 console.log(`\n${failures ? '🔴' : '✅'} remote token rotation persistence: ${failures} failing test(s).`);

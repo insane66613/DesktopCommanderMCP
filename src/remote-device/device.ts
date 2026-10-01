@@ -413,11 +413,24 @@ export class MCPDevice {
     }
 
     async clearPersistedConfig() {
-        // Removed by this run itself, not by a logout
-        this.configTextOnDisk = undefined;
         try {
-            await fs.rm(this.configPath, { force: true });
-            console.debug('[DEBUG] Cleared stale persisted config:', this.configPath);
+            const release = await lockRemoteDeviceConfig(this.configPath);
+            try {
+                // A revoked-device lookup may finish after another run logged in.
+                // Only remove the credentials this run loaded or last saved.
+                if (await this.readConfigText() !== this.configTextOnDisk) {
+                    this.loggedOutLocally = true;
+                    console.debug('[DEBUG] Preserving credentials replaced during the device lookup');
+                    return;
+                }
+                await fs.rm(this.configPath, { force: true });
+                // Removed by this run itself, not by a logout. Reset only after
+                // a successful removal, so failure cannot enable stale saves.
+                this.configTextOnDisk = undefined;
+                console.debug('[DEBUG] Cleared stale persisted config:', this.configPath);
+            } finally {
+                await release().catch((error) => console.error(' - ❌ Failed to release the device.json lock:', error.message));
+            }
         } catch (error: any) {
             console.warn('⚠️ Failed to clear stale config:', error.message);
             await captureRemote('remote_device_config_clear_error', { error });
