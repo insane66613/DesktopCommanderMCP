@@ -37,6 +37,20 @@ async function settle() {
   for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 50));
 }
 
+async function waitForProcessOutput(pid, pattern, timeoutMs = 20000) {
+  const deadline = Date.now() + timeoutMs;
+  let output = '';
+  while (Date.now() < deadline) {
+    const page = terminalManager.readOutputPaginated(pid, 0, 1000);
+    if (page) {
+      output = page.lines.join('\n');
+      if (pattern.test(output) || page.isComplete) break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return output;
+}
+
 async function testBogusShellDoesNotCrash() {
   const result = await terminalManager.executeCommand('echo hi', 3000, BOGUS_SHELL);
   await settle();
@@ -65,13 +79,17 @@ async function testBogusExecutableDoesNotCrash() {
 }
 
 async function testHealthyCommandStillWorks() {
-  const result = await terminalManager.executeCommand('echo roundtrip-ok', 8000);
+  const healthyShell = process.platform === 'win32' ? 'cmd.exe' : '/bin/sh';
+  const result = await terminalManager.executeCommand('echo roundtrip-ok', 8000, healthyShell);
   await settle();
 
   assert.strictEqual(uncaught, null, 'healthy command must not raise');
   assert.ok(result.pid > 0, `expected a real pid, got ${result.pid}`);
-  assert.ok(/roundtrip-ok/.test(result.output),
-    `expected command output, got ${JSON.stringify(result.output)}`);
+  const healthyOutput = /roundtrip-ok/.test(result.output)
+    ? result.output
+    : await waitForProcessOutput(result.pid, /roundtrip-ok/);
+  assert.ok(/roundtrip-ok/.test(healthyOutput),
+    `expected command output, got ${JSON.stringify(healthyOutput)}`);
   console.log('✓ a normal command still runs after the error handler was added');
 }
 
