@@ -11,6 +11,7 @@ import { getFileHandler, TextFileHandler } from '../utils/files/index.js';
 import type { ReadOptions, FileResult, PdfPageItem } from '../utils/files/base.js';
 import { isPdfFile } from "./mime-types.js";
 import { parsePdfToMarkdown, editPdf, PdfOperations, PdfMetadata, parseMarkdownToPdf } from './pdf/index.js';
+import { resolveRender, type IgnoredRenderOption } from './pdf/markdown.js';
 import { isBinaryFile } from 'isbinaryfile';
 import { renameWithRetry } from '../utils/rename.js';
 
@@ -1007,7 +1008,7 @@ export async function writePdf(
     content: string | PdfOperations[],
     outputPath?: string,
     options: any = {}
-): Promise<void> {
+): Promise<IgnoredRenderOption[]> {
     const validPath = await validatePath(filePath);
     const fileExtension = getFileExtension(validPath);
 
@@ -1023,6 +1024,7 @@ export async function writePdf(
         // Use outputPath if provided, otherwise overwrite input file
         const targetPath = outputPath ? await validatePath(outputPath) : validPath;
         await fs.writeFile(targetPath, pdfBuffer);
+        return resolveRender(content, options).ignoredOptions;
     } else if (Array.isArray(content)) {
 
         // Use outputPath if provided, otherwise overwrite input file
@@ -1053,6 +1055,7 @@ export async function writePdf(
 
         // Write the modified PDF to the output path
         await fs.writeFile(targetPath, modifiedPdfBuffer);
+        return [];
     } else {
         throw new Error('Invalid content type for writePdf. Expected string (markdown) or array of operations.');
     }
