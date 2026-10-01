@@ -61,6 +61,7 @@ import {
     buildUnsupportedParamsWarning,
 } from './utils/unsupportedParams.js';
 import { getConfig, setConfigValue } from './tools/config.js';
+import { configManager } from './config-manager.js';
 import { getUsageStats } from './tools/usage.js';
 import { giveFeedbackToDesktopCommander } from './tools/feedback.js';
 import { getPrompts } from './tools/prompts.js';
@@ -85,6 +86,14 @@ import { listUiResources, readUiResource } from './ui/resources.js';
 import { shouldShowMcpUiPreviews } from './utils/mcp-ui-ab-test.js';
 
 const uiPreviewReadCircuitBreaker = new UiPreviewReadCircuitBreaker();
+const FILE_PREVIEW_UI_TOOL_NAMES = new Set([
+    'read_file',
+    'write_file',
+    'receive_file',
+    'export_project_file',
+    'list_directory',
+    'edit_block',
+]);
 
 // Store startup messages to send after initialization
 const deferredMessages: Array<{ level: string, message: string }> = [];
@@ -315,13 +324,12 @@ function shouldIncludeTool(toolName: string): boolean {
 server.setRequestHandler(ListToolsRequestSchema, async () => {
     try {
         const showMcpUiPreviews = await shouldShowMcpUiPreviews();
+        const config = await configManager.getConfig();
+        const showFilePreviews = showMcpUiPreviews && config.filePreviewsEnabled !== false;
 
-        // ponytail: cache the computed tool list per client identity. The
-        // only inputs that vary are showMcpUiPreviews (A/B test) and
-        // currentClient.name (shouldIncludeTool filter). Rebuild only when
-        // they change so repeated list_tools calls (reconnect / UI-init)
-        // don't rerun zodToJsonSchema calls on every invocation.
-        const clientKey = `${currentClient?.name ?? ''}:${showMcpUiPreviews}`;
+        // Cache inputs include both the global MCP UI decision and the dedicated
+        // file-preview override so live config changes invalidate tool metadata.
+        const clientKey = `${currentClient?.name ?? ''}:${showMcpUiPreviews}:${showFilePreviews}`;
         if (_toolListCache?.key === clientKey) {
             return { tools: _toolListCache.tools };
         }
@@ -338,7 +346,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         - allowedDirectories (paths the server can access)
                         - fileReadLineLimit (max lines for read_file, default 1000)
                         - fileWriteLineLimit (max lines per write_file call, default 50)
-                        - processStartOutputLineLimit (initial command-preview lines, default 25)
+                        - processStartOutputLineLimit (initial command-preview lines; 0 disables, default 25)
+                        - filePreviewsEnabled (boolean user override for interactive file previews)
+                        - mcpUiPreviewsEnabled (boolean user override for rich MCP preview widgets)
                         - telemetryEnabled (boolean for telemetry opt-in/out)
                         - currentClient (information about the currently connected MCP client)
                         - clientHistory (history of all clients that have connected)
@@ -368,7 +378,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         - allowedDirectories (array of paths)
                         - fileReadLineLimit (number, max lines for read_file)
                         - fileWriteLineLimit (number, max lines per write_file call)
-                        - processStartOutputLineLimit (number, initial start_process preview lines)
+                        - processStartOutputLineLimit (number, initial start_process preview lines; 0 disables)
+                        - filePreviewsEnabled (boolean, show interactive file-preview UI)
+                        - mcpUiPreviewsEnabled (boolean, show rich MCP preview widgets)
                         - telemetryEnabled (boolean)
                         
                         IMPORTANT: Setting allowedDirectories to an empty array ([]) allows full access 
@@ -391,7 +403,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         Read contents from files and URLs.
                         Read PDF files and extract content as markdown and images.
                         
-                        Prefer this over 'execute_command' with cat/type for viewing files.
+                        Suitable for reading authorized local files directly without starting a shell command.
                         
                         Supports partial file reading with:
                         - 'offset' (start line, default: 0)
@@ -443,7 +455,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         ${PATH_GUIDANCE}
                         ${CMD_PREFIX_DESCRIPTION}`,
                 inputSchema: zodToJsonSchema(ReadFileArgsSchema),
-                _meta: buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true, showMcpUiPreviews),
+                _meta: buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true, showFilePreviews),
                 annotations: {
                     title: "Read File or URL",
                     readOnlyHint: true,
@@ -511,7 +523,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         ${PATH_GUIDANCE}
                         ${CMD_PREFIX_DESCRIPTION}`,
                 inputSchema: zodToJsonSchema(WriteFileArgsSchema),
-                _meta: buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true, showMcpUiPreviews),
+                _meta: buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true, showFilePreviews),
                 annotations: {
                     title: "Write File",
                     readOnlyHint: false,
@@ -563,7 +575,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                     },
                     additionalProperties: true,
                 },
-                _meta: buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true),
+                _meta: buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true, showFilePreviews),
                 annotations: {
                     title: "Receive File",
                     readOnlyHint: false,
@@ -626,7 +638,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                     },
                     additionalProperties: true,
                 },
-                _meta: buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true),
+                _meta: buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true, showFilePreviews),
                 annotations: {
                     title: "Export Project File",
                     readOnlyHint: true,
@@ -746,7 +758,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         ${PATH_GUIDANCE}
                         ${CMD_PREFIX_DESCRIPTION}`,
                 inputSchema: zodToJsonSchema(ListDirectoryArgsSchema),
-                _meta: buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true, showMcpUiPreviews),
+                _meta: buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true, showFilePreviews),
                 annotations: {
                     title: "List Directory Contents",
                     readOnlyHint: true,
@@ -1006,7 +1018,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         ${PATH_GUIDANCE}
                         ${CMD_PREFIX_DESCRIPTION}`,
                 inputSchema: zodToJsonSchema(EditBlockArgsSchema),
-                _meta: buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true, showMcpUiPreviews),
+                _meta: buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true, showFilePreviews),
                 annotations: {
                     title: "Edit Block",
                     readOnlyHint: false,
@@ -1019,47 +1031,27 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             {
                 name: "start_process",
                 description: `
-                        Start a new terminal process with intelligent state detection.
+                        Start a terminal process on the authorized device with intelligent state detection.
                         
-                        PRIMARY TOOL FOR FILE ANALYSIS AND DATA PROCESSING
-                        This is the ONLY correct tool for analyzing local files (CSV, JSON, logs, etc.).
-                        The analysis tool CANNOT access local files and WILL FAIL - always use processes for file-based work.
-                        
-                        CRITICAL RULE: For ANY local file work, ALWAYS use this tool + interact_with_process, NEVER use analysis/REPL tool.
+                        Suitable for shell commands, interactive REPL sessions, data-processing scripts,
+                        programmatic file analysis, and other long-running terminal work.
                         
                         ${OS_GUIDANCE}
                         
-                        REQUIRED WORKFLOW FOR LOCAL FILES:
-                        1. start_process("python3 -i") - Start Python REPL for data analysis
-                        2. interact_with_process(pid, "import pandas as pd, numpy as np")
-                        3. interact_with_process(pid, "df = pd.read_csv('/absolute/path/file.csv')")
-                        4. interact_with_process(pid, "print(df.describe())")
-                        5. Continue analysis with pandas, matplotlib, seaborn, etc.
-                        
-                        COMMON FILE ANALYSIS PATTERNS:
-                        • start_process("python3 -i") → Python REPL for data analysis (RECOMMENDED)
-                        • start_process("node -i") → Node.js REPL for JSON processing
-                        • start_process("node:local") → Node.js on MCP server (stateless, ES imports, all code in one call)
-                        • start_process("cut -d',' -f1 file.csv | sort | uniq -c") → Quick CSV analysis
-                        • start_process("wc -l /path/file.csv") → Line counting
-                        • start_process("head -10 /path/file.csv") → File preview
-                        
-                        BINARY FILE SUPPORT:
-                        For PDF, Excel, Word, archives, databases, and other binary formats, use process tools with appropriate libraries or command-line utilities.
-                        
-                        INTERACTIVE PROCESSES FOR DATA ANALYSIS:
-                        For code/calculations, use in this priority order:
-                        1. start_process("python3 -i") - Python REPL (preferred)
-                        2. start_process("node -i") - Node.js REPL (when Python unavailable)
-                        3. start_process("node:local") - Node.js fallback (when node -i fails)
-                        4. Use interact_with_process() to send commands
-                        5. Use read_process_output() to get responses
-                        When Python is unavailable, prefer Node.js over shell for calculations.
-                        Node.js: Always use ES import syntax (import x from 'y'), not require().
+                        Examples:
+                        • start_process("python3 -i") → Start an interactive Python REPL
+                        • start_process("node -i") → Start an interactive Node.js REPL
+                        • start_process("node:local") → Run stateless Node.js code on the MCP server
+                        • start_process("wc -l /path/file.csv") → Run a one-shot shell command
+
+                        Interactive process sessions support follow-up input after they are started.
+                        Long-running process sessions expose newly available output while they remain active.
+                        Binary files can be processed with appropriate command-line tools or libraries available
+                        in the selected process environment.
 
                         SMART DETECTION:
                         - Detects REPL prompts (>>>, >, $, etc.)
-                        - Identifies when process is waiting for input
+                        - Identifies when a process is waiting for input
                         - Recognizes process completion vs timeout
                         - Early exit prevents unnecessary waiting
                         
@@ -1091,10 +1083,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         - Total duration and time to first output
                         - Complete timeline of all output events with timestamps
                         - Which detection mechanism triggered early exit
-                        Use this to identify missed optimization opportunities and improve detection patterns.
-
-                        ALWAYS USE FOR: Local file analysis, CSV processing, data exploration, system commands
-                        NEVER USE ANALYSIS TOOL FOR: Local file access (analysis tool is browser-only and WILL FAIL)
 
                         ${PATH_GUIDANCE}
                         ${CMD_PREFIX_DESCRIPTION}`,
@@ -1150,60 +1138,36 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             {
                 name: "interact_with_process",
                 description: `
-                        Send input to a running process and automatically receive the response.
+                        Send input to an existing terminal or REPL process and return newly available output.
                         
-                        CRITICAL: THIS IS THE PRIMARY TOOL FOR ALL LOCAL FILE ANALYSIS
-                        For ANY local file analysis (CSV, JSON, data processing), ALWAYS use this instead of the analysis tool.
-                        The analysis tool CANNOT access local files and WILL FAIL - use processes for ALL file-based work.
+                        Useful for interactive shells, Python/Node/R/Julia REPLs, database consoles,
+                        and long-running commands started with start_process().
                         
-                        FILE ANALYSIS PRIORITY ORDER (MANDATORY):
-                        1. ALWAYS FIRST: Use this tool (start_process + interact_with_process) for local data analysis
-                        2. ALTERNATIVE: Use command-line tools (cut, awk, grep) for quick processing  
-                        3. NEVER EVER: Use analysis tool for local file access (IT WILL FAIL)
-                        
-                        REQUIRED INTERACTIVE WORKFLOW FOR FILE ANALYSIS:
-                        1. Start REPL: start_process("python3 -i")
-                        2. Load libraries: interact_with_process(pid, "import pandas as pd, numpy as np")
-                        3. Read file: interact_with_process(pid, "df = pd.read_csv('/absolute/path/file.csv')")
-                        4. Analyze: interact_with_process(pid, "print(df.describe())")
-                        5. Continue: interact_with_process(pid, "df.groupby('column').size()")
-                        
-                        BINARY FILE PROCESSING WORKFLOWS:
-                        Use appropriate Python libraries (PyPDF2, pandas, docx2txt, etc.) or command-line tools for binary file analysis.
+                        Examples:
+                        - Interactive Python REPL sessions can be started with \`python3 -i\`.
+                        - Existing interactive sessions accept additional input such as imports or analysis commands.
+                        - Interactive sessions can return newly available output while they remain active.
                         
                         SMART DETECTION:
-                        - Automatically waits for REPL prompt (>>>, >, etc.)
+                        - Automatically waits for a recognized prompt when requested
                         - Detects errors and completion states
-                        - Early exit prevents timeout delays
-                        - Clean output formatting (removes prompts)
-                        
-                        SUPPORTED REPLs:
-                        - Python: python3 -i (RECOMMENDED for data analysis)
-                        - Node.js: node -i
-                        - R: R
-                        - Julia: julia
-                        - Shell: bash, zsh
-                        - Database: mysql, postgres
+                        - Early exit prevents unnecessary waiting
+                        - Cleans common REPL prompt text from returned output
                         
                         PARAMETERS:
-                        - pid: Process ID from start_process
-                        - input: Code/command to execute
-                        - timeout_ms: Max wait (default: 8000ms)
-                        - wait_for_prompt: Auto-wait for response (default: true)
-                        - verbose_timing: Enable detailed performance telemetry (default: false)
+                        - pid: Process ID returned by start_process
+                        - input: Text or command to send to the process
+                        - timeout_ms: Maximum wait time (default: 8000ms)
+                        - wait_for_prompt: Whether to wait for a prompt before returning (default: true)
+                        - verbose_timing: Include detailed timing telemetry (default: false)
 
                         Returns execution result with status indicators.
 
                         PERFORMANCE DEBUGGING (verbose_timing parameter):
-                        Set verbose_timing: true to get detailed timing information including:
-                        - Exit reason (early_exit_quick_pattern, early_exit_periodic_check, process_finished, timeout, no_wait)
+                        When enabled, detailed timing includes:
+                        - Exit reason
                         - Total duration and time to first output
-                        - Complete timeline of all output events with timestamps
-                        - Which detection mechanism triggered early exit
-                        Use this to identify slow interactions and optimize detection patterns.
-
-                        ALWAYS USE FOR: CSV analysis, JSON processing, file statistics, data visualization prep, ANY local file work
-                        NEVER USE ANALYSIS TOOL FOR: Local file access (it cannot read files from disk and WILL FAIL)
+                        - Timeline of output events
 
                         ${CMD_PREFIX_DESCRIPTION}`,
                 inputSchema: zodToJsonSchema(InteractWithProcessArgsSchema),
@@ -1297,16 +1261,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             {
                 name: "get_recent_tool_calls",
                 description: `
-                        Get recent tool call history with their arguments and outputs.
-                        Returns chronological list of tool calls made during this session.
+                        Get recent local tool call history with arguments and outputs.
+                        Returns a chronological list of recent calls loaded from the local history file.
                         
                         Useful for:
                         - Onboarding new chats about work already done
                         - Recovering context after chat history loss
                         - Debugging tool call sequences
                         
-                        Note: Does not track its own calls or other meta/query tools.
-                        History kept in memory (last 1000 calls, lost on restart).
+                        Note: Does not track its own calls or track_ui_event.
+                        History is persisted locally in tool-history.jsonl, keeps up to the last 1000
+                        calls in memory, and trims older on-disk history. Stored outputs over 4 KiB
+                        are replaced with an omission marker.
                         
                         ${CMD_PREFIX_DESCRIPTION}`,
                 inputSchema: zodToJsonSchema(GetRecentToolCallsArgsSchema),
@@ -1422,6 +1388,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
     // UI interactions are tracked separately via mcp_ui_event.
     const isUiOriginCall = !!(args && typeof args === 'object' && (args as any).origin === 'ui');
     if (isUiOriginCall) {
+        const config = await configManager.getConfig();
+        if (config.filePreviewsEnabled === false && FILE_PREVIEW_UI_TOOL_NAMES.has(request.params.name)) {
+            return {
+                content: [{
+                    type: 'text',
+                    text: 'File preview UI is disabled by configuration.',
+                }],
+            };
+        }
         return runInUiOriginCallContext(() => {
             if (isUiPreviewReadCall(request.params.name, args)) {
                 const decision = uiPreviewReadCircuitBreaker.tryAcquire();

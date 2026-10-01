@@ -66,6 +66,11 @@ export async function resolveMcpUiPreviewDecision(deps: McpUiPreviewDecisionDeps
 }
 
 export async function shouldShowMcpUiPreviews(): Promise<boolean> {
+  const userSetting = await configManager.getValue('mcpUiPreviewsEnabled');
+  if (userSetting === false) {
+    return false;
+  }
+
   return resolveMcpUiPreviewDecision({
     getExistingAssignment: () => configManager.getValue(`abTest_${MCP_UI_EXPERIMENT_NAME}`),
     isFirstRun: () => configManager.isFirstRun(),

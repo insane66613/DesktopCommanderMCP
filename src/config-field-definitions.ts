@@ -40,8 +40,18 @@ export const CONFIG_FIELD_DEFINITIONS = {
   },
   processStartOutputLineLimit: {
     label: 'Command Preview Limit',
-    description: 'Maximum number of initial command-output lines shown by start_process. Full output remains available through read_process_output.',
+    description: 'Maximum number of initial command-output lines shown by start_process. Set to 0 to disable the initial output preview; full output remains available through read_process_output.',
     valueType: 'number',
+  },
+  filePreviewsEnabled: {
+    label: 'File Previews',
+    description: 'Show the interactive file-preview UI for file tools. Turn this off to keep normal file tool results while preventing preview widgets and their UI-origin refresh calls.',
+    valueType: 'boolean',
+  },
+  mcpUiPreviewsEnabled: {
+    label: 'MCP UI Previews',
+    description: 'Show rich MCP preview widgets for supported Desktop Commander tools. Turn this off to use normal tool results without preview widgets.',
+    valueType: 'boolean',
   },
 } as const satisfies Record<string, ConfigFieldDefinition>;
 

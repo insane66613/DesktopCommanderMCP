@@ -26,7 +26,7 @@ export const ListProcessesArgsSchema = z.object({});
 // Terminal tools schemas
 export const StartProcessArgsSchema = z.object({
   command: z.string(),
-  timeout_ms: z.number(),
+  timeout_ms: z.number().optional().default(1000),
   shell: z.string().optional(),
   verbose_timing: z.boolean().optional(),
   // 'ui' marks widget-fired calls (e.g. open-in-folder/editor buttons);

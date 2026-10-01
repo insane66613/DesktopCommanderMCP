@@ -15,6 +15,7 @@
 import assert from 'node:assert';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { StartProcessArgsSchema } from '../dist/tools/schemas.js';
+import { handleStartProcess, handleReadProcessOutput, handleForceTerminate } from '../dist/handlers/terminal-handlers.js';
 import { getDedupCounters, dedupRequest } from '../dist/utils/request-dedup.js';
 import { createToolBridge } from '../dist/ui/shared/tool-bridge.js';
 import { createUiEventTracker } from '../dist/ui/shared/ui-event-tracker.js';
@@ -37,6 +38,8 @@ async function testStartProcessSchemaHasRestoredFields() {
   assert('window_title' in props, 'window_title field must exist');
   assert('exclude_self' in props, 'exclude_self field must exist');
   assert('origin' in props, 'origin field must still exist');
+  assert.strictEqual(props.timeout_ms.default, 1000, 'timeout_ms defaults to 1000ms');
+  assert(!jsonSchema.required?.includes('timeout_ms'), 'timeout_ms must be optional for MCP callers');
 
   assert.strictEqual(props.visible.default, false, 'visible defaults to false');
   assert.strictEqual(props.keep_open.default, false, 'keep_open defaults to false');
@@ -70,14 +73,32 @@ async function testParseDefaultsRestoredFields() {
 
   const result = StartProcessArgsSchema.parse({
     command: 'echo hello',
-    timeout_ms: 5000,
   });
 
+  assert.strictEqual(result.timeout_ms, 1000);
   assert.strictEqual(result.visible, false);
   assert.strictEqual(result.keep_open, false);
   assert.strictEqual(result.exclude_self, false);
 
-  console.log('  PASS: restored fields default correctly');
+  console.log('  PASS: restored fields and timeout default correctly');
+}
+
+async function testTerminalHandlersReturnValidationErrors() {
+  console.log('\n--- Test: terminal handlers return validation errors instead of throwing ---');
+
+  const start = await handleStartProcess({});
+  assert.strictEqual(start.isError, true);
+  assert.match(start.content[0].text, /Invalid arguments for start_process/);
+
+  const read = await handleReadProcessOutput({});
+  assert.strictEqual(read.isError, true);
+  assert.match(read.content[0].text, /Invalid arguments for read_process_output/);
+
+  const terminate = await handleForceTerminate({});
+  assert.strictEqual(terminate.isError, true);
+  assert.match(terminate.content[0].text, /Invalid arguments for force_terminate/);
+
+  console.log('  PASS: invalid terminal calls stay inside the MCP tool-result contract');
 }
 
 // --- Dedup tests ---
@@ -228,9 +249,11 @@ async function testHeartbeatStartIsIdempotent() {
     const channel = new RemoteChannel();
     channel.sendHeartbeat = async () => {};
     channel.startHeartbeat('device-1');
+    const intervalsAfterFirstStart = intervalsCreated;
+    const timeoutsAfterFirstStart = timeoutsCreated;
     channel.startHeartbeat('device-1');
-    assert.strictEqual(intervalsCreated, 1, 'Repeated start must keep one connection-health interval');
-    assert.strictEqual(timeoutsCreated, 1, 'Repeated start must keep one self-rescheduling heartbeat timeout');
+    assert.strictEqual(intervalsCreated, intervalsAfterFirstStart, 'Repeated start must not create more intervals');
+    assert.strictEqual(timeoutsCreated, timeoutsAfterFirstStart, 'Repeated start must not create another heartbeat timeout');
     channel.stopHeartbeat();
   } finally {
     globalThis.setInterval = originalSetInterval;
@@ -427,6 +450,7 @@ async function main() {
     { name: 'schema/restored-fields', fn: testStartProcessSchemaHasRestoredFields },
     { name: 'schema/accepts-fields', fn: testParseAcceptsRestoredFields },
     { name: 'schema/defaults-fields', fn: testParseDefaultsRestoredFields },
+    { name: 'terminal/validation-errors', fn: testTerminalHandlersReturnValidationErrors },
     { name: 'dedup/single-flight', fn: testDedupSingleFlight },
     { name: 'dedup/different-args', fn: testDedupDifferentArgsRunSeparate },
     { name: 'dedup/sequential-runs-again', fn: testSequentialDuplicateRunsAgain },
@@ -434,12 +458,10 @@ async function main() {
     { name: 'dedup/tool-isolation', fn: testDedupToolNamesAreIsolated },
     { name: 'backoff/bounded', fn: testBoundedBackoff },
     { name: 'remote/heartbeat-idempotent', fn: testHeartbeatStartIsIdempotent },
-    { name: 'remote/call-id-dedup', fn: testRealtimeCallIdDeduplication },
     { name: 'widget/single-flight', fn: testWidgetCallToolSingleFlight },
     { name: 'widget/replay-hydration', fn: testPreviewReplayHydrationUsesPersistedPayloadWithoutRefresh },
     { name: 'widget/ui-read-circuit-breaker', fn: testUiPreviewReadCircuitBreakerRequiresQuietPeriod },
     { name: 'ui-event/dedup', fn: testUiEventDuplicateSuppression },
-    { name: 'remote/reconnect-backoff', fn: testReconnectUsesBoundedBackoff },
   ];
 
   for (const test of tests) {

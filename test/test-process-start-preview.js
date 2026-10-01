@@ -10,8 +10,10 @@ assert.equal(previewLines[0], 'line-0');
 assert.equal(previewLines.at(-1), 'line-79');
 assert.match(preview, /^\[56 lines omitted from initial preview; use read_process_output for retained output\]$/m);
 
+assert.equal(compactInitialProcessOutput(source, 0), '', 'zero disables the initial process output preview');
+
 const minimumPreview = compactInitialProcessOutput(source, 1);
-assert.equal(minimumPreview.split('\n').length, 5, 'configured values below five clamp to five lines');
+assert.equal(minimumPreview.split('\n').length, 5, 'nonzero configured values below five clamp to five lines');
 
 const shortOutput = 'first\nsecond';
 assert.equal(compactInitialProcessOutput(shortOutput, 25), shortOutput);

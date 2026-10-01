@@ -66,6 +66,7 @@ export function processLaunchAdmission(args: {
 
 export function compactInitialProcessOutput(output: string, requestedLimit: unknown): string {
   const parsedLimit = typeof requestedLimit === 'number' ? Math.trunc(requestedLimit) : DEFAULT_PROCESS_START_OUTPUT_LINE_LIMIT;
+  if (parsedLimit === 0) return '';
   const limit = Math.max(5, Math.min(parsedLimit || DEFAULT_PROCESS_START_OUTPUT_LINE_LIMIT, 500));
   const normalized = output.trimEnd();
   if (!normalized) return '(no output)';
