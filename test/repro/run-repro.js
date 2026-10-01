@@ -8,6 +8,8 @@
  *   node test/repro/run-repro.js test-dc-tracking-gate.js ... # selected scripts
  * Variables such as UV_THREADPOOL_SIZE, BLOCKERS or DC_REPRO_REALTIME are passed through.
  * A script still running after REPRO_TIMEOUT_MS (default 180000) is stopped and fails.
+ * Exit 0 means the script's documented expectation held (see its header): for most,
+ * that a problem does not show; for the hazard demos, that the hazard shows.
  */
 import { spawn } from 'child_process';
 import fs from 'fs/promises';
@@ -47,7 +49,9 @@ function runScript(file) {
   });
 }
 
-const requested = process.argv.slice(2);
+// The scripts named on the command line, by file name as the other runners take them
+// (so test/repro/test-x.js from the repository root works too); else every test-*.js here
+const requested = process.argv.slice(2).map((file) => path.basename(file));
 const files = requested.length > 0
   ? requested
   : (await fs.readdir(__dirname)).filter((file) => file.startsWith('test-') && file.endsWith('.js')).sort();

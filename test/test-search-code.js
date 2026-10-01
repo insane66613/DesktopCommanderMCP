@@ -548,12 +548,5 @@ export async function testSearchCode() {
 export default testSearchCode;
 
 // Run tests if this file is executed directly
-if (import.meta.url === `file://${process.argv[1]}`) {
-  testSearchCode().then(() => {
-    console.log('Search tests completed successfully.');
-    process.exit(0);
-  }).catch(error => {
-    console.error('Test execution failed:', error);
-    process.exit(1);
-  });
-}
+runIfMain(import.meta.url, testSearchCode);
+import { runIfMain } from './helpers/run-if-main.js';

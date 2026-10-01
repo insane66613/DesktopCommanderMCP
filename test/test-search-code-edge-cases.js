@@ -535,12 +535,5 @@ export async function testSearchCodeEdgeCases() {
 export default testSearchCodeEdgeCases;
 
 // Run tests if this file is executed directly
-if (import.meta.url === `file://${process.argv[1]}`) {
-  testSearchCodeEdgeCases().then(() => {
-    console.log('Edge case tests completed successfully.');
-    process.exit(0);
-  }).catch(error => {
-    console.error('Edge case test execution failed:', error);
-    process.exit(1);
-  });
-}
+runIfMain(import.meta.url, testSearchCodeEdgeCases);
+import { runIfMain } from './helpers/run-if-main.js';

@@ -166,11 +166,5 @@ const runAllTests = async () => {
 };
 
 // Run tests if this file is executed directly
-if (process.argv[1] === import.meta.url) {
-    runAllTests().then(success => {
-        process.exit(success ? 0 : 1);
-    });
-}
-
-// Export the test function for the test runner
-export default runAllTests;
+runIfMain(import.meta.url, runAllTests);
+import { runIfMain } from './helpers/run-if-main.js';

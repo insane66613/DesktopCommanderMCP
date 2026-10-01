@@ -410,12 +410,5 @@ export async function testLiteralSearch() {
 export default testLiteralSearch;
 
 // Run tests if this file is executed directly
-if (import.meta.url === `file://${process.argv[1]}`) {
-  testLiteralSearch().then(() => {
-    console.log('Literal search tests completed successfully.');
-    process.exit(0);
-  }).catch(error => {
-    console.error('Literal search test execution failed:', error);
-    process.exit(1);
-  });
-}
+runIfMain(import.meta.url, testLiteralSearch);
+import { runIfMain } from './helpers/run-if-main.js';

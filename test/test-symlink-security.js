@@ -268,11 +268,5 @@ async function runAllTests() {
 }
 
 // Run if executed directly
-if (import.meta.url === `file://${process.argv[1]}`) {
-    runAllTests().catch(error => {
-        console.error('❌ Unhandled error:', error);
-        process.exit(1);
-    });
-}
-
-export default runAllTests;
+runIfMain(import.meta.url, runAllTests);
+import { runIfMain } from './helpers/run-if-main.js';

@@ -158,6 +158,5 @@ console.log('Line 3');
     console.log(`   Saved to: ${SAMPLE_FILE_MODIFIED}`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-    main().catch(console.error);
-}
+runIfMain(import.meta.url, main);
+import { runIfMain } from './helpers/run-if-main.js';
