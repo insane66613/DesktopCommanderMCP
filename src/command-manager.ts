@@ -127,32 +127,8 @@ class CommandManager {
                                             continue;
                                         }
 
-                                        let openP = 1;
-                                        let subInQuote = false;
-                                        let subQuoteChar = '';
-                                        let m = k + 2;
-                                        while (m < hereContent.length && openP > 0) {
-                                            const c = hereContent[m];
-                                            if (c === '`' && m + 1 < hereContent.length) {
-                                                m += 2;
-                                                continue;
-                                            }
-                                            if (!subInQuote && (c === '"' || c === "'")) {
-                                                subInQuote = true;
-                                                subQuoteChar = c;
-                                            } else if (subInQuote && c === subQuoteChar) {
-                                                if (m + 1 < hereContent.length && hereContent[m + 1] === subQuoteChar) {
-                                                    m += 2;
-                                                    continue;
-                                                }
-                                                subInQuote = false;
-                                            } else if (!subInQuote) {
-                                                if (c === '(') openP++;
-                                                if (c === ')') openP--;
-                                            }
-                                            m++;
-                                        }
-                                        if (openP === 0) {
+                                        const m = this.findClosingParenthesis(hereContent, k + 2);
+                                        if (m >= 0) {
                                             const subContent = hereContent.substring(k + 2, m - 1);
                                             const subCommands = this.extractCommands(subContent, depth + 1);
                                             commands.push(...subCommands);
@@ -167,10 +143,7 @@ class CommandManager {
                             const newlineMatch = restAfterHere.match(/^(\r?\n)+/);
                             if (newlineMatch) {
                                 if (currentCmd.trim()) {
-                                    const baseCmd = this.extractBaseCommand(currentCmd.trim());
-                                    if (baseCmd) {
-                                        commands.push(baseCmd);
-                                    }
+                                    commands.push(...this.extractSegmentCommands(currentCmd.trim(), depth));
                                 }
                                 currentCmd = '';
                                 i = fullHereEnd + newlineMatch[0].length - 1;
@@ -198,26 +171,8 @@ class CommandManager {
                 // Handle $() command substitution even inside quotes (fixes blocklist bypass)
                 if (char === '$' && i + 1 < commandString.length && commandString[i + 1] === '(') {
                     const startIndex = i;
-                    let openParens = 1;
-                    let j = i + 2; // skip past $(
-                    let parenEscaped = false;
-                    while (j < commandString.length && openParens > 0) {
-                        const current = commandString[j];
-                        if (parenEscaped) {
-                            parenEscaped = false;
-                            j++;
-                            continue;
-                        }
-                        if (current === '\\') {
-                            parenEscaped = true;
-                            j++;
-                            continue;
-                        }
-                        if (current === '(') openParens++;
-                        if (current === ')') openParens--;
-                        j++;
-                    }
-                    if (j <= commandString.length && openParens === 0) {
+                    const j = this.findClosingParenthesis(commandString, i + 2);
+                    if (j >= 0) {
                         const subContent = commandString.substring(i + 2, j - 1);
                         const subCommands = this.extractCommands(subContent, depth + 1);
                         commands.push(...subCommands);
@@ -277,28 +232,8 @@ class CommandManager {
                 // Handle subshells - if we see an opening parenthesis, we need to find its matching closing parenthesis
                 if (char === '(') {
                     // Find the matching closing parenthesis
-                    let openParens = 1;
-                    let j = i + 1;
-                    let subshellEscaped = false;
-                    while (j < commandString.length && openParens > 0) {
-                        const current = commandString[j];
-                        if (subshellEscaped) {
-                            subshellEscaped = false;
-                            j++;
-                            continue;
-                        }
-                        if (current === '\\') {
-                            subshellEscaped = true;
-                            j++;
-                            continue;
-                        }
-                        if (current === '(') openParens++;
-                        if (current === ')') openParens--;
-                        j++;
-                    }
-
-                    // Skip to after the closing parenthesis only if properly balanced
-                    if (j <= commandString.length && openParens === 0) {
+                    const j = this.findClosingParenthesis(commandString, i + 1);
+                    if (j >= 0) {
                         const subshellContent = commandString.substring(i + 1, j - 1);
                         // Recursively extract commands from the subshell
                         const subCommands = this.extractCommands(subshellContent, depth + 1);
@@ -352,6 +287,24 @@ class CommandManager {
         }
     }
 
+    private findClosingParenthesis(source: string, start: number): number {
+        let depth = 1;
+        let quote = '';
+        for (let i = start; i < source.length; i++) {
+            const char = source[i];
+            if (char === '\\' || char === '`') { i++; continue; }
+            if (quote) {
+                if (char === quote) {
+                    if (source[i + 1] === quote) i++;
+                    else quote = '';
+                }
+            } else if (char === '"' || char === "'") quote = char;
+            else if (char === '(') depth++;
+            else if (char === ')' && --depth === 0) return i + 1;
+        }
+        return -1;
+    }
+
     private extractSegmentCommands(commandStr: string, depth: number): string[] {
         const baseCommand = this.extractBaseCommand(commandStr);
         if (!baseCommand) return [];
@@ -395,6 +348,8 @@ class CommandManager {
             nestedCommand = nestedCommand.slice(1, -1).trim();
         }
 
+        const hereString = nestedCommand.match(/^@(['"])\r?\n([\s\S]*?)\r?\n\1@$/);
+        if (pwshWrappers.has(baseCommand) && hereString) nestedCommand = hereString[2].trim();
         return nestedCommand || null;
     }
 

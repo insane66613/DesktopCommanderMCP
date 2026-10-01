@@ -62,6 +62,17 @@ assert.ok(terminatorCommands.includes('format'), 'format command following here-
 
 console.log('All PowerShell here-string tests passed successfully!');
 
+for (const command of ["echo $(echo ')'; format C:)", "echo (echo '('; format C:)"]) {
+    assert.ok(commandManager.extractCommands(command).includes('format'), 'Quoted parentheses must not hide later executable commands');
+}
+if (process.platform === 'win32') {
+    for (const ending of ['', '\n']) {
+        const executableHere = "pwsh -NoProfile -Command @'\nformat C:\n'@" + ending;
+        assert.ok(commandManager.extractCommands(executableHere).includes('format'), 'PowerShell -Command executes its here-string argument');
+        assert.match(commandManager.getUnsafeInlineInterpreterReason("pwsh -Command @'\nnode -e 1\n'@"), /inline interpreter/i);
+    }
+}
+
 assert.strictEqual(await commandManager.validateCommand('@"\n`$(powershell.exe)\n"@'), true,
     'Legacy shell normalization must preserve escaped inert expansions');
 assert.ok(commandManager.extractCommands('@"\n``$(format C:)\n"@').includes('format'),
