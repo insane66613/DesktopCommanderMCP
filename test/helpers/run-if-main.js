@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { exitProcess } from '../../dist/utils/exit-process.js';
 
 /**
  * Returns true when the calling module is the script Node was started with
@@ -51,9 +52,9 @@ export async function runIfMain(importMetaUrl, run) {
 
   try {
     const result = await run();
-    process.exit(result === false ? 1 : 0);
+    exitProcess(result === false ? 1 : 0);
   } catch (error) {
     console.error('❌ Unhandled error:', error);
-    process.exit(1);
+    exitProcess(1);
   }
 }

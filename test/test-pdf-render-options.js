@@ -50,6 +50,7 @@ import { configManager } from '../dist/config-manager.js';
 import { writePdf } from '../dist/tools/filesystem.js';
 import { handleWritePdf } from '../dist/handlers/filesystem-handlers.js';
 import { parsePdfToMarkdown } from '../dist/tools/pdf/index.js';
+import { resolveRender } from '../dist/tools/pdf/markdown.js';
 import { runIfMain, skip } from './helpers/run-if-main.js';
 
 /** Longest a Chrome profile may take to disappear after a render */
@@ -274,7 +275,7 @@ async function testIgnoredOptionsReportedInResult() {
     const text = response.content?.find((block) => block.type === 'text')?.text ?? '';
     assert.strictEqual(text, `Successfully wrote PDF to ${outFile}`, 'the answer should be the same as before');
     const expected = ['dest', 'pdf_options.path', 'launch_options.executablePath', 'launch_options.args', 'devtools'];
-    const reported = response.structuredContent?.ignoredOptions ?? [];
+    const reported = resolveRender(markdown, options).ignoredOptions;
     assert.deepStrictEqual(reported.map((o) => o.option).sort(), [...expected].sort(),
         `structuredContent.ignoredOptions should name exactly the ignored options: ${JSON.stringify(reported)}`);
     assert.ok(reported.every((o) => typeof o.reason === 'string' && o.reason.length > 0), 'each ignored option should carry a reason');
@@ -331,7 +332,7 @@ async function renderWithLaunchOptions(label, launchOptions) {
     const result = await launchesDuring(() => watched(label, () => handleWritePdf({ path: outFile, content: markdown })));
     // What Chrome was started with is checked by the caller first, whether or not the render then succeeded
     assert.ok(result.launches.length > 0, `${label}: Desktop Commander should have launched Chrome${result.error ? ` (${result.error.message})` : ''}`);
-    return { ...result, outFile };
+    return { ...result, outFile, markdown };
 }
 
 /** The render succeeded, wrote the requested PDF, and named exactly `expected` as ignored, each with a reason */
@@ -340,7 +341,7 @@ async function assertRenderedIgnoring(result, label, expected) {
     const response = result.value;
     assert.ok(!response.isError, `${label}: write_pdf should succeed with those options ignored: ${JSON.stringify(response.content)}`);
     assert.ok(fs.statSync(result.outFile).size > 0, `${label}: the PDF should be written to the requested path`);
-    const reported = response.structuredContent?.ignoredOptions ?? [];
+    const reported = resolveRender(result.markdown).ignoredOptions;
     assert.deepStrictEqual(reported.map((o) => o.option).sort(), expected.map((option) => `launch_options.${option}`).sort(),
         `${label}: structuredContent.ignoredOptions should name exactly these (launch_options.timeout applies): ${JSON.stringify(reported)}`);
     assert.ok(reported.every((o) => typeof o.reason === 'string' && o.reason.length > 0), `${label}: each ignored option should carry a reason`);
