@@ -14,6 +14,9 @@ export interface SearchResult {
   type: 'file' | 'content';
 }
 
+// Upstream #779: retain error output once and bound session memory.
+const MAX_KEPT_ERROR_CHARS = 64 * 1024;
+
 export interface SearchSession {
   id: string;
   process: ChildProcess;
@@ -813,8 +816,12 @@ export interface SearchSessionOptions {
   private setupProcessHandlers(session: SearchSession): void {
     const { process } = session;
 
-    process.stdout?.on('data', (data: Buffer) => {
-      session.buffer += data.toString();
+    // Decode the stream so multibyte characters split across chunks stay whole.
+    process.stdout?.setEncoding('utf8');
+    process.stderr?.setEncoding('utf8');
+
+    process.stdout?.on('data', (data: string) => {
+      session.buffer += data;
       this.processBufferedOutput(session);
     });
 
@@ -823,7 +830,8 @@ export interface SearchSessionOptions {
 
       // Store error text for potential user display, but don't capture individual errors
       // We'll capture incomplete search status in the completion event instead
-      session.error = (session.error || '') + errorText;
+      const keptError = session.error || '';
+      session.error = keptError + errorText.slice(0, MAX_KEPT_ERROR_CHARS - keptError.length);
 
       // Filter meaningful errors
       const filteredErrors = errorText
@@ -844,7 +852,6 @@ export interface SearchSessionOptions {
       if (filteredErrors.length > 0) {
         const meaningfulErrors = filteredErrors.join('\n').trim();
         if (meaningfulErrors) {
-          session.error = (session.error || '') + meaningfulErrors + '\n';
           capture('search_session_error', {
             sessionId: session.id,
             error: meaningfulErrors.substring(0, 200)
