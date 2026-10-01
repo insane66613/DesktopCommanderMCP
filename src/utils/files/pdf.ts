@@ -5,7 +5,7 @@
 
 import fs from 'fs/promises';
 import { FileHandler, FileResult, FileInfo, ReadOptions, EditResult } from './base.js';
-import { parsePdfToMarkdown, parseMarkdownToPdf, editPdf } from '../../tools/pdf/index.js';
+import { parsePdfToMarkdown } from '../../tools/pdf/index.js';
 
 /**
  * File handler for PDF documents
@@ -80,16 +80,9 @@ export class PdfFileHandler implements FileHandler {
      * Write PDF - creates from markdown or operations
      */
     async write(path: string, content: any, mode?: 'rewrite' | 'append'): Promise<void> {
-        // If content is string, treat as markdown to convert
-        if (typeof content === 'string') {
-            await parseMarkdownToPdf(content, path);
-        } else if (Array.isArray(content)) {
-            // Array of operations - use editPdf
-            const resultBuffer = await editPdf(path, content);
-            await fs.writeFile(path, resultBuffer);
-        } else {
-            throw new Error('PDF write requires markdown string or array of operations');
-        }
+        if (mode === 'append') throw new Error('Cannot append to a PDF. Use rewrite or PDF insert operations.');
+        const { writePdf } = await import('../../tools/filesystem.js');
+        await writePdf(path, content);
     }
 
     /**
@@ -99,8 +92,9 @@ export class PdfFileHandler implements FileHandler {
         try {
             // For PDF, range editing isn't directly supported
             // Could interpret range as page numbers in future
-            const resultBuffer = await editPdf(path, content);
-            await fs.writeFile(options?.outputPath || path, resultBuffer);
+            if (!Array.isArray(content)) throw new Error('PDF range edits require an array of operations');
+            const { writePdf } = await import('../../tools/filesystem.js');
+            await writePdf(path, content, options?.outputPath, options);
             return { success: true, editsApplied: 1 };
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
