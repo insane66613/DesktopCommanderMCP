@@ -1572,15 +1572,18 @@ export class RemoteChannel {
                 scriptPath,
                 deviceId,
                 supabaseUrl,
-                supabaseKey,
-                session.access_token,
-                // A lost session's refresh token already failed to refresh;
-                // presenting it again can trip GoTrue's reuse detection.
-                this.sessionLost ? '' : session.refresh_token || ''
+                supabaseKey
             ], {
                 timeout: 3000,
                 stdio: 'pipe', // Capture output to prevent blocking
-                encoding: 'utf-8'
+                encoding: 'utf-8',
+                env: {
+                    ...process.env,
+                    SUPABASE_ACCESS_TOKEN: session.access_token,
+                    // A lost session's refresh token already failed to refresh;
+                    // presenting it again can trip GoTrue's reuse detection.
+                    SUPABASE_REFRESH_TOKEN: this.sessionLost ? '' : session.refresh_token || ''
+                }
             });
 
             console.debug('[DEBUG] spawnSync completed, exit code:', result.status, 'signal:', result.signal);
