@@ -20,7 +20,7 @@ function tokenizeRespectingQuotes(str: string): string[] {
             escaped = false;
             continue;
         }
-        if (ch === '\\') {
+        if (ch === (process.platform === 'win32' ? '`' : '\\')) {
             escaped = true;
             current += ch;
             continue;
@@ -57,9 +57,8 @@ class CommandManager {
         // commit message containing "PowerShell" must not be treated as an
         // invocation. extractCommands() also descends into cmd/pwsh command
         // arguments so actual nested Windows PowerShell execution is denied.
-        const normalized = command.replace(/[`^]/g, '');
-        return this.extractCommands(normalized).some(
-            (candidate) => candidate === 'powershell' || candidate === 'powershell.exe'
+        return this.extractCommands(command).some(
+            (candidate) => ['powershell', 'powershell.exe'].includes(candidate.replace(/[`^]/g, ''))
         );
     }
 
@@ -99,6 +98,88 @@ class CommandManager {
                     escaped = false;
                     currentCmd += char;
                     continue;
+                }
+
+                // Handle PowerShell here-strings: @"\r?\n or @'\r?\n
+                if (!inQuote && char === '@' && (commandString[i + 1] === "'" || commandString[i + 1] === '"')) {
+                    const hereQuote = commandString[i + 1];
+                    const hereStartMatch = commandString.slice(i).match(/^@(['"])(\r?\n)/);
+                    if (hereStartMatch) {
+                        const searchStart = i + hereStartMatch[0].length;
+                        const closePattern = new RegExp(`(?:\\r?\\n)${hereQuote}@`);
+                        const closeMatch = commandString.slice(searchStart).match(closePattern);
+                        if (closeMatch && closeMatch.index !== undefined) {
+                            const fullHereEnd = searchStart + closeMatch.index + closeMatch[0].length;
+                            const hereContent = commandString.substring(searchStart, searchStart + closeMatch.index);
+
+                            // In double-quoted here-strings, PowerShell evaluates $() subshell expansions
+                            if (hereQuote === '"') {
+                                for (let k = 0; k < hereContent.length; k++) {
+                                    if (hereContent[k] === '$' && hereContent[k + 1] === '(') {
+                                        // Ignore backtick-escaped `$()` expressions
+                                        let backtickCount = 0;
+                                        let b = k - 1;
+                                        while (b >= 0 && hereContent[b] === '`') {
+                                            backtickCount++;
+                                            b--;
+                                        }
+                                        if (backtickCount % 2 === 1) {
+                                            continue;
+                                        }
+
+                                        let openP = 1;
+                                        let subInQuote = false;
+                                        let subQuoteChar = '';
+                                        let m = k + 2;
+                                        while (m < hereContent.length && openP > 0) {
+                                            const c = hereContent[m];
+                                            if (c === '`' && m + 1 < hereContent.length) {
+                                                m += 2;
+                                                continue;
+                                            }
+                                            if (!subInQuote && (c === '"' || c === "'")) {
+                                                subInQuote = true;
+                                                subQuoteChar = c;
+                                            } else if (subInQuote && c === subQuoteChar) {
+                                                if (m + 1 < hereContent.length && hereContent[m + 1] === subQuoteChar) {
+                                                    m += 2;
+                                                    continue;
+                                                }
+                                                subInQuote = false;
+                                            } else if (!subInQuote) {
+                                                if (c === '(') openP++;
+                                                if (c === ')') openP--;
+                                            }
+                                            m++;
+                                        }
+                                        if (openP === 0) {
+                                            const subContent = hereContent.substring(k + 2, m - 1);
+                                            const subCommands = this.extractCommands(subContent, depth + 1);
+                                            commands.push(...subCommands);
+                                            k = m - 1;
+                                        }
+                                    }
+                                }
+                            }
+
+                            currentCmd += commandString.substring(i, fullHereEnd);
+                            const restAfterHere = commandString.slice(fullHereEnd);
+                            const newlineMatch = restAfterHere.match(/^(\r?\n)+/);
+                            if (newlineMatch) {
+                                if (currentCmd.trim()) {
+                                    const baseCmd = this.extractBaseCommand(currentCmd.trim());
+                                    if (baseCmd) {
+                                        commands.push(baseCmd);
+                                    }
+                                }
+                                currentCmd = '';
+                                i = fullHereEnd + newlineMatch[0].length - 1;
+                            } else {
+                                i = fullHereEnd - 1;
+                            }
+                            continue;
+                        }
+                    }
                 }
 
                 // Handle quotes (both single and double)
@@ -176,6 +257,9 @@ class CommandManager {
                         commands.push(...subCommands);
                         i = j;
                         if (!inQuote) {
+                            // PowerShell backticks escape characters in executable names.
+                            // Retain the token while conservatively checking Unix substitution too.
+                            if (process.platform === 'win32') currentCmd += commandString.substring(startIndex, j + 1);
                             continue;
                         } else {
                             currentCmd += commandString.substring(startIndex, j + 1);
@@ -232,7 +316,7 @@ class CommandManager {
                     if (commandString.startsWith(separator, i)) {
                         // We found a separator - extract the command before it
                         if (currentCmd.trim()) {
-                            commands.push(...this.extractSegmentCommands(currentCmd.trim()));
+                            commands.push(...this.extractSegmentCommands(currentCmd.trim(), depth));
                         }
 
                         // Move past the separator
@@ -250,7 +334,7 @@ class CommandManager {
 
             // Don't forget to add the last command
             if (currentCmd.trim()) {
-                commands.push(...this.extractSegmentCommands(currentCmd.trim()));
+                commands.push(...this.extractSegmentCommands(currentCmd.trim(), depth));
             }
 
             // Remove duplicates and return
@@ -268,7 +352,7 @@ class CommandManager {
         }
     }
 
-    private extractSegmentCommands(commandStr: string): string[] {
+    private extractSegmentCommands(commandStr: string, depth: number): string[] {
         const baseCommand = this.extractBaseCommand(commandStr);
         if (!baseCommand) return [];
 
@@ -277,7 +361,7 @@ class CommandManager {
 
         const nestedCommand = this.extractNestedWindowsShellCommand(commandStr, baseCommand);
         if (nestedCommand) {
-            commands.push(...this.extractCommands(nestedCommand));
+            commands.push(...this.extractCommands(nestedCommand, depth + 1));
         }
 
         return commands;
@@ -290,9 +374,7 @@ class CommandManager {
             return null;
         }
 
-        const withoutEnvVars = commandStr.replace(/\w+=\S+\s*/g, '').trim();
-        const withoutInvocationOperator = withoutEnvVars.replace(/^&\s*/, '').trim();
-        const tokens = withoutInvocationOperator.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+        const tokens = this.executableTokens(commandStr);
         if (tokens.length < 2) return null;
 
         const commandSwitches = cmdWrappers.has(baseCommand)
@@ -317,26 +399,21 @@ class CommandManager {
     }
 
     // This extracts the actual command name from a command string
+    private executableTokens(commandStr: string): string[] {
+        const tokens = tokenizeRespectingQuotes(commandStr.trim().replace(/^&\s*/, ''));
+        let start = 0;
+        while (start < tokens.length && (tokens[start] === 'export' || ENV_ASSIGNMENT_PATTERN.test(tokens[start]))) start++;
+        return tokens.slice(start);
+    }
+
     extractBaseCommand(commandStr: string): string | null {
         try {
-            const withoutInvocationOperator = commandStr.trim().replace(/^&\s*/, '').trim();
-            const tokens = tokenizeRespectingQuotes(withoutInvocationOperator);
-            let startIdx = 0;
-            while (startIdx < tokens.length) {
-                const token = tokens[startIdx];
-                if (token === 'export' || ENV_ASSIGNMENT_PATTERN.test(token)) {
-                    startIdx++;
-                    continue;
-                }
-                break;
-            }
-
-            if (startIdx >= tokens.length) return null;
+            const tokens = this.executableTokens(commandStr);
 
             let firstToken = null;
 
             // Find the first valid token (skip variables)
-            for (let i = startIdx; i < tokens.length; i++) {
+            for (let i = 0; i < tokens.length; i++) {
                 const token = tokens[i];
                 
                 // Skip dollar-prefixed tokens (variables) but not $() command substitutions
@@ -370,7 +447,8 @@ class CommandManager {
 
             // Strip surrounding quotes before normalizing the path basename so
             // quoted absolute executables are checked against the blocklist.
-            const normalizedToken = firstToken.replace(/^['"]|['"]$/g, '');
+            let normalizedToken = firstToken.replace(/^['"]|['"]$/g, '');
+            if (process.platform === 'win32') normalizedToken = normalizedToken.replace(/[`^]/g, '');
             const baseName = path.basename(normalizedToken);
             return baseName.toLowerCase();
         } catch (error) {
@@ -395,6 +473,19 @@ class CommandManager {
                 current += char;
                 escaped = false;
                 continue;
+            }
+            if (quote === null && char === '@') {
+                const opening = commandString.slice(i).match(/^@(['"])(\r?\n)/);
+                if (opening) {
+                    const start = i + opening[0].length;
+                    const closing = commandString.slice(start).match(new RegExp(`(?:^|\\r?\\n)${opening[1]}@`));
+                    if (closing?.index !== undefined) {
+                        const end = start + closing.index + closing[0].length;
+                        current += commandString.slice(i, end);
+                        i = end - 1;
+                        continue;
+                    }
+                }
             }
             if (char === escapeChar) {
                 const next = commandString[i + 1];
@@ -474,11 +565,10 @@ class CommandManager {
         return null;
     }
 
-    getUnsafeInlineInterpreterReason(command: string, shell?: string): string | null {
+    getUnsafeInlineInterpreterReason(command: string, shell?: string, depth: number = 0): string | null {
+        if (depth > MAX_RECURSION_DEPTH) return 'inline interpreter shell nesting exceeds maximum allowed limit';
         for (const segment of this.splitExecutableSegments(command, shell)) {
-            const withoutEnvVars = segment.replace(/\w+=\S+\s*/g, '').trim();
-            const normalized = withoutEnvVars.replace(/^&\s*/, '').trim();
-            const tokens = normalized.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+            const tokens = this.executableTokens(segment);
             const executableToken = tokens[0];
             if (!executableToken) continue;
 
@@ -498,7 +588,7 @@ class CommandManager {
             if (process.platform === 'win32' && ['cmd', 'cmd.exe', 'pwsh', 'pwsh.exe'].includes(executable)) {
                 const nested = this.extractNestedWindowsShellCommand(segment, executable);
                 if (nested) {
-                    const nestedReason = this.getUnsafeInlineInterpreterReason(nested, executable);
+                    const nestedReason = this.getUnsafeInlineInterpreterReason(nested, executable, depth + 1);
                     if (nestedReason) return nestedReason;
                 }
             }

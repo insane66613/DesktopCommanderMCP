@@ -6,31 +6,33 @@
 import assert from 'assert';
 import { commandManager } from '../dist/command-manager.js';
 import { configManager } from '../dist/config-manager.js';
-import { forceTerminate, interactWithProcess, startProcess } from '../dist/tools/improved-process-tools.js';
-
-function extractPid(result) {
-    const match = result.content[0].text.match(/Process started with PID (\d+)/);
-    return match ? parseInt(match[1], 10) : null;
-}
+import { interactWithProcess } from '../dist/tools/improved-process-tools.js';
+import { terminalManager } from '../dist/terminal-manager.js';
 
 async function testInteractiveBlockedCommandValidation() {
     const originalConfig = await configManager.getConfig();
     await configManager.setValue('blockedCommands', ['rm']);
 
-    const startResult = await startProcess({ command: 'node -i', timeout_ms: 5000 });
-    const processId = extractPid(startResult);
-    assert.ok(processId, `Failed to start Node REPL: ${startResult.content[0].text}`);
-
+    const originalSend = terminalManager.sendInputToProcess;
+    const originalSnapshot = terminalManager.captureOutputSnapshot;
+    const inputs = [];
+    terminalManager.sendInputToProcess = (_processId, input) => { inputs.push(input); return true; };
+    terminalManager.captureOutputSnapshot = () => null;
     try {
         const result = await interactWithProcess({
-            pid: processId,
+            pid: 12345,
             input: 'rm',
-            timeout_ms: 2000
+            wait_for_prompt: false
         });
         assert.strictEqual(result.isError, true, 'Blocked interactive input should be rejected');
         assert.match(result.content[0].text, /blocked command/i, 'Blocked input should report the policy rejection');
+        assert.deepStrictEqual(inputs, [], 'Blocked input must never reach stdin');
+        const benign = await interactWithProcess({ pid: 12345, input: 'hello', wait_for_prompt: false });
+        assert.notStrictEqual(benign.isError, true, 'Benign input should continue working');
+        assert.deepStrictEqual(inputs, ['hello']);
     } finally {
-        await forceTerminate({ pid: processId });
+        terminalManager.sendInputToProcess = originalSend;
+        terminalManager.captureOutputSnapshot = originalSnapshot;
         await configManager.updateConfig(originalConfig);
     }
 }
@@ -124,6 +126,16 @@ async function runTests() {
 
         // Test 16: interact_with_process must enforce blockedCommands before stdin write.
         await testInteractiveBlockedCommandValidation();
+
+        if (process.platform === 'win32') {
+            assert.strictEqual(await commandManager.validateCommand('po`wer`shell.exe -NoProfile'), false);
+            const wrappers = 'cmd.exe /c '.repeat(25) + 'echo safe';
+            assert.throws(() => commandManager.extractCommands(wrappers), /nesting depth/i);
+            assert.strictEqual(await commandManager.validateCommand(wrappers), false);
+            assert.match(commandManager.getUnsafeInlineInterpreterReason(wrappers), /nesting/i);
+            assert.ok(commandManager.extractCommands('FOO="a b" cmd.exe /c rm').includes('rm'));
+        }
+        assert.match(commandManager.getUnsafeInlineInterpreterReason('FOO="a b" node -e "1"'), /inline interpreter/i);
 
         console.log('\nAll tests passed!');
     } catch (error) {
