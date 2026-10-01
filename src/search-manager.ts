@@ -1,4 +1,5 @@
 import { spawn, ChildProcess } from 'child_process';
+import { constants } from 'buffer';
 import path from 'path';
 import fs from 'fs/promises';
 import { validatePath } from './tools/filesystem.js';
@@ -16,6 +17,13 @@ export interface SearchResult {
 
 // Upstream #779: retain error output once and bound session memory.
 const MAX_KEPT_ERROR_CHARS = 64 * 1024;
+
+/**
+ * Bound a single ripgrep JSON line below V8's hard string limit. A line beyond
+ * this limit is discarded until its newline so a pathological/minified file
+ * cannot crash the server while the rest of the search can still complete.
+ */
+export const MAX_OUTPUT_LINE_CHARS = Math.floor(constants.MAX_STRING_LENGTH / 2);
 
 /** Answers show this many characters of a result's text, then '...' if there is more. */
 export const SHOWN_TEXT_CHARS = 100;
@@ -38,7 +46,9 @@ export interface SearchSession {
   startTime: number;
   lastReadTime: number;
   options: SearchSessionOptions;
-  buffer: string;  // For processing incomplete JSON lines
+  buffer: string;  // Current ripgrep output line being assembled
+  skippingLine?: boolean;  // Current line exceeded MAX_OUTPUT_LINE_CHARS; drop until newline
+  skippedLines: Map<string, number>;  // Oversize lines, grouped by file when detectable
   totalMatches: number;
   totalContextLines: number;  // Track context lines separately
   wasIncomplete?: boolean;  // NEW: Track if search was incomplete due to permissions/access issues
@@ -64,6 +74,7 @@ export interface SearchSessionOptions {
  */export class SearchManager {
   private sessions = new Map<string, SearchSession>();
   private sessionCounter = 0;
+  private cleanupTimer: NodeJS.Timeout | null = null;
 
   /**
    * Start a new search session (like start_process)
@@ -112,6 +123,7 @@ export interface SearchSessionOptions {
       lastReadTime: Date.now(),
       options,
       buffer: '',
+      skippedLines: new Map(),
       totalMatches: 0,
       totalContextLines: 0
     };
@@ -122,7 +134,7 @@ export interface SearchSessionOptions {
     this.setupProcessHandlers(session);
 
     // Start cleanup interval now that we have a session
-    startCleanupIfNeeded();
+    this.startCleanupIfNeeded();
 
     // Set up timeout if specified and auto-terminate
     // For exact filename searches, use a shorter default timeout
@@ -252,6 +264,7 @@ export interface SearchSessionOptions {
     hasMoreResults: boolean;      // New field
     runtime: number;
     wasIncomplete?: boolean;      // NEW: Indicates if search was incomplete due to permissions
+    skippedLines: Array<{ file: string; count: number }>;
   } {
     const session = this.sessions.get(sessionId);
     
@@ -276,7 +289,8 @@ export interface SearchSessionOptions {
         error: session.error?.trim() || undefined,
         hasMoreResults: false, // Tail always returns what's available
         runtime: Date.now() - session.startTime,
-        wasIncomplete: session.wasIncomplete
+        wasIncomplete: session.wasIncomplete,
+        skippedLines: this.skippedLinesOf(session)
       };
     }
 
@@ -296,8 +310,13 @@ export interface SearchSessionOptions {
       error: session.error?.trim() || undefined,
       hasMoreResults,
       runtime: Date.now() - session.startTime,
-      wasIncomplete: session.wasIncomplete
+      wasIncomplete: session.wasIncomplete,
+      skippedLines: this.skippedLinesOf(session)
     };
+  }
+
+  private skippedLinesOf(session: SearchSession): Array<{ file: string; count: number }> {
+    return [...session.skippedLines].map(([file, count]) => ({ file, count }));
   }
 
   /**
@@ -318,6 +337,25 @@ export interface SearchSessionOptions {
     // It will be cleaned up by cleanup process
     
     return true;
+  }
+
+  /** Stop running searches and release housekeeping resources. */
+  dispose(): void {
+    for (const session of this.sessions.values()) {
+      if (!session.process.killed) session.process.kill('SIGTERM');
+    }
+    this.sessions.clear();
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = null;
+    }
+  }
+
+  /** Housekeeping must never keep a short-lived process alive by itself. */
+  private startCleanupIfNeeded(): void {
+    if (this.cleanupTimer) return;
+    this.cleanupTimer = setInterval(() => this.cleanupSessions(), 5 * 60 * 1000);
+    this.cleanupTimer.unref();
   }
 
   /**
@@ -832,8 +870,7 @@ export interface SearchSessionOptions {
     process.stderr?.setEncoding('utf8');
 
     process.stdout?.on('data', (data: string) => {
-      session.buffer += data;
-      this.processBufferedOutput(session);
+      this.processOutput(session, data);
     });
 
     process.stderr?.on('data', (data: Buffer) => {
@@ -872,10 +909,8 @@ export interface SearchSessionOptions {
     });
 
     process.on('close', (code: number) => {
-      // Process any remaining buffer content
-      if (session.buffer.trim()) {
-        this.processBufferedOutput(session, true);
-      }
+      // Process the last partial line, if output did not end with a newline.
+      this.processOutput(session, '', true);
 
       session.isComplete = true;
 
@@ -923,16 +958,54 @@ export interface SearchSessionOptions {
     });
   }
 
-  private processBufferedOutput(session: SearchSession, isFinal: boolean = false): void {
-    const lines = session.buffer.split('\n');
-    
-    // Keep the last incomplete line in the buffer unless this is final processing
-    if (!isFinal) {
-      session.buffer = lines.pop() || '';
-    } else {
-      session.buffer = '';
+  /** Split only newly arrived text so assembling a long line stays linear-time. */
+  private processOutput(session: SearchSession, text: string, isFinal: boolean = false): void {
+    const pieces = text.split('\n');
+    const lines: string[] = [];
+    pieces.forEach((piece, i) => {
+      this.appendToLine(session, piece);
+      if (i < pieces.length - 1 || isFinal) {
+        const line = this.takeLine(session);
+        if (line !== undefined) lines.push(line);
+      }
+    });
+    this.processLines(session, lines);
+  }
+
+  private appendToLine(session: SearchSession, text: string): void {
+    if (session.skippingLine || !text) return;
+    if (session.buffer.length + text.length <= MAX_OUTPUT_LINE_CHARS) {
+      session.buffer += text;
+      return;
     }
-    
+
+    const file = this.fileOfOutputLine((session.buffer + text).slice(0, 4096)) ?? '';
+    session.skippedLines.set(file, (session.skippedLines.get(file) ?? 0) + 1);
+    session.skippingLine = true;
+    session.buffer = '';
+  }
+
+  private takeLine(session: SearchSession): string | undefined {
+    const line = session.buffer;
+    session.buffer = '';
+    if (session.skippingLine) {
+      session.skippingLine = false;
+      return undefined;
+    }
+    return line;
+  }
+
+  /** Read a file name from the beginning of a ripgrep --json line, when present. */
+  private fileOfOutputLine(start: string): string | undefined {
+    const quoted = /^\{\"type\":\"\w+\",\"data\":\{\"path\":\{\"text\":(\"(?:[^\"\\\\]|\\\\.)*\")/.exec(start)?.[1];
+    try {
+      return quoted ? JSON.parse(quoted) : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private processLines(session: SearchSession, lines: string[]): void {
     for (const line of lines) {
       if (!line.trim()) continue;
       
@@ -1019,22 +1092,3 @@ export interface SearchSessionOptions {
 
 // Global search manager instance
 export const searchManager = new SearchManager();
-
-// Cleanup management - run on fixed schedule
-let cleanupInterval: NodeJS.Timeout | null = null;
-
-/**
- * Start cleanup interval - now runs on fixed schedule
- */
-function startCleanupIfNeeded(): void {
-  if (!cleanupInterval) {
-    cleanupInterval = setInterval(() => {
-      searchManager.cleanupSessions();
-    }, 5 * 60 * 1000);
-    
-    // Also check immediately after a short delay (let search process finish)
-    setTimeout(() => {
-      searchManager.cleanupSessions();
-    }, 1000);
-  }
-}
