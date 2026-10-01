@@ -17,6 +17,17 @@ export interface SearchResult {
 // Upstream #779: retain error output once and bound session memory.
 const MAX_KEPT_ERROR_CHARS = 64 * 1024;
 
+/** Answers show this many characters of a result's text, then '...' if there is more. */
+export const SHOWN_TEXT_CHARS = 100;
+
+/**
+ * Keep only what answers can show, plus one character so callers still know
+ * whether to append an ellipsis. Copy the slice so a tiny retained result does
+ * not keep a megabyte-scale ripgrep line alive through V8's backing string.
+ */
+const keptText = (text: string | undefined): string | undefined =>
+  text === undefined ? undefined : Buffer.from(text.slice(0, SHOWN_TEXT_CHARS + 1), 'utf16le').toString('utf16le');
+
 export interface SearchSession {
   id: string;
   process: ChildProcess;
@@ -971,7 +982,7 @@ export interface SearchSessionOptions {
           return {
             file: parsed.data.path.text,
             line: parsed.data.line_number,
-            match: submatch?.match?.text || parsed.data.lines.text,
+            match: keptText(submatch?.match?.text || parsed.data.lines.text),
             type: 'content'
           };
         }
@@ -980,7 +991,7 @@ export interface SearchSessionOptions {
           return {
             file: parsed.data.path.text,
             line: parsed.data.line_number,
-            match: parsed.data.lines.text.trim(),
+            match: keptText(parsed.data.lines.text.trim()),
             type: 'content'
           };
         }
