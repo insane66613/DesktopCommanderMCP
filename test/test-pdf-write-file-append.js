@@ -10,7 +10,7 @@ import assert from 'assert';
 import fs from 'fs';
 import path from 'path';
 import { handleWriteFile } from '../dist/handlers/filesystem-handlers.js';
-import { SAMPLE_PDF, answerText, isNoChrome, pdfWorkspace } from './helpers/pdf.js';
+import { SAMPLE_PDF, answerText, pdfWorkspace } from './helpers/pdf.js';
 import { isTestHome } from './helpers/test-env.js';
 import { runIfMain, skip } from './helpers/run-if-main.js';
 
@@ -27,10 +27,6 @@ async function run() {
 
     const result = await handleWriteFile({ path: pdf, content: '# more', mode: 'append' });
     const text = answerText(result);
-    if (isNoChrome(text)) {
-      skip(`write_file append on a PDF: no Chrome to launch (${text})`);
-      return true;
-    }
     assert(fs.readFileSync(pdf).equals(before), `write_file with mode "append" replaced the existing PDF (answer: ${text})`);
     assert(result.isError, `write_file with mode "append" on a PDF should refuse, answered: ${text}`);
     assert(/append not supported/i.test(text), `the refusal should say appending isn't supported, answered: ${text}`);

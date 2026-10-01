@@ -80,7 +80,7 @@ export class PdfFileHandler implements FileHandler {
      * Write PDF - creates from markdown or operations
      */
     async write(path: string, content: any, mode?: 'rewrite' | 'append'): Promise<void> {
-        if (mode === 'append') throw new Error('Cannot append to a PDF. Use rewrite or PDF insert operations.');
+        if (mode === 'append') throw new Error('PDF append not supported. Use rewrite or PDF insert operations.');
         const { writePdf } = await import('../../tools/filesystem.js');
         await writePdf(path, content);
     }
