@@ -104,7 +104,7 @@ async function testTildeExpansion() {
     
     // Check if the expanded path is the home directory
     assert.ok(
-      expandedPath.toLowerCase() === REAL_HOME_DIR.toLowerCase() || 
+      expandedPath.toLowerCase() === REAL_HOME_DIR.toLowerCase() ||
       expandedPath.toLowerCase().startsWith(REAL_HOME_DIR.toLowerCase()),
       'Tilde (~) should expand to the home directory'
     );
@@ -133,7 +133,7 @@ async function testTildeWithSubdirectory() {
     
     // Check if the expanded path is the home documents directory
     assert.ok(
-      expandedPath.toLowerCase() === REAL_HOME_DOCS_PATH.toLowerCase() || 
+      expandedPath.toLowerCase() === REAL_HOME_DOCS_PATH.toLowerCase() ||
       expandedPath.toLowerCase().startsWith(REAL_HOME_DOCS_PATH.toLowerCase()),
       '~/Documents should expand to the home documents directory'
     );
@@ -252,7 +252,7 @@ async function testHomeDirectory() {
     
     // Check if the expanded path is the home directory
     assert.ok(
-      expandedPath.toLowerCase() === REAL_HOME_DIR.toLowerCase() || 
+      expandedPath.toLowerCase() === REAL_HOME_DIR.toLowerCase() ||
       expandedPath.toLowerCase().startsWith(REAL_HOME_DIR.toLowerCase()),
       'Tilde (~) should expand to the home directory'
     );
