@@ -290,14 +290,17 @@ export async function startProcess(args: unknown): Promise<ServerResult> {
     };
   }
 
-  // Analyze the process state to detect if it's waiting for input
+  // Completion follows the child lifecycle; output patterns only suggest input prompts.
+  const lifecycle = terminalManager.getProcessStatus(result.pid);
+  const isFinished = lifecycle?.isComplete === true;
+  const exitCode = lifecycle?.exitCode ?? null;
   const processState = analyzeProcessState(result.output, result.pid);
 
   let statusMessage = '';
-  if (processState.isWaitingForInput) {
+  if (isFinished) {
+    statusMessage = `\nProcess completed with exit code ${exitCode ?? 'unknown'}.`;
+  } else if (processState.isWaitingForInput) {
     statusMessage = `\n🔄 ${formatProcessStateMessage(processState, result.pid)}`;
-  } else if (processState.isFinished) {
-    statusMessage = `\n✅ ${formatProcessStateMessage(processState, result.pid)}`;
   } else if (result.isBlocked) {
     statusMessage = '\n⏳ Process is running. Use read_process_output to get more output.';
   }
@@ -312,12 +315,20 @@ export async function startProcess(args: unknown): Promise<ServerResult> {
     result.output,
     config.processStartOutputLineLimit,
   );
+  const text = `Process started with PID ${result.pid} (shell: ${shellUsed})\nInitial output:\n${previewOutput}${statusMessage}${timingMessage}`;
 
   return {
-    content: [{
-      type: "text",
-      text: `Process started with PID ${result.pid} (shell: ${shellUsed})\nInitial output:\n${previewOutput}${statusMessage}${timingMessage}`
-    }],
+    content: [{ type: "text", text }],
+    structuredContent: {
+      pid: result.pid,
+      text,
+      output: text,
+      isBlocked: !isFinished && result.isBlocked,
+      isFinished,
+      exitCode,
+      state: isFinished ? 'finished' : !lifecycle ? 'unknown' : processState.isWaitingForInput ? 'waiting_for_input' : 'running',
+      success: true,
+    },
   };
 }
 

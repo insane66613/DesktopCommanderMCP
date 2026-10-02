@@ -638,6 +638,12 @@ export class TerminalManager {
     }
   }
 
+  getProcessStatus(pid: number): { isComplete: boolean; exitCode: number | null } | null {
+    if (this.sessions.has(pid)) return { isComplete: false, exitCode: null };
+    const completed = this.completedSessions.get(pid);
+    return completed ? { isComplete: true, exitCode: completed.exitCode } : null;
+  }
+
   /**
    * Read process output with pagination (like file reading)
    * @param pid Process ID
