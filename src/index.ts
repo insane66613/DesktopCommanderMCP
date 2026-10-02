@@ -14,7 +14,6 @@ import { capture } from './utils/capture.js';
 import { logToStderr, logger } from './utils/logger.js';
 import { exitProcess } from './utils/exit-process.js';
 import { runRemote } from './npm-scripts/remote.js';
-import { ensureChromeAvailable } from './tools/pdf/markdown.js';
 
 // Store messages to defer until after initialization
 const deferredMessages: Array<{ level: string, message: string }> = [];
@@ -132,8 +131,6 @@ async function runServer() {
       transport.sendLog('info', 'Server connected successfully');
       transport.sendLog('info', 'MCP fully initialized, all startup messages sent');
 
-      // Preemptively check/download Chrome for PDF generation (runs in background)
-      ensureChromeAvailable();
     };
 
     await server.connect(transport);
