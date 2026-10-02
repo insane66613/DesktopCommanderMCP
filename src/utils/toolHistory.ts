@@ -246,7 +246,7 @@ class ToolHistory {
   private capOutput(output: ServerResult): ServerResult {
     let size: number;
     try {
-      size = JSON.stringify(output)?.length ?? 0;
+      size = Buffer.byteLength(JSON.stringify(output) ?? '', 'utf8');
     } catch {
       // Circular or otherwise unserialisable — it could never be returned to a
       // client anyway, so don't retain it.
@@ -256,7 +256,7 @@ class ToolHistory {
 
     const shown = Number.isFinite(size) ? `${size} bytes` : 'unserialisable';
     return {
-      ...(output as any),
+      ...(output.isError !== undefined ? { isError: output.isError } : {}),
       content: [
         {
           type: 'text',

@@ -1114,6 +1114,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         - offset: -50, length: 10    → Start 50 from end, read 10 lines
                         
                         OUTPUT PROTECTION:
+                        - Pages are additionally limited to 8 KiB of serialized text, including long lines.
+                        - Continue using nextOffset as offset and nextCharacterOffset as character_offset.
+                        - Explicit character_offset makes offset=0 absolute; explicit reads do not move the default cursor.
+                        - Default reads continue through completed output without replaying it.
                         - Uses same fileReadLineLimit as read_file (default: 1000 lines)
                         - Returns status like: [Reading 100 lines from line 0 (total: 5000 lines, 4900 remaining)]
                         - Prevents context overflow from verbose processes
@@ -1261,7 +1265,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             {
                 name: "get_recent_tool_calls",
                 description: `
-                        Get recent local tool call history with arguments and outputs.
+                        Get compact recent local tool call history. Arguments and outputs are
+                        included only when includeDetails=true is explicitly requested.
                         Returns a chronological list of recent calls loaded from the local history file.
                         
                         Useful for:
@@ -1377,8 +1382,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 
 import * as handlers from './handlers/index.js';
 import { ServerResult } from './types.js';
+import { budgetToolResponse, serializedBytes } from './utils/response-budget.js';
 
 server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest): Promise<ServerResult> => {
+    const result = await executeCallToolRequest(request);
+    const bounded = budgetToolResponse(result);
+    console.error(JSON.stringify({ event: 'tool_response_size', tool: request.params.name.slice(0, 80),
+        response_bytes: serializedBytes(bounded), response_limited: bounded !== result,
+        ...(bounded !== result ? { original_response_bytes: serializedBytes(result) } : {}) }));
+    return bounded;
+});
+
+async function executeCallToolRequest(request: CallToolRequest): Promise<ServerResult> {
     const args = request.params.arguments;
     // Calls fired programmatically by the widget UIs (file preview, config
     // editor) carry origin:'ui'. They are real tool executions but not agent
@@ -1419,7 +1434,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
         });
     }
     return handleCallToolRequest(request);
-});
+}
 
 async function handleCallToolRequest(request: CallToolRequest): Promise<ServerResult> {
     const { name, arguments: args } = request.params;

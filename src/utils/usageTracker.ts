@@ -197,6 +197,7 @@ class UsageTracker {
    * Check if user should be prompted for feedback based on usage patterns
    */
   async shouldPromptForFeedback(): Promise<boolean> {
+    if (await configManager.getValue('user_surveys') === false) return false;
     // Check feature flag first
     const { featureFlagManager } = await import('./feature-flags.js');
     const feedbackEnabled = featureFlagManager.get('user_surveys', false);

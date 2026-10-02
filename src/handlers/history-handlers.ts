@@ -21,28 +21,33 @@ export async function handleGetRecentToolCalls(args: unknown): Promise<ServerRes
     const parsed = GetRecentToolCallsArgsSchema.parse(args);
     
     // Use formatted version with local timezone
-    const calls = toolHistory.getRecentCallsFormatted({
+    const recentCalls = toolHistory.getRecentCallsFormatted({
       maxResults: parsed.maxResults,
       toolName: parsed.toolName,
       since: parsed.since
     });
+    const calls = recentCalls.map(call => ({
+      timestamp: call.timestamp,
+      toolName: call.toolName,
+      duration: call.duration,
+      success: call.output.isError !== true,
+      ...(parsed.includeDetails ? { arguments: call.arguments, output: call.output } : {})
+    }));
     
     const stats = toolHistory.getStats();
     
     // Format the response (excluding file path per user request)
     const summary = `Tool Call History (${calls.length} results, ${stats.totalEntries} total in memory)`;
-    const historyJson = JSON.stringify(calls, null, 2);
     
     return {
       content: [{
         type: "text",
-        text: `${summary}\n\n${historyJson}`
+        text: summary
       }],
       structuredContent: {
         summary,
         calls,
         count: calls.length,
-        text: `${summary}\n\n${historyJson}`,
         success: true,
       },
     };

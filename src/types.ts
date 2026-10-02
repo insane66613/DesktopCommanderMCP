@@ -19,6 +19,7 @@ export interface TerminalSession {
   process: ChildProcess;
   outputLines: string[];      // Line-based buffer (persistent, capped — oldest lines evicted)
   lastReadIndex: number;      // Track where "new" output starts for default reads
+  lastReadCharacter?: number; // Continue a size-limited page within a long line
   isBlocked: boolean;
   startTime: Date;
   bufferedChars: number;      // Joined length of outputLines (content + separators)

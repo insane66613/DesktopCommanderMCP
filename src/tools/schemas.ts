@@ -51,8 +51,9 @@ export const StartProcessArgsSchema = z.object({
 export const ReadProcessOutputArgsSchema = z.object({
   pid: z.number(),
   timeout_ms: z.number().optional(),
-  offset: z.number().optional(),   // Line offset: 0=from last read, positive=absolute, negative=tail
-  length: z.number().optional(),   // Max lines to return (default from config.fileReadLineLimit)
+  offset: z.number().int().optional(),   // Line offset: 0=from last read, positive=absolute, negative=tail
+  length: z.number().int().min(1).optional(),   // Max lines to return (default from config.fileReadLineLimit)
+  character_offset: z.number().int().min(0).optional(), // Explicit position within a line; offset=0 then means absolute first line
   verbose_timing: z.boolean().optional(),
 });
 
@@ -265,6 +266,7 @@ export const GetRecentToolCallsArgsSchema = z.object({
   maxResults: z.number().min(1).max(1000).optional().default(50),
   toolName: z.string().optional(),
   since: z.string().datetime().optional(),
+  includeDetails: z.boolean().optional().default(false),
 });
 
 export const TrackUiEventArgsSchema = z.object({

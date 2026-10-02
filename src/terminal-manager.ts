@@ -1,4 +1,5 @@
 import { spawn } from 'child_process';
+import { boundedText, serializedBytes, MAX_PROCESS_PAGE_BYTES } from './utils/response-budget.js';
 import { existsSync } from 'fs';
 import path from 'path';
 import { TerminalSession, CommandExecutionResult, ActiveSession, TimingInfo, OutputEvent } from './types.js';
@@ -58,6 +59,8 @@ interface CompletedSession {
   endTime: Date;
   evictedLines: number;        // Carried over from the active session (see TerminalSession)
   evictedChars: number;
+  lastReadIndex: number;
+  lastReadCharacter?: number;
 }
 
 /**
@@ -83,6 +86,9 @@ export interface PaginatedOutputResult {
   exitCode?: number | null;    // Exit code if completed
   runtimeMs?: number;          // Runtime in milliseconds (for completed processes)
   evictedLines?: number;       // Lines dropped by the buffer cap; when > 0, line numbers are relative to the retained buffer
+  nextOffset: number;
+  nextCharacterOffset: number;
+  sizeLimited: boolean;
 }
 
 /**
@@ -544,7 +550,9 @@ export class TerminalManager {
             startTime: session.startTime,
             endTime: new Date(),
             evictedLines: session.evictedLines,
-            evictedChars: session.evictedChars
+            evictedChars: session.evictedChars,
+            lastReadIndex: session.lastReadIndex,
+            lastReadCharacter: session.lastReadCharacter
           });
 
           // Keep only last 100 completed sessions
@@ -617,6 +625,7 @@ export class TerminalManager {
       session.evictedChars += droppedJoinedChars;
       session.evictedLines++;
       if (session.lastReadIndex > 0) session.lastReadIndex--;
+      else session.lastReadCharacter = 0;
     }
   }
 
@@ -627,7 +636,7 @@ export class TerminalManager {
    * @param length Max lines to return
    * @param updateReadIndex Whether to update lastReadIndex (default: true for offset=0)
    */
-  readOutputPaginated(pid: number, offset: number = 0, length: number = 1000): PaginatedOutputResult | null {
+  readOutputPaginated(pid: number, offset: number = 0, length: number = 1000, characterOffset?: number): PaginatedOutputResult | null {
     // First check active sessions
     const session = this.sessions.get(pid);
     if (session) {
@@ -636,9 +645,12 @@ export class TerminalManager {
         offset,
         length,
         session.lastReadIndex,
-        (newIndex) => { session.lastReadIndex = newIndex; },
+        (newIndex, character) => { session.lastReadIndex = newIndex; session.lastReadCharacter = character; },
         false,
-        undefined
+        undefined,
+        undefined,
+        session.lastReadCharacter ?? 0,
+        characterOffset
       );
       result.evictedLines = session.evictedLines;
       return result;
@@ -652,11 +664,13 @@ export class TerminalManager {
         completedSession.outputLines,
         offset,
         length,
-        0,  // Completed sessions don't track read position
-        () => {},  // No-op for completed sessions
+        completedSession.lastReadIndex,
+        (newIndex, character) => { completedSession.lastReadIndex = newIndex; completedSession.lastReadCharacter = character; },
         true,
         completedSession.exitCode,
-        runtimeMs
+        runtimeMs,
+        completedSession.lastReadCharacter ?? 0,
+        characterOffset
       );
       result.evictedLines = completedSession.evictedLines;
       return result;
@@ -673,10 +687,12 @@ export class TerminalManager {
     offset: number,
     length: number,
     lastReadIndex: number,
-    updateLastRead: (index: number) => void,
+    updateLastRead: (index: number, character: number) => void,
     isComplete: boolean,
     exitCode?: number | null,
-    runtimeMs?: number
+    runtimeMs?: number,
+    lastReadCharacter: number = 0,
+    characterOffset?: number
   ): PaginatedOutputResult {
     const totalLines = lines.length;
     let startIndex: number;
@@ -691,10 +707,10 @@ export class TerminalManager {
       // Don't update lastReadIndex for tail reads
     } else if (offset === 0) {
       // offset=0 means "from where I last read" (like getNewOutput)
-      startIndex = lastReadIndex;
+      startIndex = characterOffset === undefined ? lastReadIndex : 0;
       linesToRead = lines.slice(startIndex, startIndex + length);
       // Update lastReadIndex for "new output" behavior
-      updateLastRead(Math.min(startIndex + linesToRead.length, totalLines));
+      // Advance only by the bounded page actually returned below.
     } else {
       // Positive offset = absolute position
       startIndex = offset;
@@ -702,9 +718,38 @@ export class TerminalManager {
       // Don't update lastReadIndex for absolute position reads
     }
 
+    const page: string[] = [];
+    let nextOffset = startIndex;
+    let nextCharacterOffset = characterOffset ?? (offset === 0 ? lastReadCharacter : 0);
+    let budget = MAX_PROCESS_PAGE_BYTES;
+    let sizeLimited = false;
+    for (const line of linesToRead) {
+      const unread = line.slice(nextCharacterOffset);
+      if (unread.length === 0 && !isComplete && nextOffset === totalLines - 1) break;
+      const piece = boundedText(unread, budget);
+      if (piece.length === 0 && unread.length > 0) { sizeLimited = true; break; }
+      page.push(piece);
+      budget -= serializedBytes(piece) + 2; // reserve escaped newline separator
+      if (piece.length < unread.length) {
+        nextCharacterOffset += piece.length;
+        sizeLimited = true;
+        break;
+      }
+      nextOffset++;
+      nextCharacterOffset = 0;
+      if (budget < 8 && nextOffset < startIndex + linesToRead.length) { sizeLimited = true; break; }
+    }
+    linesToRead = page;
+    // The final active line can still grow without a newline. Keep its character cursor.
+    if (!isComplete && nextOffset === totalLines && totalLines > 0) {
+      nextOffset = totalLines - 1;
+      nextCharacterOffset = lines[nextOffset].length;
+    }
+    if (offset === 0 && characterOffset === undefined) updateLastRead(nextOffset, nextCharacterOffset);
     const readCount = linesToRead.length;
-    const endIndex = startIndex + readCount;
-    const remaining = Math.max(0, totalLines - endIndex);
+    const endIndex = nextOffset;
+    const remaining = Math.max(0, totalLines - endIndex -
+      (!isComplete && endIndex === totalLines - 1 && nextCharacterOffset === lines[endIndex]?.length ? 1 : 0));
 
     return {
       lines: linesToRead,
@@ -714,7 +759,10 @@ export class TerminalManager {
       remaining,
       isComplete,
       exitCode,
-      runtimeMs
+      runtimeMs,
+      nextOffset,
+      nextCharacterOffset,
+      sizeLimited
     };
   }
 
@@ -735,6 +783,13 @@ export class TerminalManager {
     return null;
   }
 
+  hasUnreadOutput(pid: number): boolean {
+    const session = this.sessions.get(pid) ?? this.completedSessions.get(pid);
+    if (!session) return false;
+    return session.outputLines.length > session.lastReadIndex + 1 ||
+      (session.outputLines[session.lastReadIndex]?.length ?? 0) > (session.lastReadCharacter ?? 0);
+  }
+
   /**
    * Legacy method for backward compatibility
    * Returns all new output since last read
@@ -746,6 +801,10 @@ export class TerminalManager {
     if (!result) return null;
 
     const output = result.lines.join('\n').trim();
+
+    if (result.sizeLimited) {
+      return `${output}\n\n[Size-limited output. Continue with read_process_output offset=${result.nextOffset}, character_offset=${result.nextCharacterOffset}.]`;
+    }
 
     // For completed sessions, append completion info with runtime
     if (result.isComplete) {

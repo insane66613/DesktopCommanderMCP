@@ -18,6 +18,20 @@ Work with code and text, run processes, and automate tasks, going far beyond oth
 </a>
 
 ## Table of Contents
+
+Local response protection: tool responses are limited to 32 KiB of serialized UTF-8 JSON.
+Process output is paged in 8 KiB chunks; default reads advance through active and
+completed output instead of replaying it. Size-limited pages return `nextOffset`
+and `nextCharacterOffset`; pass them as `offset` and `character_offset` for explicit
+continuation (including within a long line). Explicit positions do not advance
+the default cursor. Output remains in the existing bounded process buffer.
+Other oversized responses carry an omission notice; request smaller ranges.
+Oversized inline images are omitted rather than returning corrupt partial base64.
+`get_recent_tool_calls` returns compact metadata by default; use `includeDetails: true`
+only when previous arguments and outputs are needed. Records are returned once in
+`structuredContent.calls`; text-only clients receive the summary. Local configuration values
+`onboarding_injection: false` and `user_surveys: false` disable optional conversation prompts.
+
 - [Features](#features)
 - [How to install](#how-to-install)
 - [Getting Started](#getting-started)

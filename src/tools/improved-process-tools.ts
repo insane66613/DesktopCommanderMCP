@@ -370,6 +370,7 @@ export async function readProcessOutput(args: unknown): Promise<ServerResult> {
     timeout_ms = 5000, 
     offset = 0,                    // 0 = from last read, positive = absolute, negative = tail
     length = defaultLength,        // Default from config, same as file reading
+    character_offset,
     verbose_timing = false 
   } = parsed.data;
 
@@ -378,13 +379,12 @@ export async function readProcessOutput(args: unknown): Promise<ServerResult> {
 
   // For active sessions with no new output yet, optionally wait for output
   const session = terminalManager.getSession(pid);
-  if (session && offset === 0) {
+  if (session && offset === 0 && character_offset === undefined) {
     // Wait for new output to arrive (only for "new output" reads, not absolute/tail)
     const waitForOutput = (): Promise<void> => {
       return new Promise((resolve) => {
         // Check if there's already new output
-        const currentLines = terminalManager.getOutputLineCount(pid) || 0;
-        if (currentLines > session.lastReadIndex) {
+        if (terminalManager.hasUnreadOutput(pid)) {
           resolve();
           return;
         }
@@ -409,8 +409,7 @@ export async function readProcessOutput(args: unknown): Promise<ServerResult> {
 
         const poll = () => {
           if (resolved) return;
-          const newLineCount = terminalManager.getOutputLineCount(pid) || 0;
-          if (newLineCount > session.lastReadIndex) {
+          if (!terminalManager.getSession(pid) || terminalManager.hasUnreadOutput(pid)) {
             resolveOnce();
             return;
           }
@@ -433,7 +432,7 @@ export async function readProcessOutput(args: unknown): Promise<ServerResult> {
   }
 
   // Read output with pagination
-  const result = terminalManager.readOutputPaginated(pid, offset, length);
+  const result = terminalManager.readOutputPaginated(pid, offset, length, character_offset);
   
   if (!result) {
     return {
@@ -465,6 +464,9 @@ export async function readProcessOutput(args: unknown): Promise<ServerResult> {
   // Surface buffer-cap eviction so the model knows the retained output is not
   // the full output and that line numbers shifted (matches the truncation
   // markers used by other tools).
+  if (result.sizeLimited) {
+    statusMessage += `\n[Size-limited page. Continue with offset=${result.nextOffset}, character_offset=${result.nextCharacterOffset}${offset === 0 && character_offset === undefined ? '; or omit both to read the next incremental page' : ''}.]`;
+  }
   if (result.evictedLines && result.evictedLines > 0) {
     const capMB = Math.round(MAX_BUFFERED_OUTPUT_CHARS / 1024 / 1024);
     statusMessage += `\n[WARNING: output exceeded the ${capMB}MB buffer cap; the ${result.evictedLines} earliest lines were evicted and cannot be read. Line numbers and totals refer to the retained buffer only]`;
@@ -500,6 +502,17 @@ export async function readProcessOutput(args: unknown): Promise<ServerResult> {
       type: "text",
       text: `${statusMessage}\n\n${responseText}${processStateMessage}${timingMessage}`
     }],
+    structuredContent: {
+      pid,
+      text: `${statusMessage}\n\n${responseText}${processStateMessage}${timingMessage}`,
+      success: true,
+      isFinished: result.isComplete,
+      exitCode: result.exitCode ?? null,
+      nextOffset: result.nextOffset,
+      nextCharacterOffset: result.nextCharacterOffset,
+      hasMoreOutput: result.remaining > 0,
+      sizeLimited: result.sizeLimited,
+    },
   };
 }
 
