@@ -13,6 +13,7 @@ import { defaultConfig, type Config as MdToPdfConfig } from 'md-to-pdf/dist/lib/
 import type { PageRange } from './lib/pdf2md.js';
 import { PdfParseResult, pdf2md } from './lib/pdf2md.js';
 import { CONFIG_FILE } from '../../config.js';
+import { fetchUrlValidated } from '../../utils/urlSafety.js';
 
 const isUrl = (source: string): boolean =>
     source.startsWith('http://') || source.startsWith('https://');
@@ -722,7 +723,7 @@ export function ensureChromeAvailable(): void {
 async function loadPdfToBuffer(source: string | Buffer | ArrayBuffer | Uint8Array): Promise<Buffer | ArrayBuffer | Uint8Array> {
     if (typeof source !== 'string') return source;
     if (isUrl(source)) {
-        const response = await fetch(source);
+        const { response } = await fetchUrlValidated(source);
         return await response.arrayBuffer();
     } else {
         return await fs.readFile(source);

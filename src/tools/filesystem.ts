@@ -1,7 +1,7 @@
 import fs from "fs/promises";
 import path from "path";
 import os from 'os';
-import fetch from 'cross-fetch';
+import type fetch from 'cross-fetch';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { capture } from '../utils/capture.js';
@@ -14,6 +14,9 @@ import { parsePdfToMarkdown, editPdf, PdfOperations, PdfMetadata, parseMarkdownT
 import { resolveRender, type IgnoredRenderOption } from './pdf/markdown.js';
 import { isBinaryFile } from 'isbinaryfile';
 import { renameWithRetry } from '../utils/rename.js';
+import { fetchUrlValidated } from '../utils/urlSafety.js';
+
+export { assertUrlIsFetchable } from '../utils/urlSafety.js';
 
 // CONSTANTS SECTION - Consolidate all timeouts and thresholds
 const FILE_OPERATION_TIMEOUTS = {
@@ -415,7 +418,7 @@ type FileResultPayloads = PdfPayload;
  * @param url URL to fetch content from
  * @returns File content or file result with metadata
  */
-export async function readFileFromUrl(url: string): Promise<FileResult> {
+export async function readFileFromUrl(url: string, fetchImpl?: typeof fetch): Promise<FileResult> {
     // Import the MIME type utilities
     const { isImageFile } = await import('./mime-types.js');
 
@@ -424,9 +427,7 @@ export async function readFileFromUrl(url: string): Promise<FileResult> {
     const timeoutId = setTimeout(() => controller.abort(), FILE_OPERATION_TIMEOUTS.URL_FETCH);
 
     try {
-        const response = await fetch(url, {
-            signal: controller.signal
-        });
+        const { response, finalUrl } = await fetchUrlValidated(url, controller.signal, fetchImpl);
 
         if (!response.ok) {
             throw new Error(`HTTP error! Status: ${response.status}`);
@@ -435,7 +436,7 @@ export async function readFileFromUrl(url: string): Promise<FileResult> {
         // Get MIME type from Content-Type header or infer from URL
         const contentType = response.headers.get('content-type') || 'text/plain';
         const isImage = isImageFile(contentType);
-        const isPdf = isPdfFile(contentType) || url.toLowerCase().endsWith('.pdf');
+        const isPdf = isPdfFile(contentType) || new URL(finalUrl).pathname.toLowerCase().endsWith('.pdf');
 
         // NEW: Add PDF handling before image check
         if (isPdf) {
