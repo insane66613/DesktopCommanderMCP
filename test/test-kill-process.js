@@ -47,6 +47,10 @@ async function testRefusesPidsBelowOne() {
   }
   if (signaled.length > 0) failures.push(`nothing should have been signaled, but process.kill was called for ${signaled.join(', ')}`);
   assert.deepStrictEqual(failures, [], failures.join('\n'));
+  const { KillProcessArgsSchema } = await import('../dist/tools/schemas.js');
+  for (const pid of [1.5, 2147483648, Infinity, NaN]) {
+    assert.equal(KillProcessArgsSchema.safeParse({ pid }).success, false, 'signal targets must be positive signed integers');
+  }
   console.log(`✓ ${pids.join(', ')} refused, nothing signaled`);
 }
 

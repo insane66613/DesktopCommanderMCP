@@ -119,11 +119,11 @@ function getShellSpawnArgs(shellPath: string, command: string): ShellSpawnConfig
     };
   }
   
-  // PowerShell Core (cross-platform, supports -Login)
+  // Automation must not execute interactive profiles or add their output to tool results.
   if (shellName === 'pwsh' || shellName === 'pwsh.exe') {
     return { 
       executable: shellPath, 
-      args: ['-Login', '-Command', command],
+      args: ['-NoLogo', '-NoProfile', '-Command', command],
       useShellOption: false 
     };
   }

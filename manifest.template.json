@@ -56,6 +56,14 @@
       "description": "Write or append to file contents. Supports Excel files (JSON 2D array format) and DOCX creation from markdown. For PDFs, use write_pdf instead."
     },
     {
+      "name": "receive_file",
+      "description": "Receive and write a complete generated project file in one bounded tool call, with optional SHA-256 verification and allowed-directory enforcement."
+    },
+    {
+      "name": "export_project_file",
+      "description": "Read-only bounded export of an explicitly selected project file for code review or maintenance, with SHA-256 metadata and sensitive-file safeguards."
+    },
+    {
       "name": "write_pdf",
       "description": "Create new PDF files from markdown or modify existing PDFs (insert/delete pages). Supports HTML/CSS styling and SVG graphics."
     },

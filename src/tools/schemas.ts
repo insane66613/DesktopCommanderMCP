@@ -66,8 +66,7 @@ export const ListSessionsArgsSchema = z.object({});
 export const KillProcessArgsSchema = z.object({
   // process.kill reads 0 and negative PIDs as process groups: 0 is the server's
   // own (on Windows the server itself), -1 every process the user may signal.
-  // A refinement rather than .positive(), so the published schema is unchanged.
-  pid: z.number().refine((pid) => pid > 0, { message: 'Number must be greater than 0' }),
+  pid: z.number().int().min(1, 'Number must be greater than 0').max(2147483647),
 });
 
 // Filesystem tools schemas

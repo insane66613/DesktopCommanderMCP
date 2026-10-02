@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Validates that the tools listed in mcpb-bundle/manifest.json match
+ * Validates that the tools listed in manifest.template.json match
  * the tools actually provided by the running MCP server
  * 
  * This uses JSON-RPC to query the server directly, avoiding fragile regex parsing.
@@ -26,7 +26,10 @@ const colors = {
 };
 
 async function extractToolsFromManifest() {
-  const manifestPath = join(rootDir, 'mcpb-bundle', 'manifest.json');
+  // The generated MCPB bundle is gitignored. Validate against the tracked
+  // source manifest so a fresh checkout can run this gate without first
+  // generating packaging artifacts.
+  const manifestPath = join(rootDir, 'manifest.template.json');
   const content = await readFile(manifestPath, 'utf-8');
   const manifest = JSON.parse(content);
   
@@ -44,6 +47,45 @@ async function extractToolsFromServer() {
     let output = '';
     let errorOutput = '';
     const messages = [];
+    let toolsRequested = false;
+    let settled = false;
+    let deadline;
+
+    const finishReject = (message) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      server.kill();
+      reject(new Error(`${message}${errorOutput.trim() ? `\nServer stderr:\n${errorOutput.trim()}` : ''}`));
+    };
+
+    const maybeHandleMessage = (message) => {
+      if (!toolsRequested && message.id === 1 && message.result) {
+        toolsRequested = true;
+        // MCP requires the initialized notification after initialize completes.
+        server.stdin.write(JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'notifications/initialized',
+          params: {}
+        }) + '\n');
+        server.stdin.write(JSON.stringify({
+          jsonrpc: '2.0',
+          id: 2,
+          method: 'tools/list',
+          params: {}
+        }) + '\n');
+      }
+
+      if (message.id === 2 && message.result?.tools) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(deadline);
+        server.kill();
+        resolve(message.result.tools.map(tool => tool.name).sort());
+      } else if (message.id === 2 && message.error) {
+        finishReject(`tools/list failed: ${message.error.message ?? JSON.stringify(message.error)}`);
+      }
+    };
 
     server.stdout.on('data', (data) => {
       output += data.toString();
@@ -55,7 +97,9 @@ async function extractToolsFromServer() {
       for (const line of lines) {
         if (line.trim()) {
           try {
-            messages.push(JSON.parse(line));
+            const message = JSON.parse(line);
+            messages.push(message);
+            maybeHandleMessage(message);
           } catch (e) {
             // Not JSON, might be debug output
           }
@@ -84,37 +128,12 @@ async function extractToolsFromServer() {
 
     server.stdin.write(JSON.stringify(initRequest) + '\n');
 
-    // Wait for initialize response, then send tools/list
-    setTimeout(() => {
-      // Step 2: Send tools/list request
-      const toolsRequest = {
-        jsonrpc: '2.0',
-        id: 2,
-        method: 'tools/list',
-        params: {}
-      };
-
-      server.stdin.write(JSON.stringify(toolsRequest) + '\n');
-
-      // Wait for tools/list response
-      setTimeout(() => {
-        server.kill();
-
-        // Find the tools/list response
-        const toolsResponse = messages.find(msg => msg.id === 2 && msg.result);
-
-        if (!toolsResponse) {
-          reject(new Error('No tools/list response received'));
-          return;
-        }
-
-        const tools = toolsResponse.result.tools.map(tool => tool.name).sort();
-        resolve(tools);
-      }, 1000);
-    }, 500);
+    deadline = setTimeout(() => {
+      finishReject(`No tools/list response received within 5s (messages=${messages.length})`);
+    }, 5000);
 
     server.on('error', (error) => {
-      reject(new Error(`Failed to start server: ${error.message}`));
+      finishReject(`Failed to start server: ${error.message}`);
     });
   });
 }
@@ -140,19 +159,19 @@ async function main() {
     
     if (missingInManifest.length === 0 && missingInServer.length === 0) {
       console.log(`${colors.green}✅ SUCCESS: All tools are in sync!${colors.reset}`);
-      console.log(`${colors.green}   Both manifest.json and server.ts have ${manifestTools.length} tools.${colors.reset}`);
+      console.log(`${colors.green}   Both manifest.template.json and server.ts have ${manifestTools.length} tools.${colors.reset}`);
       process.exit(0);
     } else {
       console.log(`${colors.red}❌ MISMATCH DETECTED!${colors.reset}\n`);
       
       if (missingInManifest.length > 0) {
-        console.log(`${colors.yellow}⚠️  Tools in server.ts but NOT in manifest.json:${colors.reset}`);
+        console.log(`${colors.yellow}⚠️  Tools in server.ts but NOT in manifest.template.json:${colors.reset}`);
         missingInManifest.forEach(tool => console.log(`   ${colors.red}✗${colors.reset} ${tool}`));
         console.log();
       }
       
       if (missingInServer.length > 0) {
-        console.log(`${colors.yellow}⚠️  Tools in manifest.json but NOT in server.ts:${colors.reset}`);
+        console.log(`${colors.yellow}⚠️  Tools in manifest.template.json but NOT in server.ts:${colors.reset}`);
         missingInServer.forEach(tool => console.log(`   ${colors.red}✗${colors.reset} ${tool}`));
         console.log();
       }
