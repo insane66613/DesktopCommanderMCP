@@ -327,6 +327,40 @@ async function testWidgetCallToolSingleFlight() {
   console.log('  PASS: identical calls share one in-flight request');
 }
 
+async function testCanonicalWidgetCallKeys() {
+  let calls = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const bridge = createToolBridge({
+    host: { openai: { callTool: async () => { calls++; await gate; return {}; } } },
+  });
+  const first = bridge.callTool('read_file', { options: { offset: 0, length: 1 } });
+  const reordered = bridge.callTool('read_file', { options: { length: 1, offset: 0 } });
+  const nan = bridge.callTool('read_file', { value: Number.NaN });
+  const nil = bridge.callTool('read_file', { value: null });
+  release();
+  await Promise.all([first, reordered, nan, nil]);
+  assert.strictEqual(calls, 3, 'reordered keys coalesce, but NaN and null remain distinct');
+}
+
+async function testUiEventCacheStaysBounded() {
+  const calls = [];
+  const track = createUiEventTracker(
+    async (_name, args) => { calls.push(args); return {}; },
+    { component: 'test-widget' },
+  );
+  const realNow = Date.now;
+  Date.now = () => 1000;
+  try {
+    for (let index = 0; index < 101; index++) track('click', { index });
+    track('click', { index: 0 });
+    track('click', { index: 100 });
+    assert.strictEqual(calls.length, 102, 'oldest key is evicted while recent duplicate stays suppressed');
+  } finally {
+    Date.now = realNow;
+  }
+}
+
 async function testPreviewReplayHydrationUsesPersistedPayloadWithoutRefresh() {
   console.log('\n--- Test: replayed file preview hydrates from persisted payload without refresh ---');
   const payloadUtils = await import('../dist/ui/file-preview/src/payload-utils.js');
@@ -459,6 +493,8 @@ async function main() {
     { name: 'backoff/bounded', fn: testBoundedBackoff },
     { name: 'remote/heartbeat-idempotent', fn: testHeartbeatStartIsIdempotent },
     { name: 'widget/single-flight', fn: testWidgetCallToolSingleFlight },
+    { name: 'widget/canonical-keys', fn: testCanonicalWidgetCallKeys },
+    { name: 'ui-event/bounded-cache', fn: testUiEventCacheStaysBounded },
     { name: 'widget/replay-hydration', fn: testPreviewReplayHydrationUsesPersistedPayloadWithoutRefresh },
     { name: 'widget/ui-read-circuit-breaker', fn: testUiPreviewReadCircuitBreakerRequiresQuietPeriod },
     { name: 'ui-event/dedup', fn: testUiEventDuplicateSuppression },
