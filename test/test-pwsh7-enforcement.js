@@ -29,54 +29,53 @@ async function waitForProcessOutput(pid, pattern, timeoutMs = 60000) {
   return output;
 }
 
-const legacyAllowed = await commandManager.validateCommand(legacy);
-const pwshAllowed = await commandManager.validateCommand(pwsh);
-const fullPwshAllowed = await commandManager.validateCommand(quotedFullPwsh);
-const nestedCmdAllowed = await commandManager.validateCommand(nestedCmdLegacy);
-const nestedPwshAllowed = await commandManager.validateCommand(nestedPwshLegacy);
-const literalCommitAllowed = await commandManager.validateCommand(literalCommitMessage);
-const literalEchoAllowed = await commandManager.validateCommand(literalEcho);
-const explicitLegacyShell = await terminalManager.executeCommand(
-  'echo SHOULD_NOT_RUN',
-  1000,
-  'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
-);
-const directLegacyCommand = await terminalManager.executeCommand(
-  'powershell.exe -NoProfile -Command echo SHOULD_NOT_RUN',
-  1000,
-  fullPwshPath,
-);
-const nestedLegacyCommand = await terminalManager.executeCommand(
-  nestedCmdLegacy,
-  1000,
-  fullPwshPath,
-);
-const legacyViaCmdShell = await terminalManager.executeCommand(
-  'powershell.exe -NoProfile -Command echo SHOULD_NOT_RUN',
-  1000,
-  'cmd.exe',
-);
-
-assert.strictEqual(legacyAllowed, false, 'legacy PowerShell command must be rejected');
-assert.strictEqual(pwshAllowed, true, 'PowerShell 7 command must remain allowed');
-assert.strictEqual(fullPwshAllowed, true, 'PowerShell 7 full path must not be blocked by its PowerShell directory name');
-assert.strictEqual(nestedCmdAllowed, false, 'legacy PowerShell nested under cmd must be rejected');
-assert.strictEqual(nestedPwshAllowed, false, 'legacy PowerShell nested under pwsh must be rejected');
-assert.strictEqual(literalCommitAllowed, true, 'literal PowerShell text in a Git commit message must be allowed');
-assert.strictEqual(literalEchoAllowed, true, 'literal powershell.exe text passed to another command must be allowed');
-assert.strictEqual(commandManager.isLegacyWindowsPowerShellInvocation(quotedFullPwsh), false);
-assert.strictEqual(commandManager.isLegacyWindowsPowerShellInvocation(literalCommitMessage), false);
-assert.strictEqual(commandManager.isLegacyWindowsPowerShellInvocation(literalEcho), false);
-assert.strictEqual(explicitLegacyShell.pid, -1, 'legacy shell must be rejected before spawn');
-assert.match(explicitLegacyShell.output, /Windows PowerShell 5\.1 is disabled/);
-assert.strictEqual(directLegacyCommand.pid, -1, 'legacy command must be rejected even under pwsh');
-assert.match(directLegacyCommand.output, /Windows PowerShell 5\.1 is disabled/);
-assert.strictEqual(nestedLegacyCommand.pid, -1, 'nested legacy command must be rejected at terminal-manager boundary');
-assert.match(nestedLegacyCommand.output, /Windows PowerShell 5\.1 is disabled/);
-assert.strictEqual(legacyViaCmdShell.pid, -1, 'cmd shell must not bypass legacy PowerShell rejection');
-assert.match(legacyViaCmdShell.output, /Windows PowerShell 5\.1 is disabled/);
-
 if (process.platform === 'win32') {
+  const legacyAllowed = await commandManager.validateCommand(legacy);
+  const pwshAllowed = await commandManager.validateCommand(pwsh);
+  const fullPwshAllowed = await commandManager.validateCommand(quotedFullPwsh);
+  const nestedCmdAllowed = await commandManager.validateCommand(nestedCmdLegacy);
+  const nestedPwshAllowed = await commandManager.validateCommand(nestedPwshLegacy);
+  const literalCommitAllowed = await commandManager.validateCommand(literalCommitMessage);
+  const literalEchoAllowed = await commandManager.validateCommand(literalEcho);
+  const explicitLegacyShell = await terminalManager.executeCommand(
+    'echo SHOULD_NOT_RUN',
+    1000,
+    'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+  );
+  const directLegacyCommand = await terminalManager.executeCommand(
+    'powershell.exe -NoProfile -Command echo SHOULD_NOT_RUN',
+    1000,
+    fullPwshPath,
+  );
+  const nestedLegacyCommand = await terminalManager.executeCommand(
+    nestedCmdLegacy,
+    1000,
+    fullPwshPath,
+  );
+  const legacyViaCmdShell = await terminalManager.executeCommand(
+    'powershell.exe -NoProfile -Command echo SHOULD_NOT_RUN',
+    1000,
+    'cmd.exe',
+  );
+
+  assert.strictEqual(legacyAllowed, false, 'legacy PowerShell command must be rejected');
+  assert.strictEqual(pwshAllowed, true, 'PowerShell 7 command must remain allowed');
+  assert.strictEqual(fullPwshAllowed, true, 'PowerShell 7 full path must not be blocked by its PowerShell directory name');
+  assert.strictEqual(nestedCmdAllowed, false, 'legacy PowerShell nested under cmd must be rejected');
+  assert.strictEqual(nestedPwshAllowed, false, 'legacy PowerShell nested under pwsh must be rejected');
+  assert.strictEqual(literalCommitAllowed, true, 'literal PowerShell text in a Git commit message must be allowed');
+  assert.strictEqual(literalEchoAllowed, true, 'literal powershell.exe text passed to another command must be allowed');
+  assert.strictEqual(commandManager.isLegacyWindowsPowerShellInvocation(quotedFullPwsh), false);
+  assert.strictEqual(commandManager.isLegacyWindowsPowerShellInvocation(literalCommitMessage), false);
+  assert.strictEqual(commandManager.isLegacyWindowsPowerShellInvocation(literalEcho), false);
+  assert.strictEqual(explicitLegacyShell.pid, -1, 'legacy shell must be rejected before spawn');
+  assert.match(explicitLegacyShell.output, /Windows PowerShell 5\.1 is disabled/);
+  assert.strictEqual(directLegacyCommand.pid, -1, 'legacy command must be rejected even under pwsh');
+  assert.match(directLegacyCommand.output, /Windows PowerShell 5\.1 is disabled/);
+  assert.strictEqual(nestedLegacyCommand.pid, -1, 'nested legacy command must be rejected at terminal-manager boundary');
+  assert.match(nestedLegacyCommand.output, /Windows PowerShell 5\.1 is disabled/);
+  assert.strictEqual(legacyViaCmdShell.pid, -1, 'cmd shell must not bypass legacy PowerShell rejection');
+  assert.match(legacyViaCmdShell.output, /Windows PowerShell 5\.1 is disabled/);
   assert.strictEqual(WINDOWS_POWERSHELL_7_PATH, fullPwshPath);
   assert.strictEqual(resolveWindowsPowerShell7Fallback(), fullPwshPath, 'fallback must resolve the governed PS7 executable');
   const originalGetConfig = configManager.getConfig.bind(configManager);
@@ -107,6 +106,12 @@ if (process.platform === 'win32') {
   const guidance = getOSSpecificGuidance(getSystemInfo());
   assert.match(guidance, /Default shell: pwsh\.exe/);
   assert.doesNotMatch(guidance, /Default shell: powershell\.exe/);
+} else {
+  assert.strictEqual(commandManager.isLegacyWindowsPowerShellInvocation(legacy), false);
+  assert.strictEqual(resolveWindowsPowerShell7Fallback(), null, 'PS7 fallback is Windows-only');
+  assert.strictEqual(normalizeWindowsDefaultShellValue('powershell.exe'), 'powershell.exe');
+  assert.strictEqual(await commandManager.validateCommand(literalCommitMessage), true);
+  assert.strictEqual(await commandManager.validateCommand(literalEcho), true);
 }
 
 const setupPath = fileURLToPath(new URL('../setup-claude-server.js', import.meta.url));

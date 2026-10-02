@@ -10,15 +10,22 @@ const blocked = [
   'node --eval "console.log(1)"',
   'node -p "1 + 1"',
   'node --print "1 + 1"',
-  "pwsh.exe -NoProfile -Command \"python -c 'print(`danger`)'\"",
-  'cmd.exe /c "node -e \'console.log(1)\'"',
   'Write-Output safe; node -e "console.log(1)"',
   'Write-Output safe\npython -c "print(1)"',
-  'Write-Output "C:\\temp\\"; python -c "print(1)"',
-  'python `\n-c "print(1)"',
   'node --require helper.js -e "console.log(1)"',
   'python -W ignore -c "print(1)"',
 ];
+
+if (process.platform === 'win32') {
+  blocked.push(
+    "pwsh.exe -NoProfile -Command \"python -c 'print(`danger`)'\"",
+    'cmd.exe /c "node -e \'console.log(1)\'"',
+    'Write-Output "C:\\temp\\"; python -c "print(1)"',
+    'python `\n-c "print(1)"',
+  );
+} else {
+  blocked.push('python \\\n-c "print(1)"', 'echo "/tmp/"; python -c "print(1)"');
+}
 
 for (const command of blocked) {
   const reason = commandManager.getUnsafeInlineInterpreterReason(command);
@@ -44,7 +51,7 @@ for (const command of allowed) {
   );
 }
 
-assert.match(
+if (process.platform === 'win32') assert.match(
   commandManager.getUnsafeInlineInterpreterReason('node ^\r\n-e "console.log(1)"', 'cmd.exe') ?? '',
   /inline interpreter/i,
   'cmd.exe caret line continuation must not bypass the guard',

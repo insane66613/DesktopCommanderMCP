@@ -15,7 +15,7 @@
  * Only ESRCH counted as "gone", so the EPERM escaped a finally block and ended
  * the whole test file.
  *
- * The zombie-only group is made without timing luck: sh with job control
+ * The zombie-only group is made without timing luck: bash with job control
  * (set -m) starts a job in a process group of its own, then execs sleep, which
  * never reaps the job when it exits.
  *
@@ -40,7 +40,8 @@ function stateOf(pid) {
 
 /** A process group holding one zombie: its PGID, and how to end the process that keeps it a zombie */
 async function startZombieGroup() {
-  const keeper = spawn('sh', ['-c', 'set -m; sleep 1 & echo $!; exec sleep 60'], { stdio: ['ignore', 'pipe', 'ignore'] });
+  // Debian's /bin/sh is dash, whose noninteractive job control does not create this group.
+  const keeper = spawn('bash', ['-c', 'set -m; sleep 1 & echo $!; exec sleep 60'], { stdio: ['ignore', 'pipe', 'ignore'] });
   const pid = await new Promise((resolve, reject) => {
     keeper.stdout.once('data', (data) => resolve(Number(String(data).trim())));
     keeper.once('error', reject);

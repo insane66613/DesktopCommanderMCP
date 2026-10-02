@@ -85,14 +85,20 @@ async function runTests() {
         assert.ok(cmds8.includes('ls'), 'FAIL: should extract "ls" and ignore $MYVAR');
         assert.ok(!cmds8.includes('$MYVAR'), 'FAIL: should not include $MYVAR as a command');
 
-        // Test 9: PowerShell invocation operator + quoted absolute path must normalize.
-        const cmds9 = commandManager.extractCommands("& 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' -NoProfile");
-        console.log('  quoted Windows PowerShell path =>', cmds9);
-        assert.ok(cmds9.includes('powershell.exe'), 'FAIL: should extract powershell.exe from quoted absolute path');
+        if (process.platform === 'win32') {
+            // Test 9: PowerShell invocation operator + quoted absolute path must normalize.
+            const cmds9 = commandManager.extractCommands("& 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' -NoProfile");
+            console.log('  quoted Windows PowerShell path =>', cmds9);
+            assert.ok(cmds9.includes('powershell.exe'), 'FAIL: should extract powershell.exe from quoted absolute path');
 
-        // Test 10: hard legacy-PowerShell detector catches nested/full-path forms but not pwsh.
-        assert.strictEqual(commandManager.isLegacyWindowsPowerShellInvocation("cmd /c C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile"), true);
-        assert.strictEqual(commandManager.isLegacyWindowsPowerShellInvocation('pwsh.exe -NoProfile'), false);
+            // Test 10: hard legacy-PowerShell detector catches nested/full-path forms but not pwsh.
+            assert.strictEqual(commandManager.isLegacyWindowsPowerShellInvocation("cmd /c C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile"), true);
+            assert.strictEqual(commandManager.isLegacyWindowsPowerShellInvocation('pwsh.exe -NoProfile'), false);
+        } else {
+            const quotedPath = commandManager.extractCommands("'/usr/bin/rm' -f example");
+            assert.ok(quotedPath.includes('rm'), 'FAIL: should normalize a quoted native absolute executable');
+            assert.strictEqual(commandManager.isLegacyWindowsPowerShellInvocation('powershell.exe -NoProfile'), false);
+        }
 
         // Test 11: export + env assignment must not mask the real command.
         const cmds11 = commandManager.extractCommands('export PATH=/usr/bin rm -rf /');

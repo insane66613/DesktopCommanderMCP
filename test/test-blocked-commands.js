@@ -73,7 +73,7 @@ async function cleanupTestDirectories() {
  */
 async function tryCommand(command) {
   try {
-    const result = await executeCommand(command, null, 2000);
+    const result = await executeCommand(command, 2000);
     
     // Check if the result indicates the command was blocked
     if (result.isError && result.content && result.content[0] && 
@@ -84,6 +84,7 @@ async function tryCommand(command) {
       };
     }
     
+    assert.notStrictEqual(result.isError, true, result.content?.[0]?.text);
     // Command was executed successfully
     return {
       blocked: false,
@@ -242,7 +243,7 @@ async function testEmptyBlockedCommands() {
   // Verify config was set correctly
   // Verify config was set correctly
   const config = await configManager.getConfig();
-  const mandatoryBlocked = ['powershell', 'powershell.exe'];
+  const mandatoryBlocked = process.platform === 'win32' ? ['powershell', 'powershell.exe'] : [];
   // Ensure mandatory entries are present in the blockedCommands list
   for (const mandatory of mandatoryBlocked) {
     assert.ok(
