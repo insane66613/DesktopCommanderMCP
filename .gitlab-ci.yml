@@ -43,9 +43,18 @@ validate_tools:
 unit_tests:
   stage: test
   timeout: 30m
+  before_script:
+    - !reference [default, before_script]
+    - apt-get update
+    - apt-get install -y --no-install-recommends chromium chromium-sandbox fonts-liberation
+    - chown -R node:node "$CI_PROJECT_DIR"
   script:
     - mkdir -p ci-logs
-    - bash -o pipefail -c 'npm test 2>&1 | tee ci-logs/unit-tests.log'
+    - |
+      test_status=0
+      runuser -u node -- npm test > ci-logs/unit-tests.log 2>&1 || test_status=$?
+      tail -n 80 ci-logs/unit-tests.log
+      exit "$test_status"
   artifacts:
     when: always
     expire_in: 14 days

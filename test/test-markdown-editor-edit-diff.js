@@ -30,6 +30,7 @@ import { JSDOM } from 'jsdom';
 // jsdom for Tiptap to mount into.
 const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>');
 globalThis.window = dom.window;
+Object.defineProperty(globalThis, 'navigator', { value: dom.window.navigator, configurable: true });
 globalThis.document = dom.window.document;
 globalThis.HTMLElement = dom.window.HTMLElement;
 globalThis.Node = dom.window.Node;
