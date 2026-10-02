@@ -81,15 +81,29 @@ async function getShellFromCommand(shellPath = null) {
       command = "Write-Output ('DC_SHELL=' + [System.Diagnostics.Process]::GetCurrentProcess().MainModule.ModuleName)";
     }
     
-    const result = await executeCommand(command, 3000);
+    const deadline = Date.now() + 45000;
+    let result;
+    while (Date.now() < deadline) {
+      result = await executeCommand(command, Math.min(3000, deadline - Date.now()));
+      if (!result.structuredContent?.suppressed) break;
+      const retryAfterMs = Number(result.structuredContent.retryAfterMs);
+      assert(Number.isFinite(retryAfterMs) && retryAfterMs > 0,
+        'Suppressed shell probe must provide a positive retryAfterMs');
+      if (retryAfterMs >= deadline - Date.now()) {
+        throw new Error('Shell probe suppressed and retry deadline exceeded');
+      }
+      await new Promise(resolve => setTimeout(resolve, retryAfterMs));
+    }
+    if (!result || result.structuredContent?.suppressed) {
+      throw new Error('Shell probe suppressed and retry deadline exceeded');
+    }
     
     assert(!result.isError, result.content?.[0]?.text ?? 'Shell probe failed');
     let output = result.content?.[0]?.text ?? '';
     const processId = Number(output.match(/Process started with PID (\d+)/)?.[1]);
-    const deadline = Date.now() + 45000;
     try {
       while (!/^DC_SHELL=(.+)$/m.test(output) && processId && Date.now() < deadline) {
-        const read = await readProcessOutput({ pid: processId, timeout_ms: 1000 });
+        const read = await readProcessOutput({ pid: processId, timeout_ms: Math.min(1000, deadline - Date.now()) });
         assert(!read.isError, read.content?.[0]?.text ?? 'Shell output read failed');
         output += '\n' + (read.content?.[0]?.text ?? '');
         if (output.includes('Process completed')) break;
@@ -286,7 +300,7 @@ async function testShellSwitching() {
   let isValidOutput = expectedOutputs.includes(shellOutput);
   assert(isValidOutput, `Switch to ${shell1} should work, got: ${shellOutput}`);
   console.log(`✓ Successfully switched to ${shell1}: ${shellOutput}`);
-  
+
   // Switch to second shell
   await configManager.setValue('defaultShell', shell2);
   shellOutput = await getShellFromCommand(shell2);
@@ -294,15 +308,15 @@ async function testShellSwitching() {
   isValidOutput = expectedOutputs.includes(shellOutput);
   assert(isValidOutput, `Switch to ${shell2} should work, got: ${shellOutput}`);
   console.log(`✓ Successfully switched to ${shell2}: ${shellOutput}`);
-  
-  // Switch back to first shell
+
+  // Verify switching back also selects the original shell.
   await configManager.setValue('defaultShell', shell1);
   shellOutput = await getShellFromCommand(shell1);
   expectedOutputs = getExpectedShellOutput(shell1);
-  isValidOutput = expectedOutputs.includes(shellOutput);
-  assert(isValidOutput, `Switch back to ${shell1} should work, got: ${shellOutput}`);
+  assert(expectedOutputs.includes(shellOutput),
+    `Switch back to ${shell1} should work, got: ${shellOutput}`);
   console.log(`✓ Successfully switched back to ${shell1}: ${shellOutput}`);
-  
+
   console.log('✓ Test 5 passed: shell switching works correctly');
 }
 

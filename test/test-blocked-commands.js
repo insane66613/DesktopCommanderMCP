@@ -159,7 +159,10 @@ async function testNonBlockedCommands() {
   
   // Verify config was set correctly
   const config = await configManager.getConfig();
-  assert.deepStrictEqual(config.blockedCommands, blockedCommands, 'blockedCommands should be correctly set');
+  // Allow extra entries (e.g., Windows policy) in blockedCommands
+  blockedCommands.forEach(cmd => {
+    assert.ok(config.blockedCommands.includes(cmd), `blockedCommands should contain ${cmd}`);
+  });
   
   // Try to execute safe commands
   for (const command of SAFE_COMMANDS) {
@@ -182,7 +185,9 @@ async function testBlockedCommandsExecution() {
   
   // Verify config was set correctly
   const config = await configManager.getConfig();
-  assert.deepStrictEqual(config.blockedCommands, blockedCommands, 'blockedCommands should be correctly set');
+  blockedCommands.forEach(cmd => {
+    assert.ok(config.blockedCommands.includes(cmd), `blockedCommands should contain ${cmd}`);
+  });
   
   // We'll test this by directly checking against commandManager.validateCommand
   // since that's what determines if a command is blocked
@@ -235,8 +240,19 @@ async function testEmptyBlockedCommands() {
   await configManager.setValue('blockedCommands', []);
   
   // Verify config was set correctly
+  // Verify config was set correctly
   const config = await configManager.getConfig();
-  assert.deepStrictEqual(config.blockedCommands, [], 'blockedCommands should be an empty array');
+  const mandatoryBlocked = ['powershell', 'powershell.exe'];
+  // Ensure mandatory entries are present in the blockedCommands list
+  for (const mandatory of mandatoryBlocked) {
+    assert.ok(
+      config.blockedCommands.includes(mandatory),
+      `blockedCommands should include mandatory entry ${mandatory}`
+    );
+  }
+  // Optionally verify no unexpected entries are present
+  const unexpected = config.blockedCommands.filter(cmd => !mandatoryBlocked.includes(cmd));
+  assert.strictEqual(unexpected.length, 0, `blockedCommands contains unexpected entries: ${unexpected.join(', ')}`);
   
   // Try to execute both safe and potentially harmful commands
   const allCommands = [...SAFE_COMMANDS, ...POTENTIALLY_HARMFUL_COMMANDS];
