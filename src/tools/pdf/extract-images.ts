@@ -1,4 +1,3 @@
-import { getDocumentProxy, extractImages } from 'unpdf';
 
 export interface ImageInfo {
     /** Object ID within PDF */
@@ -30,6 +29,14 @@ export interface ImageCompressionOptions {
 }
 
 /**
+ * unpdf, loaded when first used, not with this module: the server loads the
+ * PDF tools at startup, before it answers initialize (#715).
+ */
+export function loadUnpdf(): Promise<typeof import('unpdf')> {
+    return import('unpdf');
+}
+
+/**
  * Optimized image extraction from PDF using unpdf's built-in extractImages method
  * @param pdfBuffer PDF file as Uint8Array
  * @param pageNumbers Optional array of specific page numbers to process
@@ -41,6 +48,7 @@ export async function extractImagesFromPdf(
     pageNumbers?: number[],
     compressionOptions: ImageCompressionOptions = {}
 ): Promise<Record<number, ImageInfo[]>> {
+    const { getDocumentProxy, extractImages } = await loadUnpdf();
     const pdfDocument = await getDocumentProxy(pdfBuffer);
 
     const pagesToProcess = pageNumbers || Array.from({ length: pdfDocument.numPages }, (_, i) => i + 1);
@@ -121,11 +129,7 @@ export async function extractImagesFromPdf(
                 await pdfDocument.cleanup(false);
             }
         } catch (e) { /* Ignore cleanup errors */ }
-        try {
-            if (typeof pdfDocument.destroy === 'function') {
-                await pdfDocument.destroy();
-            }
-        } catch (e) { /* Ignore cleanup errors */ }
+
     }
 
     return pageResults;

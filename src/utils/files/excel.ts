@@ -3,7 +3,7 @@
  * Handles reading, writing, and editing Excel files (.xlsx, .xls, .xlsm)
  */
 
-import ExcelJS from 'exceljs';
+import type ExcelJS from 'exceljs';
 import fs from 'fs/promises';
 import {
     FileHandler,
@@ -13,6 +13,21 @@ import {
     FileInfo,
     ExcelSheet
 } from './base.js';
+
+/**
+ * exceljs, loaded when first used, not with this module: the server loads the
+ * file handlers at startup, before it answers initialize (#715).
+ */
+export async function loadExcelJS(): Promise<typeof ExcelJS> {
+    const { default: ExcelJSModule } = await import('exceljs');
+    return ExcelJSModule;
+}
+
+/** A new exceljs Workbook */
+async function newWorkbook(): Promise<ExcelJS.Workbook> {
+    const ExcelJSModule = await loadExcelJS();
+    return new ExcelJSModule.Workbook();
+}
 
 // File size limit: 10MB
 const FILE_SIZE_LIMIT = 10 * 1024 * 1024;
@@ -40,7 +55,7 @@ export class ExcelFileHandler implements FileHandler {
     async read(path: string, options?: ReadOptions): Promise<FileResult> {
         await this.checkFileSize(path);
 
-        const workbook = new ExcelJS.Workbook();
+        const workbook = await newWorkbook();
         await workbook.xlsx.readFile(path);
 
         const metadata = await this.extractMetadata(workbook, path);
@@ -104,7 +119,7 @@ ${JSON.stringify(data)}`;
         // Handle append mode by finding last row and writing after it
         if (mode === 'append') {
             try {
-                const workbook = new ExcelJS.Workbook();
+                const workbook = await newWorkbook();
                 await workbook.xlsx.readFile(path);
 
                 if (Array.isArray(parsedContent)) {
@@ -141,7 +156,7 @@ ${JSON.stringify(data)}`;
         }
 
         // Rewrite mode (or append to non-existent file): create new workbook
-        const workbook = new ExcelJS.Workbook();
+        const workbook = await newWorkbook();
 
         if (Array.isArray(parsedContent)) {
             // Single sheet from 2D array
@@ -180,7 +195,7 @@ ${JSON.stringify(data)}`;
         // Parse range: "Sheet1!A1:C10" or "Sheet1"
         const [sheetName, cellRange] = this.parseRange(range);
 
-        const workbook = new ExcelJS.Workbook();
+        const workbook = await newWorkbook();
         await workbook.xlsx.readFile(path);
 
         // Get or create sheet
@@ -217,7 +232,7 @@ ${JSON.stringify(data)}`;
                     const value = rowData[c];
 
                     if (typeof value === 'string' && value.startsWith('=')) {
-                        cell.value = { formula: value.substring(1) };
+                        cell.value = { formula: value.substring(1), result: undefined, sharedFormula: undefined, date1904: false };
                     } else {
                         cell.value = value;
                     }
@@ -241,7 +256,7 @@ ${JSON.stringify(data)}`;
                 for (let c = 0; c < rowData.length; c++) {
                     const value = rowData[c];
                     if (typeof value === 'string' && value.startsWith('=')) {
-                        row.getCell(c + 1).value = { formula: value.substring(1) };
+                        row.getCell(c + 1).value = { formula: value.substring(1), result: undefined, sharedFormula: undefined, date1904: false };
                     } else {
                         row.getCell(c + 1).value = value;
                     }
@@ -259,7 +274,7 @@ ${JSON.stringify(data)}`;
         const stats = await fs.stat(path);
 
         try {
-            const workbook = new ExcelJS.Workbook();
+            const workbook = await newWorkbook();
             await workbook.xlsx.readFile(path);
             const metadata = await this.extractMetadata(workbook, path);
 
@@ -503,7 +518,7 @@ ${JSON.stringify(data)}`;
             for (let c = 0; c < rowData.length; c++) {
                 const value = rowData[c];
                 if (typeof value === 'string' && value.startsWith('=')) {
-                    row.getCell(c + 1).value = { formula: value.substring(1) };
+                    row.getCell(c + 1).value = { formula: value.substring(1), result: undefined, sharedFormula: undefined, date1904: false };
                 } else {
                     row.getCell(c + 1).value = value;
                 }

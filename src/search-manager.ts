@@ -6,7 +6,8 @@ import { validatePath } from './tools/filesystem.js';
 import { capture } from './utils/capture.js';
 import { getRipgrepPath } from './utils/ripgrep-resolver.js';
 import { isExcelFile } from './utils/files/index.js';
-import PizZip from 'pizzip';
+import { loadExcelJS } from './utils/files/excel.js';
+import { loadPizZip } from './utils/files/docx.js';
 
 export interface SearchResult {
   file: string;
@@ -430,14 +431,14 @@ export interface SearchSessionOptions {
       });
     }
 
-    // Dynamically import ExcelJS to search all sheets
-    const ExcelJS = await import('exceljs');
+    // ExcelJS, to search all sheets
+    const ExcelJS = await loadExcelJS();
 
     for (const filePath of excelFiles) {
       if (maxResults && results.length >= maxResults) break;
 
       try {
-        const workbook = new ExcelJS.default.Workbook();
+        const workbook = new ExcelJS.Workbook();
         await workbook.xlsx.readFile(filePath);
 
         // Search ALL sheets in the workbook (row-wise for speed and cross-column matching)
@@ -603,6 +604,9 @@ export interface SearchSessionOptions {
         });
       });
     }
+
+    // PizZip, to open the DOCX files
+    const PizZip = loadPizZip();
 
     for (const filePath of docxFiles) {
       if (maxResults && results.length >= maxResults) break;
