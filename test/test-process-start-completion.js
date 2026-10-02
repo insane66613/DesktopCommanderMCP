@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import childProcess from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { syncBuiltinESMExports } from 'node:module';
 import { createTestEnv } from './helpers/test-env.js';
 
 const env = createTestEnv();
@@ -46,6 +49,56 @@ try {
     terminalManager.sessions.delete(fakePid);
   }
   terminalManager.executeCommand = originalExecute;
+  // Node may emit exit before the final stdout/stderr data. Only close seals output.
+  const originalSpawn = childProcess.spawn;
+  try {
+    for (const mode of ['completion', 'prompt', 'timeout']) {
+      const child = Object.assign(new EventEmitter(), {
+        pid: fakePid, stdout: new EventEmitter(), stderr: new EventEmitter(),
+      });
+      let spawned;
+      const spawnReady = new Promise(resolve => { spawned = resolve; });
+      childProcess.spawn = () => { spawned(); return child; };
+      syncBuiltinESMExports();
+      let settled = false;
+      const pending = startProcess({
+        command: `echo drain-${mode}`, shell, timeout_ms: mode === 'timeout' ? 0 : 60000,
+      }).then(result => { settled = true; return result; });
+      await spawnReady;
+      child.stdout.emit('data', Buffer.from(mode === 'prompt' ? '>>> ' : 'before-exit\n'));
+      if (mode !== 'completion') {
+        const early = await pending;
+        assert.equal(early.structuredContent.isFinished, false);
+        assert.equal(early.structuredContent.exitCode, null);
+        assert.equal(early.structuredContent.state, mode === 'prompt' ? 'waiting_for_input' : 'running');
+      }
+      child.emit('exit', 7);
+      await Promise.resolve();
+      assert.deepEqual(terminalManager.getProcessStatus(fakePid), { isComplete: false, exitCode: null },
+        'exit must leave the output session open until stdio drains');
+      assert.equal(terminalManager.readOutputPaginated(fakePid, -1, 1).isComplete, false);
+      if (mode === 'completion') assert.equal(settled, false, 'completion wait must include stream drain');
+      child.stdout.emit('data', Buffer.from('\nfinal-stdout\n'));
+      child.stderr.emit('data', Buffer.from('final-stderr\n'));
+      child.emit('close', 7);
+      const result = await pending;
+      assert.deepEqual(terminalManager.getProcessStatus(fakePid), { isComplete: true, exitCode: 7 });
+      const retained = terminalManager.readOutputPaginated(fakePid, -5, 5);
+      assert.equal(retained.isComplete, true);
+      assert.equal(retained.exitCode, 7);
+      assert.match(retained.lines.join('\n'), /final-stdout\nfinal-stderr/);
+      if (mode === 'completion') {
+        assert.equal(result.structuredContent.isFinished, true);
+        assert.equal(result.structuredContent.exitCode, 7);
+        assert.equal(result.structuredContent.state, 'finished');
+        assert.match(result.content[0].text, /final-stdout\nfinal-stderr/);
+      }
+      terminalManager.completedSessions.delete(fakePid);
+    }
+  } finally {
+    childProcess.spawn = originalSpawn;
+    syncBuiltinESMExports();
+  }
   const result = await startProcess({ command: 'echo completion-live-check', shell, timeout_ms: 5000 });
   assert.equal(result.structuredContent?.isFinished, true, 'quick command needs no completion poll');
   assert.equal(result.structuredContent.exitCode, 0);

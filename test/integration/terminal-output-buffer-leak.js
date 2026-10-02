@@ -106,8 +106,28 @@ async function main() {
   );
 
   // 3. The most recent output survived eviction.
+  // The retained tail has megabyte-long lines; follow the 8 KiB page cursor
+  // rather than expecting all five lines to fit in the first response.
+  let tailPage = completedTail;
+  let tailText = tailPage.lines.join('\n');
+  let tailPages = 1;
+  while (tailPage.sizeLimited) {
+    assert.ok(tailPages++ < 1024, 'retained tail pagination should remain bounded');
+    const nextPage = terminalManager.readOutputPaginated(
+      result.pid, tailPage.nextOffset, 5, tailPage.nextCharacterOffset
+    );
+    assert.ok(nextPage, 'tail continuation should remain readable after completion');
+    assert.ok(
+      nextPage.nextOffset > tailPage.nextOffset ||
+        (nextPage.nextOffset === tailPage.nextOffset &&
+          nextPage.nextCharacterOffset > tailPage.nextCharacterOffset),
+      'tail continuation cursor should advance'
+    );
+    tailText += nextPage.lines.join('\n');
+    tailPage = nextPage;
+  }
   assert.ok(
-    completedTail.lines.join('\n').includes(END_MARKER),
+    tailText.includes(END_MARKER),
     'end marker should be readable in the retained tail'
   );
 

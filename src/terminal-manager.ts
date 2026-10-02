@@ -542,7 +542,8 @@ export class TerminalManager {
         });
       }, timeoutMs);
 
-      childProcess.on('exit', (code: any) => {
+      // 'exit' can precede the last stdout/stderr data; 'close' seals the buffer.
+      childProcess.on('close', (code: any) => {
         if (childProcess.pid) {
           // Store completed session before removing active session
           this.completedSessions.set(childProcess.pid, {
