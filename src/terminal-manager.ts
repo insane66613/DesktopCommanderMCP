@@ -392,6 +392,7 @@ export class TerminalManager {
     return new Promise((resolve) => {
       let resolved = false;
       let periodicCheck: NodeJS.Timeout | null = null;
+      let timeoutFallback: NodeJS.Timeout | null = null;
 
       // Quick prompt patterns for immediate detection
       const quickPromptPatterns = />>>\s*$|>\s*$|\$\s*$|#\s*$/;
@@ -400,6 +401,7 @@ export class TerminalManager {
         if (resolved) return;
         resolved = true;
         if (periodicCheck) clearInterval(periodicCheck);
+        if (timeoutFallback) clearTimeout(timeoutFallback);
 
         // Add timing info if requested
         if (collectTiming) {
@@ -512,7 +514,7 @@ export class TerminalManager {
       });
 
       // Periodic comprehensive check every 100ms
-      periodicCheck = setInterval(() => {
+      if (!resolved) periodicCheck = setInterval(() => {
         if (output.trim()) {
           const processState = analyzeProcessState(output, childProcess.pid);
           if (processState.isWaitingForInput) {
@@ -527,10 +529,10 @@ export class TerminalManager {
         }
       }, 100);
       // Allow the process to exit cleanly even when this interval is pending.
-      (periodicCheck as any).unref?.();
+      periodicCheck?.unref();
 
       // Timeout fallback
-      setTimeout(() => {
+      if (!resolved) timeoutFallback = setTimeout(() => {
         session.isBlocked = true;
         exitReason = 'timeout';
         resolveOnce({

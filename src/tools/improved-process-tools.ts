@@ -419,7 +419,7 @@ export async function readProcessOutput(args: unknown): Promise<ServerResult> {
           }
           // Exponential backoff with 25% jitter
           const jitter = delay * 0.25 * (Math.random() - 0.5);
-          const nextDelay = Math.min(delay + jitter, maxDelay);
+          const nextDelay = Math.min(delay + jitter, maxDelay, Math.max(0, deadline - Date.now()));
           timer = setTimeout(poll, nextDelay);
           delay = Math.min(delay * 1.5, maxDelay);
         };

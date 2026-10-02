@@ -8,6 +8,7 @@ import {
     ListResourceTemplatesRequestSchema,
     ListPromptsRequestSchema,
     InitializeRequestSchema,
+    SetLevelRequestSchema,
     LATEST_PROTOCOL_VERSION,
     SUPPORTED_PROTOCOL_VERSIONS,
     type CallToolRequest,
@@ -1384,12 +1385,21 @@ import * as handlers from './handlers/index.js';
 import { ServerResult } from './types.js';
 import { budgetToolResponse, serializedBytes } from './utils/response-budget.js';
 
+server.setRequestHandler(SetLevelRequestSchema, async (request) => {
+    global.mcpTransport?.setLogLevel(request.params.level);
+    return {};
+});
+
 server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest): Promise<ServerResult> => {
+    const started = performance.now();
     const result = await executeCallToolRequest(request);
     const bounded = budgetToolResponse(result);
     // Bypass redirected console methods: diagnostics must never become MCP notifications.
     process.stderr.write(JSON.stringify({ event: 'tool_response_size', tool: request.params.name.slice(0, 80),
         response_bytes: serializedBytes(bounded), response_limited: bounded !== result,
+        duration_ms: Math.round(performance.now() - started),
+        is_error: bounded.isError === true,
+        process_page_limited: (bounded.structuredContent as Record<string, unknown> | undefined)?.sizeLimited === true,
         ...(bounded !== result ? { original_response_bytes: serializedBytes(result) } : {}) }) + '\n');
     return bounded;
 });
