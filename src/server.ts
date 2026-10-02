@@ -1387,9 +1387,10 @@ import { budgetToolResponse, serializedBytes } from './utils/response-budget.js'
 server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest): Promise<ServerResult> => {
     const result = await executeCallToolRequest(request);
     const bounded = budgetToolResponse(result);
-    console.error(JSON.stringify({ event: 'tool_response_size', tool: request.params.name.slice(0, 80),
+    // Bypass redirected console methods: diagnostics must never become MCP notifications.
+    process.stderr.write(JSON.stringify({ event: 'tool_response_size', tool: request.params.name.slice(0, 80),
         response_bytes: serializedBytes(bounded), response_limited: bounded !== result,
-        ...(bounded !== result ? { original_response_bytes: serializedBytes(result) } : {}) }));
+        ...(bounded !== result ? { original_response_bytes: serializedBytes(result) } : {}) }) + '\n');
     return bounded;
 });
 
