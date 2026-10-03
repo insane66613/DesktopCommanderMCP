@@ -36,7 +36,6 @@ async function runTests() {
     'allowedDirectories',
     'blockedCommands',
     'telemetryEnabled',
-    'clientId',
     'sensitiveProjectFilePolicy',
     'sensitiveProjectFileExtraPatterns',
     'sensitiveProjectFileAllowedPatterns',
@@ -52,6 +51,7 @@ async function runTests() {
   assert.strictEqual(compactConfig.usageStats, undefined, 'usageStats must be omitted in compact mode');
   assert.strictEqual(compactConfig._metrics, undefined, '_metrics must be omitted in compact mode');
   assert.strictEqual(compactConfig.systemInfo, undefined, 'verbose systemInfo must be omitted in compact mode');
+  assert.strictEqual(compactConfig.clientId, undefined, 'diagnostic identifiers belong to verbose mode');
 
   // Verify content[0].text is concise
   assert.ok(Array.isArray(resEmptyArgs.content) && resEmptyArgs.content.length > 0, 'content array must exist');
@@ -115,9 +115,10 @@ async function runTests() {
   assert.ok(compactTrueBytes < BYTE_BUDGET_GATE, `{ compact: true } payload size ${compactTrueBytes} must be < ${BYTE_BUDGET_GATE}`);
   console.log('  ✓ Test 4 PASSED\n');
 
-  // Test 5: structuredContent.entries compatibility
-  console.log('Test 5: Validating structuredContent.entries compatibility...');
-  const entries = resEmptyArgs.structuredContent?.entries;
+  // Test 5: compact settings appear once; the UI retains editable metadata.
+  console.log('Test 5: Validating compact settings and full editable entries...');
+  assert.deepEqual(resEmptyArgs.structuredContent?.entries, []);
+  const entries = uiRes.structuredContent?.entries;
   assert.ok(Array.isArray(entries), 'structuredContent.entries must be an array');
   const entryMap = Object.fromEntries(entries.map((e) => [e.key, e.value]));
 
@@ -126,6 +127,9 @@ async function runTests() {
   assert.ok(Array.isArray(entryMap.sensitiveProjectFileAllowedPatterns), 'sensitiveProjectFileAllowedPatterns must be array');
   assert.strictEqual(entryMap.sensitiveProjectFileAudit, true, 'sensitiveProjectFileAudit must be true');
   assert.ok('allowedDirectories' in entryMap, 'allowedDirectories entry must exist');
+  for (const entry of entries) {
+    assert.deepEqual(compactConfig[entry.key], entry.value, `Compact setting ${entry.key} must retain its value`);
+  }
 
   // All entries must have editable: true and valueType
   for (const entry of entries) {

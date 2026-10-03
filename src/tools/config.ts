@@ -213,60 +213,32 @@ export async function getConfig(args?: unknown) {
     }
 
     // DEFAULT COMPACT MODE (< 2,048 bytes)
-    const compactConfig = {
+    const compactConfig: Record<string, unknown> = {
       allowedDirectories: config.allowedDirectories ?? [],
       blockedCommands: config.blockedCommands ?? [],
       telemetryEnabled: config.telemetryEnabled,
-      clientId: config.clientId,
       sensitiveProjectFilePolicy: (config as Record<string, unknown>).sensitiveProjectFilePolicy ?? 'require_explicit_override',
       sensitiveProjectFileExtraPatterns: (config as Record<string, unknown>).sensitiveProjectFileExtraPatterns ?? [],
       sensitiveProjectFileAllowedPatterns: (config as Record<string, unknown>).sensitiveProjectFileAllowedPatterns ?? ['.env.example', '.env.sample', '.env.template'],
       sensitiveProjectFileAudit: (config as Record<string, unknown>).sensitiveProjectFileAudit ?? true,
     };
 
-    const blockedCount = Array.isArray(compactConfig.blockedCommands) ? compactConfig.blockedCommands.length : 0;
-    const textSummary = `Desktop Commander config active (${blockedCount} blocked).`;
-
-    // Core editable entries excluding duplicate blockedCommands array
-    const compactKeys = CONFIG_FIELD_KEYS.filter((k) => k !== 'blockedCommands');
-    const entries: Array<{ key: string; value: unknown; valueType: string; editable: boolean }> = compactKeys.map((key) => {
-      const definition = CONFIG_FIELD_DEFINITIONS[key];
-      const value = (config as Record<string, unknown>)[key];
-      return {
-        key,
-        value: value === undefined ? null : value,
-        valueType: definition.valueType,
-        editable: true,
-      };
-    });
-
-    // Ensure sensitive project file policy entries are included in entries
-    const sensitiveEntries: Array<{ key: string; valueType: 'string' | 'array' | 'boolean'; defaultValue: unknown }> = [
-      { key: 'sensitiveProjectFilePolicy', valueType: 'string', defaultValue: 'require_explicit_override' },
-      { key: 'sensitiveProjectFileExtraPatterns', valueType: 'array', defaultValue: [] },
-      { key: 'sensitiveProjectFileAllowedPatterns', valueType: 'array', defaultValue: ['.env.example', '.env.sample', '.env.template'] },
-      { key: 'sensitiveProjectFileAudit', valueType: 'boolean', defaultValue: true },
-    ];
-    for (const se of sensitiveEntries) {
-      if (!entries.some((e) => e.key === se.key)) {
-        const val = (config as Record<string, unknown>)[se.key];
-        entries.push({
-          key: se.key,
-          value: val !== undefined ? val : se.defaultValue,
-          valueType: se.valueType,
-          editable: true,
-        });
+    // Operational callers need each setting once. Editable entry metadata and
+    // diagnostic identifiers belong to the full UI/verbose response above.
+    for (const key of CONFIG_FIELD_KEYS) {
+      if (!(key in compactConfig)) {
+        compactConfig[key] = config[key] ?? null;
       }
     }
 
     const payload = {
       content: [{
         type: "text" as const,
-        text: textSummary,
+        text: 'Configuration active.',
       }],
       structuredContent: {
         config: compactConfig,
-        entries,
+        entries: [],
       },
     };
 
