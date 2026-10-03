@@ -1,10 +1,13 @@
 import { z } from "zod";
+import { MAX_TOOL_RESPONSE_BYTES } from "../utils/response-budget.js";
 
 // Config tools schemas
 export const GetConfigArgsSchema = z.object({
   // 'ui' marks calls the config-editor widget fires programmatically; they are
   // excluded from tool-call telemetry (see isUiOriginCall in server.ts).
-  origin: z.enum(['ui', 'llm']).optional(),
+  origin: z.string().optional(),
+  verbose: z.boolean().optional(),
+  compact: z.boolean().optional(),
 });
 
 export const SetConfigValueArgsSchema = z.object({
@@ -54,6 +57,8 @@ export const ReadProcessOutputArgsSchema = z.object({
   offset: z.number().int().optional(),   // Line offset: 0=from last read, positive=absolute, negative=tail
   length: z.number().int().min(1).optional(),   // Max lines to return (default from config.fileReadLineLimit)
   character_offset: z.number().int().min(0).optional(), // Explicit position within a line; offset=0 then means absolute first line
+  maxBytes: z.number().int().min(512).max(MAX_TOOL_RESPONSE_BYTES).optional(),
+  pageSize: z.number().int().min(512).max(MAX_TOOL_RESPONSE_BYTES).optional(),
   verbose_timing: z.boolean().optional(),
 });
 

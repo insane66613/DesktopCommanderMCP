@@ -1,0 +1,959 @@
+{
+  "targetDir": "X:\\Code\\DesktopCommanderMCP-traffic-hardening-20261002",
+  "timestamp": "2026-10-03T10:31:14.393Z",
+  "drain20KiB": {
+    "workload": "20 KiB Drain Workload",
+    "runs": 3,
+    "median": {
+      "totalCalls": 4,
+      "totalBytes": 21702,
+      "totalBytesKiB": "21.19",
+      "emptyPolls": 0,
+      "peakRatePerMin": 4,
+      "getConfigBytesP50": 0,
+      "responseBytesP95": 8481,
+      "responseBytesMax": 8481
+    },
+    "worstCase": {
+      "totalCalls": 4,
+      "totalBytes": 21702,
+      "totalBytesKiB": "21.19",
+      "emptyPolls": 0,
+      "peakRatePerMin": 4,
+      "getConfigBytesMax": 0,
+      "responseBytesMax": 8481
+    },
+    "rawRuns": [
+      {
+        "totalCalls": 4,
+        "totalBytes": 21702,
+        "totalBytesKiB": "21.19",
+        "emptyPolls": 0,
+        "peakRatePerMin": 4,
+        "stderrBytes": 1938,
+        "stderrChunks": 18,
+        "responseSizeDistribution": {
+          "count": 4,
+          "min": 303,
+          "p50": 6459,
+          "p95": 8481,
+          "max": 8481,
+          "sum": 21702,
+          "mean": 5426
+        },
+        "getConfigDistribution": {
+          "count": 0,
+          "min": 0,
+          "p50": 0,
+          "p95": 0,
+          "max": 0,
+          "sum": 0,
+          "mean": 0
+        },
+        "readProcessOutputDistribution": {
+          "count": 3,
+          "min": 4437,
+          "p50": 8481,
+          "p95": 8481,
+          "max": 8481,
+          "sum": 21399,
+          "mean": 7133
+        },
+        "byTool": {
+          "start_process": {
+            "calls": 1,
+            "totalBytes": 303,
+            "totalBytesKiB": "0.30",
+            "p50": 303,
+            "max": 303
+          },
+          "read_process_output": {
+            "calls": 3,
+            "totalBytes": 21399,
+            "totalBytesKiB": "20.90",
+            "p50": 8481,
+            "max": 8481
+          }
+        }
+      },
+      {
+        "totalCalls": 4,
+        "totalBytes": 21693,
+        "totalBytesKiB": "21.18",
+        "emptyPolls": 0,
+        "peakRatePerMin": 4,
+        "stderrBytes": 1938,
+        "stderrChunks": 19,
+        "responseSizeDistribution": {
+          "count": 4,
+          "min": 300,
+          "p50": 6457,
+          "p95": 8479,
+          "max": 8479,
+          "sum": 21693,
+          "mean": 5423
+        },
+        "getConfigDistribution": {
+          "count": 0,
+          "min": 0,
+          "p50": 0,
+          "p95": 0,
+          "max": 0,
+          "sum": 0,
+          "mean": 0
+        },
+        "readProcessOutputDistribution": {
+          "count": 3,
+          "min": 4435,
+          "p50": 8479,
+          "p95": 8479,
+          "max": 8479,
+          "sum": 21393,
+          "mean": 7131
+        },
+        "byTool": {
+          "start_process": {
+            "calls": 1,
+            "totalBytes": 300,
+            "totalBytesKiB": "0.29",
+            "p50": 300,
+            "max": 300
+          },
+          "read_process_output": {
+            "calls": 3,
+            "totalBytes": 21393,
+            "totalBytesKiB": "20.89",
+            "p50": 8479,
+            "max": 8479
+          }
+        }
+      },
+      {
+        "totalCalls": 4,
+        "totalBytes": 21702,
+        "totalBytesKiB": "21.19",
+        "emptyPolls": 0,
+        "peakRatePerMin": 4,
+        "stderrBytes": 1939,
+        "stderrChunks": 20,
+        "responseSizeDistribution": {
+          "count": 4,
+          "min": 303,
+          "p50": 6459,
+          "p95": 8481,
+          "max": 8481,
+          "sum": 21702,
+          "mean": 5426
+        },
+        "getConfigDistribution": {
+          "count": 0,
+          "min": 0,
+          "p50": 0,
+          "p95": 0,
+          "max": 0,
+          "sum": 0,
+          "mean": 0
+        },
+        "readProcessOutputDistribution": {
+          "count": 3,
+          "min": 4437,
+          "p50": 8481,
+          "p95": 8481,
+          "max": 8481,
+          "sum": 21399,
+          "mean": 7133
+        },
+        "byTool": {
+          "start_process": {
+            "calls": 1,
+            "totalBytes": 303,
+            "totalBytesKiB": "0.30",
+            "p50": 303,
+            "max": 303
+          },
+          "read_process_output": {
+            "calls": 3,
+            "totalBytes": 21399,
+            "totalBytesKiB": "20.90",
+            "p50": 8481,
+            "max": 8481
+          }
+        }
+      }
+    ]
+  },
+  "drain50KiB": {
+    "workload": "50 KiB Drain Workload",
+    "runs": 3,
+    "median": {
+      "totalCalls": 8,
+      "totalBytes": 53580,
+      "totalBytesKiB": "52.32",
+      "emptyPolls": 0,
+      "peakRatePerMin": 8,
+      "getConfigBytesP50": 0,
+      "responseBytesP95": 8482,
+      "responseBytesMax": 8482
+    },
+    "worstCase": {
+      "totalCalls": 8,
+      "totalBytes": 53580,
+      "totalBytesKiB": "52.32",
+      "emptyPolls": 0,
+      "peakRatePerMin": 8,
+      "getConfigBytesMax": 0,
+      "responseBytesMax": 8482
+    },
+    "rawRuns": [
+      {
+        "totalCalls": 8,
+        "totalBytes": 53580,
+        "totalBytesKiB": "52.32",
+        "emptyPolls": 0,
+        "peakRatePerMin": 8,
+        "stderrBytes": 3515,
+        "stderrChunks": 30,
+        "responseSizeDistribution": {
+          "count": 8,
+          "min": 303,
+          "p50": 8482,
+          "p95": 8482,
+          "max": 8482,
+          "sum": 53580,
+          "mean": 6698
+        },
+        "getConfigDistribution": {
+          "count": 0,
+          "min": 0,
+          "p50": 0,
+          "p95": 0,
+          "max": 0,
+          "sum": 0,
+          "mean": 0
+        },
+        "readProcessOutputDistribution": {
+          "count": 7,
+          "min": 2387,
+          "p50": 8482,
+          "p95": 8482,
+          "max": 8482,
+          "sum": 53277,
+          "mean": 7611
+        },
+        "byTool": {
+          "start_process": {
+            "calls": 1,
+            "totalBytes": 303,
+            "totalBytesKiB": "0.30",
+            "p50": 303,
+            "max": 303
+          },
+          "read_process_output": {
+            "calls": 7,
+            "totalBytes": 53277,
+            "totalBytesKiB": "52.03",
+            "p50": 8482,
+            "max": 8482
+          }
+        }
+      },
+      {
+        "totalCalls": 8,
+        "totalBytes": 53580,
+        "totalBytesKiB": "52.32",
+        "emptyPolls": 0,
+        "peakRatePerMin": 8,
+        "stderrBytes": 3514,
+        "stderrChunks": 29,
+        "responseSizeDistribution": {
+          "count": 8,
+          "min": 303,
+          "p50": 8482,
+          "p95": 8482,
+          "max": 8482,
+          "sum": 53580,
+          "mean": 6698
+        },
+        "getConfigDistribution": {
+          "count": 0,
+          "min": 0,
+          "p50": 0,
+          "p95": 0,
+          "max": 0,
+          "sum": 0,
+          "mean": 0
+        },
+        "readProcessOutputDistribution": {
+          "count": 7,
+          "min": 2387,
+          "p50": 8482,
+          "p95": 8482,
+          "max": 8482,
+          "sum": 53277,
+          "mean": 7611
+        },
+        "byTool": {
+          "start_process": {
+            "calls": 1,
+            "totalBytes": 303,
+            "totalBytesKiB": "0.30",
+            "p50": 303,
+            "max": 303
+          },
+          "read_process_output": {
+            "calls": 7,
+            "totalBytes": 53277,
+            "totalBytesKiB": "52.03",
+            "p50": 8482,
+            "max": 8482
+          }
+        }
+      },
+      {
+        "totalCalls": 8,
+        "totalBytes": 53580,
+        "totalBytesKiB": "52.32",
+        "emptyPolls": 0,
+        "peakRatePerMin": 8,
+        "stderrBytes": 3514,
+        "stderrChunks": 25,
+        "responseSizeDistribution": {
+          "count": 8,
+          "min": 303,
+          "p50": 8482,
+          "p95": 8482,
+          "max": 8482,
+          "sum": 53580,
+          "mean": 6698
+        },
+        "getConfigDistribution": {
+          "count": 0,
+          "min": 0,
+          "p50": 0,
+          "p95": 0,
+          "max": 0,
+          "sum": 0,
+          "mean": 0
+        },
+        "readProcessOutputDistribution": {
+          "count": 7,
+          "min": 2387,
+          "p50": 8482,
+          "p95": 8482,
+          "max": 8482,
+          "sum": 53277,
+          "mean": 7611
+        },
+        "byTool": {
+          "start_process": {
+            "calls": 1,
+            "totalBytes": 303,
+            "totalBytesKiB": "0.30",
+            "p50": 303,
+            "max": 303
+          },
+          "read_process_output": {
+            "calls": 7,
+            "totalBytes": 53277,
+            "totalBytesKiB": "52.03",
+            "p50": 8482,
+            "max": 8482
+          }
+        }
+      }
+    ]
+  },
+  "drain100KiB": {
+    "workload": "100 KiB Drain Workload",
+    "runs": 3,
+    "median": {
+      "totalCalls": 14,
+      "totalBytes": 106528,
+      "totalBytesKiB": "104.03",
+      "emptyPolls": 0,
+      "peakRatePerMin": 14,
+      "getConfigBytesP50": 0,
+      "responseBytesP95": 8483,
+      "responseBytesMax": 8483
+    },
+    "worstCase": {
+      "totalCalls": 14,
+      "totalBytes": 106528,
+      "totalBytesKiB": "104.03",
+      "emptyPolls": 0,
+      "peakRatePerMin": 14,
+      "getConfigBytesMax": 0,
+      "responseBytesMax": 8483
+    },
+    "rawRuns": [
+      {
+        "totalCalls": 14,
+        "totalBytes": 106528,
+        "totalBytesKiB": "104.03",
+        "emptyPolls": 0,
+        "peakRatePerMin": 14,
+        "stderrBytes": 5879,
+        "stderrChunks": 46,
+        "responseSizeDistribution": {
+          "count": 14,
+          "min": 303,
+          "p50": 8482,
+          "p95": 8483,
+          "max": 8483,
+          "sum": 106528,
+          "mean": 7609
+        },
+        "getConfigDistribution": {
+          "count": 0,
+          "min": 0,
+          "p50": 0,
+          "p95": 0,
+          "max": 0,
+          "sum": 0,
+          "mean": 0
+        },
+        "readProcessOutputDistribution": {
+          "count": 13,
+          "min": 4439,
+          "p50": 8482,
+          "p95": 8483,
+          "max": 8483,
+          "sum": 106225,
+          "mean": 8171
+        },
+        "byTool": {
+          "start_process": {
+            "calls": 1,
+            "totalBytes": 303,
+            "totalBytesKiB": "0.30",
+            "p50": 303,
+            "max": 303
+          },
+          "read_process_output": {
+            "calls": 13,
+            "totalBytes": 106225,
+            "totalBytesKiB": "103.74",
+            "p50": 8482,
+            "max": 8483
+          }
+        }
+      },
+      {
+        "totalCalls": 14,
+        "totalBytes": 106528,
+        "totalBytesKiB": "104.03",
+        "emptyPolls": 0,
+        "peakRatePerMin": 14,
+        "stderrBytes": 5879,
+        "stderrChunks": 41,
+        "responseSizeDistribution": {
+          "count": 14,
+          "min": 303,
+          "p50": 8482,
+          "p95": 8483,
+          "max": 8483,
+          "sum": 106528,
+          "mean": 7609
+        },
+        "getConfigDistribution": {
+          "count": 0,
+          "min": 0,
+          "p50": 0,
+          "p95": 0,
+          "max": 0,
+          "sum": 0,
+          "mean": 0
+        },
+        "readProcessOutputDistribution": {
+          "count": 13,
+          "min": 4439,
+          "p50": 8482,
+          "p95": 8483,
+          "max": 8483,
+          "sum": 106225,
+          "mean": 8171
+        },
+        "byTool": {
+          "start_process": {
+            "calls": 1,
+            "totalBytes": 303,
+            "totalBytesKiB": "0.30",
+            "p50": 303,
+            "max": 303
+          },
+          "read_process_output": {
+            "calls": 13,
+            "totalBytes": 106225,
+            "totalBytesKiB": "103.74",
+            "p50": 8482,
+            "max": 8483
+          }
+        }
+      },
+      {
+        "totalCalls": 14,
+        "totalBytes": 106528,
+        "totalBytesKiB": "104.03",
+        "emptyPolls": 0,
+        "peakRatePerMin": 14,
+        "stderrBytes": 5879,
+        "stderrChunks": 49,
+        "responseSizeDistribution": {
+          "count": 14,
+          "min": 303,
+          "p50": 8482,
+          "p95": 8483,
+          "max": 8483,
+          "sum": 106528,
+          "mean": 7609
+        },
+        "getConfigDistribution": {
+          "count": 0,
+          "min": 0,
+          "p50": 0,
+          "p95": 0,
+          "max": 0,
+          "sum": 0,
+          "mean": 0
+        },
+        "readProcessOutputDistribution": {
+          "count": 13,
+          "min": 4439,
+          "p50": 8482,
+          "p95": 8483,
+          "max": 8483,
+          "sum": 106225,
+          "mean": 8171
+        },
+        "byTool": {
+          "start_process": {
+            "calls": 1,
+            "totalBytes": 303,
+            "totalBytesKiB": "0.30",
+            "p50": 303,
+            "max": 303
+          },
+          "read_process_output": {
+            "calls": 13,
+            "totalBytes": 106225,
+            "totalBytesKiB": "103.74",
+            "p50": 8482,
+            "max": 8483
+          }
+        }
+      }
+    ]
+  },
+  "incidentProfile": {
+    "workload": "Incident Profile Workload (218 calls)",
+    "runs": 3,
+    "median": {
+      "totalCalls": 218,
+      "totalBytes": 456770,
+      "totalBytesKiB": "446.06",
+      "emptyPolls": 1,
+      "peakRatePerMin": 10,
+      "getConfigBytesP50": 2004,
+      "responseBytesP95": 8484,
+      "responseBytesMax": 14910
+    },
+    "worstCase": {
+      "totalCalls": 218,
+      "totalBytes": 456771,
+      "totalBytesKiB": "446.07",
+      "emptyPolls": 1,
+      "peakRatePerMin": 10,
+      "getConfigBytesMax": 2004,
+      "responseBytesMax": 14910
+    },
+    "rawRuns": [
+      {
+        "totalCalls": 218,
+        "totalBytes": 456736,
+        "totalBytesKiB": "446.03",
+        "emptyPolls": 1,
+        "peakRatePerMin": 10,
+        "stderrBytes": 84706,
+        "stderrChunks": 668,
+        "responseSizeDistribution": {
+          "count": 218,
+          "min": 169,
+          "p50": 295,
+          "p95": 8484,
+          "max": 14910,
+          "sum": 456736,
+          "mean": 2095
+        },
+        "getConfigDistribution": {
+          "count": 16,
+          "min": 2002,
+          "p50": 2004,
+          "p95": 2004,
+          "max": 2004,
+          "sum": 32055,
+          "mean": 2003
+        },
+        "readProcessOutputDistribution": {
+          "count": 78,
+          "min": 295,
+          "p50": 295,
+          "p95": 8484,
+          "max": 8484,
+          "sum": 307311,
+          "mean": 3940
+        },
+        "byTool": {
+          "start_process": {
+            "calls": 83,
+            "totalBytes": 18692,
+            "totalBytesKiB": "18.25",
+            "p50": 211,
+            "max": 403
+          },
+          "read_process_output": {
+            "calls": 78,
+            "totalBytes": 307311,
+            "totalBytesKiB": "300.11",
+            "p50": 295,
+            "max": 8484
+          },
+          "get_config": {
+            "calls": 16,
+            "totalBytes": 32055,
+            "totalBytesKiB": "31.30",
+            "p50": 2004,
+            "max": 2004
+          },
+          "read_file": {
+            "calls": 14,
+            "totalBytes": 14085,
+            "totalBytesKiB": "13.75",
+            "p50": 1006,
+            "max": 1275
+          },
+          "list_sessions": {
+            "calls": 8,
+            "totalBytes": 2170,
+            "totalBytesKiB": "2.12",
+            "p50": 272,
+            "max": 273
+          },
+          "read_multiple_files": {
+            "calls": 4,
+            "totalBytes": 59638,
+            "totalBytesKiB": "58.24",
+            "p50": 14910,
+            "max": 14910
+          },
+          "start_search": {
+            "calls": 4,
+            "totalBytes": 7495,
+            "totalBytesKiB": "7.32",
+            "p50": 1874,
+            "max": 1874
+          },
+          "get_more_search_results": {
+            "calls": 4,
+            "totalBytes": 6667,
+            "totalBytesKiB": "6.51",
+            "p50": 1667,
+            "max": 1667
+          },
+          "edit_block": {
+            "calls": 2,
+            "totalBytes": 338,
+            "totalBytesKiB": "0.33",
+            "p50": 169,
+            "max": 169
+          },
+          "write_file": {
+            "calls": 2,
+            "totalBytes": 350,
+            "totalBytesKiB": "0.34",
+            "p50": 175,
+            "max": 175
+          },
+          "get_recent_tool_calls": {
+            "calls": 1,
+            "totalBytes": 5148,
+            "totalBytesKiB": "5.03",
+            "p50": 5148,
+            "max": 5148
+          },
+          "get_usage_stats": {
+            "calls": 1,
+            "totalBytes": 1885,
+            "totalBytesKiB": "1.84",
+            "p50": 1885,
+            "max": 1885
+          },
+          "get_file_info": {
+            "calls": 1,
+            "totalBytes": 902,
+            "totalBytesKiB": "0.88",
+            "p50": 902,
+            "max": 902
+          }
+        }
+      },
+      {
+        "totalCalls": 218,
+        "totalBytes": 456771,
+        "totalBytesKiB": "446.07",
+        "emptyPolls": 1,
+        "peakRatePerMin": 10,
+        "stderrBytes": 84706,
+        "stderrChunks": 670,
+        "responseSizeDistribution": {
+          "count": 218,
+          "min": 169,
+          "p50": 295,
+          "p95": 8484,
+          "max": 14910,
+          "sum": 456771,
+          "mean": 2095
+        },
+        "getConfigDistribution": {
+          "count": 16,
+          "min": 2002,
+          "p50": 2004,
+          "p95": 2004,
+          "max": 2004,
+          "sum": 32055,
+          "mean": 2003
+        },
+        "readProcessOutputDistribution": {
+          "count": 78,
+          "min": 295,
+          "p50": 295,
+          "p95": 8484,
+          "max": 8484,
+          "sum": 307345,
+          "mean": 3940
+        },
+        "byTool": {
+          "start_process": {
+            "calls": 83,
+            "totalBytes": 18695,
+            "totalBytesKiB": "18.26",
+            "p50": 211,
+            "max": 403
+          },
+          "read_process_output": {
+            "calls": 78,
+            "totalBytes": 307345,
+            "totalBytesKiB": "300.14",
+            "p50": 295,
+            "max": 8484
+          },
+          "get_config": {
+            "calls": 16,
+            "totalBytes": 32055,
+            "totalBytesKiB": "31.30",
+            "p50": 2004,
+            "max": 2004
+          },
+          "read_file": {
+            "calls": 14,
+            "totalBytes": 14085,
+            "totalBytesKiB": "13.75",
+            "p50": 1006,
+            "max": 1275
+          },
+          "list_sessions": {
+            "calls": 8,
+            "totalBytes": 2168,
+            "totalBytesKiB": "2.12",
+            "p50": 271,
+            "max": 273
+          },
+          "read_multiple_files": {
+            "calls": 4,
+            "totalBytes": 59638,
+            "totalBytesKiB": "58.24",
+            "p50": 14910,
+            "max": 14910
+          },
+          "start_search": {
+            "calls": 4,
+            "totalBytes": 7495,
+            "totalBytesKiB": "7.32",
+            "p50": 1874,
+            "max": 1874
+          },
+          "get_more_search_results": {
+            "calls": 4,
+            "totalBytes": 6667,
+            "totalBytesKiB": "6.51",
+            "p50": 1667,
+            "max": 1667
+          },
+          "edit_block": {
+            "calls": 2,
+            "totalBytes": 338,
+            "totalBytesKiB": "0.33",
+            "p50": 169,
+            "max": 169
+          },
+          "write_file": {
+            "calls": 2,
+            "totalBytes": 350,
+            "totalBytesKiB": "0.34",
+            "p50": 175,
+            "max": 175
+          },
+          "get_recent_tool_calls": {
+            "calls": 1,
+            "totalBytes": 5148,
+            "totalBytesKiB": "5.03",
+            "p50": 5148,
+            "max": 5148
+          },
+          "get_usage_stats": {
+            "calls": 1,
+            "totalBytes": 1885,
+            "totalBytesKiB": "1.84",
+            "p50": 1885,
+            "max": 1885
+          },
+          "get_file_info": {
+            "calls": 1,
+            "totalBytes": 902,
+            "totalBytesKiB": "0.88",
+            "p50": 902,
+            "max": 902
+          }
+        }
+      },
+      {
+        "totalCalls": 218,
+        "totalBytes": 456770,
+        "totalBytesKiB": "446.06",
+        "emptyPolls": 1,
+        "peakRatePerMin": 10,
+        "stderrBytes": 84705,
+        "stderrChunks": 664,
+        "responseSizeDistribution": {
+          "count": 218,
+          "min": 169,
+          "p50": 295,
+          "p95": 8484,
+          "max": 14910,
+          "sum": 456770,
+          "mean": 2095
+        },
+        "getConfigDistribution": {
+          "count": 16,
+          "min": 2002,
+          "p50": 2004,
+          "p95": 2004,
+          "max": 2004,
+          "sum": 32055,
+          "mean": 2003
+        },
+        "readProcessOutputDistribution": {
+          "count": 78,
+          "min": 295,
+          "p50": 295,
+          "p95": 8484,
+          "max": 8484,
+          "sum": 307345,
+          "mean": 3940
+        },
+        "byTool": {
+          "start_process": {
+            "calls": 83,
+            "totalBytes": 18692,
+            "totalBytesKiB": "18.25",
+            "p50": 211,
+            "max": 403
+          },
+          "read_process_output": {
+            "calls": 78,
+            "totalBytes": 307345,
+            "totalBytesKiB": "300.14",
+            "p50": 295,
+            "max": 8484
+          },
+          "get_config": {
+            "calls": 16,
+            "totalBytes": 32055,
+            "totalBytesKiB": "31.30",
+            "p50": 2004,
+            "max": 2004
+          },
+          "read_file": {
+            "calls": 14,
+            "totalBytes": 14085,
+            "totalBytesKiB": "13.75",
+            "p50": 1006,
+            "max": 1275
+          },
+          "list_sessions": {
+            "calls": 8,
+            "totalBytes": 2170,
+            "totalBytesKiB": "2.12",
+            "p50": 272,
+            "max": 273
+          },
+          "read_multiple_files": {
+            "calls": 4,
+            "totalBytes": 59638,
+            "totalBytesKiB": "58.24",
+            "p50": 14910,
+            "max": 14910
+          },
+          "start_search": {
+            "calls": 4,
+            "totalBytes": 7495,
+            "totalBytesKiB": "7.32",
+            "p50": 1874,
+            "max": 1874
+          },
+          "get_more_search_results": {
+            "calls": 4,
+            "totalBytes": 6667,
+            "totalBytesKiB": "6.51",
+            "p50": 1667,
+            "max": 1667
+          },
+          "edit_block": {
+            "calls": 2,
+            "totalBytes": 338,
+            "totalBytesKiB": "0.33",
+            "p50": 169,
+            "max": 169
+          },
+          "write_file": {
+            "calls": 2,
+            "totalBytes": 350,
+            "totalBytesKiB": "0.34",
+            "p50": 175,
+            "max": 175
+          },
+          "get_recent_tool_calls": {
+            "calls": 1,
+            "totalBytes": 5148,
+            "totalBytesKiB": "5.03",
+            "p50": 5148,
+            "max": 5148
+          },
+          "get_usage_stats": {
+            "calls": 1,
+            "totalBytes": 1885,
+            "totalBytesKiB": "1.84",
+            "p50": 1885,
+            "max": 1885
+          },
+          "get_file_info": {
+            "calls": 1,
+            "totalBytes": 902,
+            "totalBytesKiB": "0.88",
+            "p50": 902,
+            "max": 902
+          }
+        }
+      }
+    ]
+  }
+}

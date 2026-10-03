@@ -1454,11 +1454,12 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
     // amplification (LLM retry-after-strip, UI re-render, reconnect replay).
     // ponytail: dedup only for read-only / idempotent tools; destructive
     // tools (write_file, edit_block, etc.) must always execute.
+    // NOTE: read_process_output is stateful (offset=0 advances session cursor)
+    // and is handled via state-aware poll coalescing in improved-process-tools.
     const DEDUP_TOOLS = new Set([
         'read_file',
         'get_config',
         'get_file_info',
-        'read_process_output',
     ]);
     if (DEDUP_TOOLS.has(name)) {
         const { result } = await dedupRequest(name, args, () =>

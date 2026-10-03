@@ -1,5 +1,5 @@
 import { configManager, ServerConfig } from '../config-manager.js';
-import { SetConfigValueArgsSchema } from './schemas.js';
+import { GetConfigArgsSchema, SetConfigValueArgsSchema } from './schemas.js';
 import { getSystemInfo } from '../utils/system-info.js';
 import { currentClient } from '../server.js';
 import { featureFlagManager } from '../utils/feature-flags.js';
@@ -12,7 +12,39 @@ import {
   isConfigFieldKey,
 } from '../config-field-definitions.js';
 
-const ALLOWED_CONFIG_KEYS = new Set(CONFIG_FIELD_KEYS);
+const SENSITIVE_CONFIG_FIELD_DEFINITIONS = {
+  sensitiveProjectFilePolicy: {
+    label: 'Sensitive Project File Policy',
+    description: 'Controls export_project_file when a filename matches a protected credential/secret pattern.',
+    valueType: 'string' as const,
+    options: ['block', 'require_explicit_override', 'allow'] as const,
+  },
+  sensitiveProjectFileExtraPatterns: {
+    label: 'Extra Sensitive File Patterns',
+    description: 'Additional filename patterns treated as sensitive by export_project_file.',
+    valueType: 'array' as const,
+  },
+  sensitiveProjectFileAllowedPatterns: {
+    label: 'Sensitive File Exceptions',
+    description: 'Filename patterns explicitly treated as safe even when they match a built-in or extra sensitive pattern.',
+    valueType: 'array' as const,
+  },
+  sensitiveProjectFileAudit: {
+    label: 'Sensitive File Audit Log',
+    description: 'Log blocked sensitive export attempts and successful explicit overrides without logging file contents.',
+    valueType: 'boolean' as const,
+  },
+};
+
+const ALL_CONFIG_FIELD_DEFINITIONS: Record<string, { valueType: string; options?: readonly string[] }> = {
+  ...CONFIG_FIELD_DEFINITIONS,
+  ...SENSITIVE_CONFIG_FIELD_DEFINITIONS,
+};
+
+const ALLOWED_CONFIG_KEYS = new Set<string>([
+  ...CONFIG_FIELD_KEYS,
+  ...Object.keys(SENSITIVE_CONFIG_FIELD_DEFINITIONS),
+]);
 
 async function pathExists(pathValue: string): Promise<boolean> {
   try {
@@ -86,63 +118,160 @@ async function detectAvailableShells(systemInfo: ReturnType<typeof getSystemInfo
 }
 
 /**
- * Get the entire config including system information
+ * Get configuration. Defaults to a compact representation (< 2,048 serialized bytes)
+ * containing essential configuration fields and entries without verbose system telemetry.
+ * When verbose === true or origin === 'ui', returns the full comprehensive diagnostic
+ * and schema payload.
  */
-export async function getConfig() {
-  console.error('getConfig called');
+export async function getConfig(args?: unknown) {
   try {
+    const parsed = GetConfigArgsSchema.safeParse(args ?? {});
+    const isVerbose = parsed.success && (
+      parsed.data.verbose === true ||
+      parsed.data.origin === 'ui' ||
+      parsed.data.compact === false
+    );
+
     const config = await configManager.getConfig();
-    
-    // Add system information and current client to the config response
     const systemInfo = getSystemInfo();
-    
-    // Get memory usage
-    const memoryUsage = process.memoryUsage();
-    const memory = {
-      rss: `${(memoryUsage.rss / 1024 / 1024).toFixed(2)} MB`,
-      heapTotal: `${(memoryUsage.heapTotal / 1024 / 1024).toFixed(2)} MB`,
-      heapUsed: `${(memoryUsage.heapUsed / 1024 / 1024).toFixed(2)} MB`,
-      external: `${(memoryUsage.external / 1024 / 1024).toFixed(2)} MB`,
-      arrayBuffers: `${(memoryUsage.arrayBuffers / 1024 / 1024).toFixed(2)} MB`
+
+    if (isVerbose) {
+      // Add system information and current client to the verbose config response
+      const memoryUsage = process.memoryUsage();
+      const memory = {
+        rss: `${(memoryUsage.rss / 1024 / 1024).toFixed(2)} MB`,
+        heapTotal: `${(memoryUsage.heapTotal / 1024 / 1024).toFixed(2)} MB`,
+        heapUsed: `${(memoryUsage.heapUsed / 1024 / 1024).toFixed(2)} MB`,
+        external: `${(memoryUsage.external / 1024 / 1024).toFixed(2)} MB`,
+        arrayBuffers: `${(memoryUsage.arrayBuffers / 1024 / 1024).toFixed(2)} MB`
+      };
+
+      const configWithSystemInfo = {
+        ...config,
+        currentClient,
+        featureFlags: featureFlagManager.getAll(),
+        systemInfo: {
+          ...systemInfo,
+          memory
+        },
+        _metrics: {
+          dedup: getDedupCounters(),
+        },
+      };
+      const availableShells = await detectAvailableShells(systemInfo);
+
+      const entries: Array<{ key: string; value: unknown; valueType: string; editable: boolean }> = CONFIG_FIELD_KEYS.map((key) => {
+        const definition = CONFIG_FIELD_DEFINITIONS[key];
+        const value = (configWithSystemInfo as Record<string, unknown>)[key];
+        return {
+          key,
+          value: value === undefined ? null : value,
+          valueType: definition.valueType,
+          editable: true,
+        };
+      });
+
+      // Ensure sensitive project file entries are present
+      const sensitiveEntries: Array<{ key: string; valueType: 'string' | 'array' | 'boolean'; defaultValue: unknown }> = [
+        { key: 'sensitiveProjectFilePolicy', valueType: 'string', defaultValue: 'require_explicit_override' },
+        { key: 'sensitiveProjectFileExtraPatterns', valueType: 'array', defaultValue: [] },
+        { key: 'sensitiveProjectFileAllowedPatterns', valueType: 'array', defaultValue: ['.env.example', '.env.sample', '.env.template'] },
+        { key: 'sensitiveProjectFileAudit', valueType: 'boolean', defaultValue: true },
+      ];
+      for (const se of sensitiveEntries) {
+        if (!entries.some((e) => e.key === se.key)) {
+          const val = (configWithSystemInfo as Record<string, unknown>)[se.key];
+          entries.push({
+            key: se.key,
+            value: val !== undefined ? val : se.defaultValue,
+            valueType: se.valueType,
+            editable: true,
+          });
+        }
+      }
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Current configuration:\n${JSON.stringify(configWithSystemInfo, null, 2)}`
+        }],
+        structuredContent: {
+          config: configWithSystemInfo,
+          uiHints: {
+            availableShells,
+          },
+          entries,
+        },
+      };
+    }
+
+    // DEFAULT COMPACT MODE (< 2,048 bytes)
+    const compactConfig = {
+      allowedDirectories: config.allowedDirectories ?? [],
+      blockedCommands: config.blockedCommands ?? [],
+      telemetryEnabled: config.telemetryEnabled,
+      clientId: config.clientId,
+      sensitiveProjectFilePolicy: (config as Record<string, unknown>).sensitiveProjectFilePolicy ?? 'require_explicit_override',
+      sensitiveProjectFileExtraPatterns: (config as Record<string, unknown>).sensitiveProjectFileExtraPatterns ?? [],
+      sensitiveProjectFileAllowedPatterns: (config as Record<string, unknown>).sensitiveProjectFileAllowedPatterns ?? ['.env.example', '.env.sample', '.env.template'],
+      sensitiveProjectFileAudit: (config as Record<string, unknown>).sensitiveProjectFileAudit ?? true,
     };
-    
-    const configWithSystemInfo = {
-      ...config,
-      currentClient,
-      featureFlags: featureFlagManager.getAll(),
-      systemInfo: {
-        ...systemInfo,
-        memory
-      },
-      _metrics: {
-        dedup: getDedupCounters(),
-      },
-    };
-    const availableShells = await detectAvailableShells(systemInfo);
-    
-    console.error(`getConfig result: ${JSON.stringify(configWithSystemInfo, null, 2)}`);
-    return {
+
+    const blockedCount = Array.isArray(compactConfig.blockedCommands) ? compactConfig.blockedCommands.length : 0;
+    const allowedDirText = Array.isArray(compactConfig.allowedDirectories) && compactConfig.allowedDirectories.length > 0
+      ? compactConfig.allowedDirectories.join(', ')
+      : 'all';
+    let textSummary = `Desktop Commander configuration active: ${blockedCount} blocked commands, ${allowedDirText} directories allowed. Telemetry: ${compactConfig.telemetryEnabled ? 'enabled' : 'disabled'}.`;
+
+    // Core editable entries excluding duplicate blockedCommands array
+    const compactKeys = CONFIG_FIELD_KEYS.filter((k) => k !== 'blockedCommands');
+    const entries: Array<{ key: string; value: unknown; valueType: string; editable: boolean }> = compactKeys.map((key) => {
+      const definition = CONFIG_FIELD_DEFINITIONS[key];
+      const value = (config as Record<string, unknown>)[key];
+      return {
+        key,
+        value: value === undefined ? null : value,
+        valueType: definition.valueType,
+        editable: true,
+      };
+    });
+
+    // Ensure sensitive project file policy entries are included in entries
+    const sensitiveEntries: Array<{ key: string; valueType: 'string' | 'array' | 'boolean'; defaultValue: unknown }> = [
+      { key: 'sensitiveProjectFilePolicy', valueType: 'string', defaultValue: 'require_explicit_override' },
+      { key: 'sensitiveProjectFileExtraPatterns', valueType: 'array', defaultValue: [] },
+      { key: 'sensitiveProjectFileAllowedPatterns', valueType: 'array', defaultValue: ['.env.example', '.env.sample', '.env.template'] },
+      { key: 'sensitiveProjectFileAudit', valueType: 'boolean', defaultValue: true },
+    ];
+    for (const se of sensitiveEntries) {
+      if (!entries.some((e) => e.key === se.key)) {
+        const val = (config as Record<string, unknown>)[se.key];
+        entries.push({
+          key: se.key,
+          value: val !== undefined ? val : se.defaultValue,
+          valueType: se.valueType,
+          editable: true,
+        });
+      }
+    }
+
+    const payload = {
       content: [{
-        type: "text",
-        text: `Current configuration:\n${JSON.stringify(configWithSystemInfo, null, 2)}`
+        type: "text" as const,
+        text: textSummary,
       }],
       structuredContent: {
-        config: configWithSystemInfo,
-        uiHints: {
-          availableShells,
-        },
-        entries: CONFIG_FIELD_KEYS.map((key) => {
-          const definition = CONFIG_FIELD_DEFINITIONS[key];
-          const value = (configWithSystemInfo as Record<string, unknown>)[key];
-          return {
-            key,
-            value: value === undefined ? null : value,
-            valueType: definition.valueType,
-            editable: true,
-          };
-        }),
+        config: compactConfig,
+        entries,
       },
     };
+
+    // Budget safeguard: keep payload well under the 2,048 byte threshold
+    if (Buffer.byteLength(JSON.stringify(payload), 'utf8') >= 2040) {
+      payload.content[0].text = `Desktop Commander config active (${blockedCount} blocked).`;
+    }
+
+    return payload;
   } catch (error) {
     console.error(`Error in getConfig: ${error instanceof Error ? error.message : String(error)}`);
     console.error(error instanceof Error && error.stack ? error.stack : 'No stack trace available');
@@ -174,7 +303,7 @@ export async function setConfigValue(args: unknown) {
       };
     }
 
-    if (!isConfigFieldKey(parsed.data.key)) {
+    if (!ALLOWED_CONFIG_KEYS.has(parsed.data.key)) {
       return {
         content: [{
           type: "text",
@@ -185,9 +314,21 @@ export async function setConfigValue(args: unknown) {
     }
 
     try {
-      const fieldDefinition = CONFIG_FIELD_DEFINITIONS[parsed.data.key];
+      const fieldDefinition = ALL_CONFIG_FIELD_DEFINITIONS[parsed.data.key];
       // Parse string values that should be arrays or objects
       let valueToStore = parsed.data.value;
+
+      if ('options' in fieldDefinition && fieldDefinition.options) {
+        if (typeof valueToStore !== 'string' || !(fieldDefinition.options as readonly string[]).includes(valueToStore)) {
+          return {
+            content: [{
+              type: "text",
+              text: `Value for ${parsed.data.key} must be one of: ${fieldDefinition.options.join(', ')}.`
+            }],
+            isError: true
+          };
+        }
+      }
       
       // If the value is a string that looks like an array or object, try to parse it
       if (typeof valueToStore === 'string' && 
