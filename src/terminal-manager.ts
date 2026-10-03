@@ -1,5 +1,5 @@
 import { spawn } from 'child_process';
-import { boundedText, serializedBytes, MAX_PROCESS_PAGE_BYTES } from './utils/response-budget.js';
+import { boundedText, serializedBytes, MAX_PROCESS_PAGE_BYTES, DEFAULT_PROCESS_PAGE_BYTES, MAX_TOOL_RESPONSE_BYTES } from './utils/response-budget.js';
 import { existsSync } from 'fs';
 import path from 'path';
 import { TerminalSession, CommandExecutionResult, ActiveSession, TimingInfo, OutputEvent } from './types.js';
@@ -51,6 +51,21 @@ function getRepairedPathExt(): string {
   return current;
 }
 
+export interface SessionStateVersion {
+  pid: number;
+  generation: number;
+  lifecycleVersion: number;
+  outputVersion: number;
+  lastReadIndex: number;
+  lastReadCharacter: number;
+}
+
+export interface VersionedTerminalSession extends TerminalSession {
+  generation: number;
+  outputVersion: number;
+  lifecycleVersion: number;
+}
+
 interface CompletedSession {
   pid: number;
   outputLines: string[];       // Line-based buffer (consistent with active sessions)
@@ -61,6 +76,9 @@ interface CompletedSession {
   evictedChars: number;
   lastReadIndex: number;
   lastReadCharacter?: number;
+  generation: number;
+  outputVersion: number;
+  lifecycleVersion: number;
 }
 
 /**
@@ -89,6 +107,11 @@ export interface PaginatedOutputResult {
   nextOffset: number;
   nextCharacterOffset: number;
   sizeLimited: boolean;
+}
+
+export interface ReadOutputOptions {
+  maxBytes?: number;
+  pageSize?: number;
 }
 
 /**
@@ -162,7 +185,8 @@ function getShellSpawnArgs(shellPath: string, command: string): ShellSpawnConfig
 }
 
 export class TerminalManager {
-  private sessions: Map<number, TerminalSession> = new Map();
+  private nextGeneration = 1;
+  private sessions: Map<number, VersionedTerminalSession> = new Map();
   private completedSessions: Map<number, CompletedSession> = new Map();
   
   /**
@@ -368,7 +392,7 @@ export class TerminalManager {
       };
     }
 
-    const session: TerminalSession = {
+    const session: VersionedTerminalSession = {
       pid: childProcess.pid,
       process: childProcess,
       outputLines: [],           // Line-based buffer
@@ -377,7 +401,10 @@ export class TerminalManager {
       startTime: new Date(),
       bufferedChars: 0,
       evictedLines: 0,
-      evictedChars: 0
+      evictedChars: 0,
+      generation: this.nextGeneration++,
+      outputVersion: 0,
+      lifecycleVersion: 0,
     };
 
     this.sessions.set(childProcess.pid, session);
@@ -425,6 +452,7 @@ export class TerminalManager {
       // a successful spawn means the process is gone, so the caller must not sit
       // waiting for output that will never arrive.
       forwardProcessError = (err: Error) => {
+        session.lifecycleVersion++;
         this.sessions.delete(childProcess.pid!);
         exitReason = 'process_exit';
         resolveOnce({
@@ -545,6 +573,7 @@ export class TerminalManager {
       // 'exit' can precede the last stdout/stderr data; 'close' seals the buffer.
       childProcess.on('close', (code: any) => {
         if (childProcess.pid) {
+          session.lifecycleVersion++;
           // Store completed session before removing active session
           this.completedSessions.set(childProcess.pid, {
             pid: childProcess.pid,
@@ -555,7 +584,10 @@ export class TerminalManager {
             evictedLines: session.evictedLines,
             evictedChars: session.evictedChars,
             lastReadIndex: session.lastReadIndex,
-            lastReadCharacter: session.lastReadCharacter
+            lastReadCharacter: session.lastReadCharacter,
+            generation: session.generation,
+            outputVersion: session.outputVersion,
+            lifecycleVersion: session.lifecycleVersion,
           });
 
           // Keep only last 100 completed sessions
@@ -580,8 +612,9 @@ export class TerminalManager {
    * Append text to a session's line buffer
    * Handles partial lines and newline splitting
    */
-  private appendToLineBuffer(session: TerminalSession, text: string): void {
+  private appendToLineBuffer(session: VersionedTerminalSession, text: string): void {
     if (!text) return;
+    session.outputVersion++;
 
     // Split text into lines, keeping track of whether text ends with newline
     const lines = text.split('\n');
@@ -650,9 +683,24 @@ export class TerminalManager {
    * @param pid Process ID
    * @param offset Line offset: 0=from lastReadIndex, positive=absolute, negative=tail
    * @param length Max lines to return
-   * @param updateReadIndex Whether to update lastReadIndex (default: true for offset=0)
+   * @param characterOffset Explicit position within a line
+   * @param options Optional budget override via maxBytes/pageSize or raw number
    */
-  readOutputPaginated(pid: number, offset: number = 0, length: number = 1000, characterOffset?: number): PaginatedOutputResult | null {
+  readOutputPaginated(
+    pid: number,
+    offset: number = 0,
+    length: number = 1000,
+    characterOffset?: number,
+    options?: ReadOutputOptions | number
+  ): PaginatedOutputResult | null {
+    const overrideBudget = typeof options === 'number'
+      ? options
+      : (options?.maxBytes ?? options?.pageSize);
+    const effectiveBudget = Math.min(
+      overrideBudget !== undefined ? Math.max(512, overrideBudget) : DEFAULT_PROCESS_PAGE_BYTES,
+      MAX_TOOL_RESPONSE_BYTES
+    );
+
     // First check active sessions
     const session = this.sessions.get(pid);
     if (session) {
@@ -666,7 +714,8 @@ export class TerminalManager {
         undefined,
         undefined,
         session.lastReadCharacter ?? 0,
-        characterOffset
+        characterOffset,
+        effectiveBudget
       );
       result.evictedLines = session.evictedLines;
       return result;
@@ -686,7 +735,8 @@ export class TerminalManager {
         completedSession.exitCode,
         runtimeMs,
         completedSession.lastReadCharacter ?? 0,
-        characterOffset
+        characterOffset,
+        effectiveBudget
       );
       result.evictedLines = completedSession.evictedLines;
       return result;
@@ -708,7 +758,8 @@ export class TerminalManager {
     exitCode?: number | null,
     runtimeMs?: number,
     lastReadCharacter: number = 0,
-    characterOffset?: number
+    characterOffset?: number,
+    effectiveBudget: number = DEFAULT_PROCESS_PAGE_BYTES
   ): PaginatedOutputResult {
     const totalLines = lines.length;
     let startIndex: number;
@@ -737,23 +788,36 @@ export class TerminalManager {
     const page: string[] = [];
     let nextOffset = startIndex;
     let nextCharacterOffset = characterOffset ?? (offset === 0 ? lastReadCharacter : 0);
-    let budget = MAX_PROCESS_PAGE_BYTES;
+    let budget = effectiveBudget;
     let sizeLimited = false;
     for (const line of linesToRead) {
       const unread = line.slice(nextCharacterOffset);
       if (unread.length === 0 && !isComplete && nextOffset === totalLines - 1) break;
-      const piece = boundedText(unread, budget);
-      if (piece.length === 0 && unread.length > 0) { sizeLimited = true; break; }
-      page.push(piece);
-      budget -= serializedBytes(piece) + 2; // reserve escaped newline separator
-      if (piece.length < unread.length) {
-        nextCharacterOffset += piece.length;
-        sizeLimited = true;
+      const unreadBytes = Buffer.byteLength(unread, 'utf8');
+      if (unreadBytes <= budget) {
+        page.push(unread);
+        budget -= unreadBytes + 1;
+        nextOffset++;
+        nextCharacterOffset = 0;
+        if (budget < 8 && nextOffset < startIndex + linesToRead.length) { sizeLimited = true; break; }
+      } else {
+        if (page.length > 0) {
+          sizeLimited = true;
+          break;
+        }
+        const piece = boundedText(unread, budget);
+        if (piece.length === 0 && unread.length > 0) { sizeLimited = true; break; }
+        page.push(piece);
+        budget -= Buffer.byteLength(piece, 'utf8') + 1;
+        if (piece.length < unread.length) {
+          nextCharacterOffset += piece.length;
+          sizeLimited = true;
+          break;
+        }
+        nextOffset++;
+        nextCharacterOffset = 0;
         break;
       }
-      nextOffset++;
-      nextCharacterOffset = 0;
-      if (budget < 8 && nextOffset < startIndex + linesToRead.length) { sizeLimited = true; break; }
     }
     linesToRead = page;
     // The final active line can still grow without a newline. Keep its character cursor.
@@ -896,13 +960,52 @@ export class TerminalManager {
     return fullOutput.substring(Math.max(0, fullOutput.length - newChars));
   }
 
-    /**
+  /**
    * Get a session by PID
    * @param pid Process ID
    * @returns The session or undefined if not found
    */
-  getSession(pid: number): TerminalSession | undefined {
+  getSession(pid: number): VersionedTerminalSession | undefined {
     return this.sessions.get(pid);
+  }
+
+  /**
+   * Get the current state version of a session (active or completed).
+   * Strict key: (pid, generation, lifecycleVersion, outputVersion, lastReadIndex, lastReadCharacter)
+   */
+  getSessionStateVersion(pid: number): SessionStateVersion | null {
+    const session = this.sessions.get(pid);
+    if (session) {
+      return {
+        pid,
+        generation: session.generation,
+        lifecycleVersion: session.lifecycleVersion,
+        outputVersion: session.outputVersion,
+        lastReadIndex: session.lastReadIndex,
+        lastReadCharacter: session.lastReadCharacter ?? 0,
+      };
+    }
+    const completed = this.completedSessions.get(pid);
+    if (completed) {
+      return {
+        pid,
+        generation: completed.generation,
+        lifecycleVersion: completed.lifecycleVersion,
+        outputVersion: completed.outputVersion,
+        lastReadIndex: completed.lastReadIndex,
+        lastReadCharacter: completed.lastReadCharacter ?? 0,
+      };
+    }
+    return null;
+  }
+
+  /**
+   * Get a stable state key string for coalescing and suppression checks.
+   */
+  getSessionStateKey(pid: number): string | null {
+    const v = this.getSessionStateVersion(pid);
+    if (!v) return null;
+    return `${v.pid}:${v.generation}:${v.lifecycleVersion}:${v.outputVersion}:${v.lastReadIndex}:${v.lastReadCharacter}`;
   }
 
   forceTerminate(pid: number): boolean {
@@ -910,6 +1013,7 @@ export class TerminalManager {
     if (!session) {
       return false;
     }
+    session.lifecycleVersion++;
 
     try {
         session.process.kill('SIGINT');

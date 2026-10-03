@@ -1,6 +1,7 @@
 import { terminalManager, MAX_BUFFERED_OUTPUT_CHARS } from '../terminal-manager.js';
 import { commandManager } from '../command-manager.js';
 import { StartProcessArgsSchema, ReadProcessOutputArgsSchema, InteractWithProcessArgsSchema, ForceTerminateArgsSchema, ListSessionsArgsSchema } from './schemas.js';
+import { z } from 'zod';
 import { capture } from "../utils/capture.js";
 import { ServerResult } from '../types.js';
 import { analyzeProcessState, cleanProcessOutput, formatProcessStateMessage, ProcessState } from '../utils/process-detection.js';
@@ -187,7 +188,7 @@ export async function startProcess(args: unknown): Promise<ServerResult> {
   const admission = processLaunchAdmission(parsed.data);
   if (!admission.allowed) {
     const retryAfterMs = Math.max(1, admission.retryAfterMs ?? PROCESS_LAUNCH_DEDUP_MS);
-    const text = `Process launch suppressed: ${admission.reason}. Retry after ${retryAfterMs}ms.`;
+    const text = `Launch suppressed (${admission.reason}, retry in ${retryAfterMs}ms).`;
     capture('server_start_process_suppressed', {
       reason: admission.reason,
       retryAfterMs,
@@ -196,13 +197,6 @@ export async function startProcess(args: unknown): Promise<ServerResult> {
       content: [{ type: "text", text }],
       structuredContent: {
         pid: null,
-        text,
-        output: text,
-        isBlocked: false,
-        isFinished: true,
-        exitCode: null,
-        state: 'finished',
-        success: true,
         suppressed: true,
         retryAfterMs,
       },
@@ -298,7 +292,7 @@ export async function startProcess(args: unknown): Promise<ServerResult> {
 
   let statusMessage = '';
   if (isFinished) {
-    statusMessage = `\nProcess completed with exit code ${exitCode ?? 'unknown'}.`;
+    statusMessage = `\ncompleted with exit code ${exitCode ?? 'unknown'}.`;
   } else if (processState.isWaitingForInput) {
     statusMessage = `\n🔄 ${formatProcessStateMessage(processState, result.pid)}`;
   } else if (result.isBlocked) {
@@ -315,15 +309,15 @@ export async function startProcess(args: unknown): Promise<ServerResult> {
     result.output,
     config.processStartOutputLineLimit,
   );
-  const text = `Process started with PID ${result.pid} (shell: ${shellUsed})\nInitial output:\n${previewOutput}${statusMessage}${timingMessage}`;
+  const initialOutput = previewOutput && previewOutput !== '(no output)' ? `\nInitial output:\n${previewOutput}` : '';
+  const text = `Process started with PID ${result.pid}${initialOutput}${statusMessage}${timingMessage}`;
 
   return {
     content: [{ type: "text", text }],
     structuredContent: {
       pid: result.pid,
       text,
-      output: text,
-      isBlocked: !isFinished && result.isBlocked,
+      ...((!isFinished && result.isBlocked) ? { isBlocked: true } : {}),
       isFinished,
       exitCode,
       state: isFinished ? 'finished' : !lifecycle ? 'unknown' : processState.isWaitingForInput ? 'waiting_for_input' : 'running',
@@ -360,6 +354,31 @@ function formatTimingInfo(timing: any): string {
 }
 
 /**
+ * In-flight state-aware poll promises, keyed strictly by process generation + output cursor/state version.
+ */
+const inFlightPolls = new Map<string, Promise<ServerResult>>();
+
+/**
+ * Tracks consecutive empty polling reads per process to return compact receipts.
+ */
+interface EmptyPollRecord {
+  stateKey: string;
+  timestamp: number;
+}
+const lastEmptyPollByPid = new Map<number, EmptyPollRecord>();
+
+export const EMPTY_POLL_WINDOW_MS = 500;
+
+export function clearPollingState(pid?: number): void {
+  if (pid !== undefined) {
+    lastEmptyPollByPid.delete(pid);
+  } else {
+    lastEmptyPollByPid.clear();
+    inFlightPolls.clear();
+  }
+}
+
+/**
  * Read output from a running process with file-like pagination
  * Supports offset/length parameters for controlled reading
  */
@@ -382,11 +401,55 @@ export async function readProcessOutput(args: unknown): Promise<ServerResult> {
     offset = 0,                    // 0 = from last read, positive = absolute, negative = tail
     length = defaultLength,        // Default from config, same as file reading
     character_offset,
+    maxBytes,
+    pageSize,
     verbose_timing = false 
   } = parsed.data;
 
+  // In-flight poll coalescing: strictly keyed by process generation + output cursor/state version:
+  // (pid, generation, lifecycleVersion, outputVersion, lastReadIndex, lastReadCharacter)
+  const stateVersion = terminalManager.getSessionStateVersion(pid);
+  if (!stateVersion) {
+    return executeReadProcessOutputCore(parsed.data, defaultLength);
+  }
+
+  const inFlightKey = `poll:${stateVersion.pid}:${stateVersion.generation}:${stateVersion.lifecycleVersion}:${stateVersion.outputVersion}:${stateVersion.lastReadIndex}:${stateVersion.lastReadCharacter}:${offset}:${character_offset ?? 0}:${length}:${timeout_ms}:${maxBytes ?? ''}:${pageSize ?? ''}`;
+
+  const existing = inFlightPolls.get(inFlightKey);
+  if (existing) {
+    return await existing;
+  }
+
+  const executionPromise = executeReadProcessOutputCore(parsed.data, defaultLength);
+  inFlightPolls.set(inFlightKey, executionPromise);
+
+  try {
+    return await executionPromise;
+  } finally {
+    if (inFlightPolls.get(inFlightKey) === executionPromise) {
+      inFlightPolls.delete(inFlightKey);
+    }
+  }
+}
+
+async function executeReadProcessOutputCore(
+  data: z.infer<typeof ReadProcessOutputArgsSchema>,
+  defaultLength: number
+): Promise<ServerResult> {
+  const { 
+    pid, 
+    timeout_ms = 5000, 
+    offset = 0,
+    length = defaultLength,
+    character_offset,
+    maxBytes,
+    pageSize,
+    verbose_timing = false 
+  } = data;
+
   // Timing telemetry
   const startTime = Date.now();
+  const initialVersion = terminalManager.getSessionStateVersion(pid);
 
   // For active sessions with no new output yet, optionally wait for output
   const session = terminalManager.getSession(pid);
@@ -420,7 +483,15 @@ export async function readProcessOutput(args: unknown): Promise<ServerResult> {
 
         const poll = () => {
           if (resolved) return;
-          if (!terminalManager.getSession(pid) || terminalManager.hasUnreadOutput(pid)) {
+          const currentVersion = terminalManager.getSessionStateVersion(pid);
+          if (
+            !terminalManager.getSession(pid) ||
+            terminalManager.hasUnreadOutput(pid) ||
+            (initialVersion && currentVersion && (
+              currentVersion.outputVersion !== initialVersion.outputVersion ||
+              currentVersion.lifecycleVersion !== initialVersion.lifecycleVersion
+            ))
+          ) {
             resolveOnce();
             return;
           }
@@ -443,13 +514,63 @@ export async function readProcessOutput(args: unknown): Promise<ServerResult> {
   }
 
   // Read output with pagination
-  const result = terminalManager.readOutputPaginated(pid, offset, length, character_offset);
+  const result = terminalManager.readOutputPaginated(
+    pid, 
+    offset, 
+    length, 
+    character_offset,
+    { maxBytes, pageSize }
+  );
   
   if (!result) {
     return {
       content: [{ type: "text", text: `No session found for PID ${pid}` }],
       isError: true,
     };
+  }
+
+  // Check for zero-output polling suppression:
+  // When consecutive empty/unchanged process output reads occur in wait loops:
+  // If session state is unchanged (same generation, lifecycleVersion, outputVersion, and cursor)
+  // within a bounded temporal window (500ms), return a compact lightweight receipt.
+  const isEmptyPoll = (offset === 0 || offset === undefined) &&
+    character_offset === undefined &&
+    result.lines.length === 0 &&
+    !result.isComplete;
+
+  if (isEmptyPoll) {
+    const currentStateKey = terminalManager.getSessionStateKey(pid);
+    const lastEmpty = lastEmptyPollByPid.get(pid);
+    const now = Date.now();
+
+    const isConsecutiveEmpty = lastEmpty !== undefined &&
+      lastEmpty.stateKey === currentStateKey &&
+      (startTime - lastEmpty.timestamp <= EMPTY_POLL_WINDOW_MS || now - lastEmpty.timestamp <= EMPTY_POLL_WINDOW_MS);
+
+    lastEmptyPollByPid.set(pid, {
+      stateKey: currentStateKey ?? '',
+      timestamp: now,
+    });
+
+    if (isConsecutiveEmpty) {
+      return {
+        content: [{ type: "text", text: "No new output. Process running." }],
+        structuredContent: {
+          pid,
+          text: "No new output",
+          success: true,
+          isFinished: false,
+          exitCode: null,
+          nextOffset: result.nextOffset,
+          nextCharacterOffset: result.nextCharacterOffset,
+          hasMoreOutput: false,
+          sizeLimited: false,
+        },
+      };
+    }
+  } else {
+    // New output arrived or process completed — reset empty poll tracking immediately
+    lastEmptyPollByPid.delete(pid);
   }
 
   // Join lines back into string
@@ -462,11 +583,7 @@ export async function readProcessOutput(args: unknown): Promise<ServerResult> {
     statusMessage = `[Reading last ${result.readCount} lines (total: ${result.totalLines} lines)]`;
   } else if (offset === 0) {
     // "New output" read
-    if (result.remaining > 0) {
-      statusMessage = `[Reading ${result.readCount} new lines from line ${result.readFrom} (total: ${result.totalLines} lines, ${result.remaining} remaining)]`;
-    } else {
-      statusMessage = `[Reading ${result.readCount} new lines (total: ${result.totalLines} lines)]`;
-    }
+    statusMessage = result.readCount === 0 ? '[Reading 0 new lines]' : '';
   } else {
     // Absolute position read
     statusMessage = `[Reading ${result.readCount} lines from line ${result.readFrom} (total: ${result.totalLines} lines, ${result.remaining} remaining)]`;
@@ -475,9 +592,7 @@ export async function readProcessOutput(args: unknown): Promise<ServerResult> {
   // Surface buffer-cap eviction so the model knows the retained output is not
   // the full output and that line numbers shifted (matches the truncation
   // markers used by other tools).
-  if (result.sizeLimited) {
-    statusMessage += `\n[Size-limited page. Continue with offset=${result.nextOffset}, character_offset=${result.nextCharacterOffset}${offset === 0 && character_offset === undefined ? '; or omit both to read the next incremental page' : ''}.]`;
-  }
+
   if (result.evictedLines && result.evictedLines > 0) {
     const capMB = Math.round(MAX_BUFFERED_OUTPUT_CHARS / 1024 / 1024);
     statusMessage += `\n[WARNING: output exceeded the ${capMB}MB buffer cap; the ${result.evictedLines} earliest lines were evicted and cannot be read. Line numbers and totals refer to the retained buffer only]`;
@@ -485,11 +600,11 @@ export async function readProcessOutput(args: unknown): Promise<ServerResult> {
 
   // Add process state info
   let processStateMessage = '';
-  if (result.isComplete) {
+  if (result.isComplete && !result.sizeLimited && result.remaining === 0) {
     const runtimeStr = result.runtimeMs !== undefined 
-      ? ` (runtime: ${(result.runtimeMs / 1000).toFixed(2)}s)` 
+      ? ` (runtime: ${(result.runtimeMs / 1000).toFixed(1)}s)` 
       : '';
-    processStateMessage = `\n✅ Process completed with exit code ${result.exitCode}${runtimeStr}`;
+    processStateMessage = `\nProcess completed with exit code ${result.exitCode}${runtimeStr}`;
   } else if (session) {
     // Analyze state for running processes
     const fullOutput = session.outputLines.join('\n');
@@ -508,14 +623,16 @@ export async function readProcessOutput(args: unknown): Promise<ServerResult> {
 
   const responseText = output || '(No output in requested range)';
 
+  const textPrefix = statusMessage ? `${statusMessage}\n` : '';
+
   return {
     content: [{
       type: "text",
-      text: `${statusMessage}\n\n${responseText}${processStateMessage}${timingMessage}`
+      text: `${textPrefix}${responseText}${processStateMessage}${timingMessage}`
     }],
     structuredContent: {
       pid,
-      text: `${statusMessage}\n\n${responseText}${processStateMessage}${timingMessage}`,
+      text: `[PID ${pid}: read ${result.lines.length} lines, ${result.remaining} remaining]`,
       success: true,
       isFinished: result.isComplete,
       exitCode: result.exitCode ?? null,

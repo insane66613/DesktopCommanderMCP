@@ -1,6 +1,7 @@
 import type { ServerResult } from '../types.js';
 
 export const MAX_TOOL_RESPONSE_BYTES = 32 * 1024;
+export const DEFAULT_PROCESS_PAGE_BYTES = 8 * 1024;
 export const MAX_PROCESS_PAGE_BYTES = 8 * 1024;
 
 export function serializedBytes(value: unknown): number {
