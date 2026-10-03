@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { TrafficClientHarness, evaluateWorkloadMultiRun, validateToolReceipt } from './benchmark-traffic.js';
+import { TrafficClientHarness, evaluateWorkloadMultiRun, validateToolReceipt, requireProcessPid, fixtureConfig, fixtureFingerprint } from './benchmark-traffic.js';
 import { verifyTrafficReports } from './verify-traffic-gate.js';
 
 test('rate uses sorted actual timestamps and half-open rolling windows', () => {
@@ -41,11 +41,13 @@ test('multi-run config maximum retains an outlier hidden by the median', async (
 });
 
 function receipts() {
-  const baseline = {};
+  const baseline = { schemaVersion: 2, evidenceStatus: 'current-synthetic-measurement',
+    accountingVersion: 'actual-timestamps-all-empty-receipts-max-config-v2', fixtureConfig, fixtureFingerprint };
   const candidate = {
     schemaVersion: 2, evidenceStatus: 'current-synthetic-measurement',
     accountingVersion: 'actual-timestamps-all-empty-receipts-max-config-v2',
     timestamp: new Date().toISOString(),
+    fixtureConfig, fixtureFingerprint,
   };
   for (const workload of ['drain20KiB', 'drain50KiB', 'drain100KiB', 'incidentProfile']) {
     const totalCalls = workload === 'incidentProfile' ? 218 : 4;
@@ -53,6 +55,7 @@ function receipts() {
       totalCalls, totalBytes: 1000, emptyPolls: 42, peakRatePerMin: totalCalls,
       peakRateBasis: 'observed-call-starts-rolling-60s-half-open', errorCalls: 0,
       callStartTimestamps: Array.from({ length: totalCalls }, (_, index) => 1000 + index),
+      suppressedLaunches: 0,
       responseSizeDistribution: { count: totalCalls, sum: 1000 },
       getConfigDistribution: { count: 16, max: 100 },
     };
@@ -99,7 +102,7 @@ test('archived reports cannot pass current acceptance', () => {
   const baseline = JSON.parse(fs.readFileSync(new URL('./baseline-report.json', import.meta.url)));
   const candidate = JSON.parse(fs.readFileSync(new URL('./hardened-report.json', import.meta.url)));
   assert.equal(candidate.evidenceStatus, 'historical-unverified');
-  assert.throws(() => verifyTrafficReports(baseline, candidate), /Current accounting schema v2 receipt required/);
+  assert.throws(() => verifyTrafficReports(baseline, candidate), /Current baseline accounting schema v2 receipt required/);
 });
 
 test('tool errors and missing search receipts stop dispatch without duplicate calls', async () => {
@@ -125,4 +128,32 @@ test('process and search identity receipts are validated before dependents run',
   assert.doesNotThrow(() => validateToolReceipt('start_process', { structuredContent: { pid: 12 } }));
   assert.equal(validateToolReceipt('start_search', { structuredContent: { sessionId: 'search_1' } }), 'search_1');
   assert.equal(validateToolReceipt('start_search', { content: [{ type: 'text', text: 'Started search session: search_2' }] }), 'search_2');
+});
+
+test('typed launch suppression is counted but cannot supply a dependent process identity', async () => {
+  const suppression = { structuredContent: { pid: null, suppressed: true, retryAfterMs: 2000 } };
+  assert.doesNotThrow(() => validateToolReceipt('start_process', suppression));
+  assert.throws(() => requireProcessPid(suppression), /valid PID receipt required for dependent workload/);
+  for (const retryAfterMs of [undefined, 0, -1, '2000']) {
+    assert.throws(() => validateToolReceipt('start_process', {
+      structuredContent: { pid: null, suppressed: true, retryAfterMs },
+    }), /valid suppression receipt/);
+  }
+  const harness = new TrafficClientHarness('.');
+  harness.client = { callTool: async () => suppression };
+  await harness.callTool('start_process', { command: 'echo synthetic workload' });
+  assert.equal(harness.getMetrics().suppressedLaunches, 1);
+  assert.equal(harness.getMetrics().errorCalls, 0);
+});
+
+test('synthetic comparisons reject historical or mismatched fixtures', () => {
+  for (const mutate of [
+    b => { b.evidenceStatus = 'historical-unverified'; },
+    b => { b.fixtureFingerprint = 'other-fixture'; },
+    b => { b.fixtureConfig = { processStartOutputLineLimit: 25 }; },
+  ]) {
+    const { baseline, candidate } = receipts();
+    mutate(baseline);
+    assert.throws(() => verifyTrafficReports(baseline, candidate));
+  }
 });

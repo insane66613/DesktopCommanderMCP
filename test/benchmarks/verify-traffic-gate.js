@@ -5,6 +5,7 @@
 import fs from 'fs';
 import path from 'path';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -17,6 +18,15 @@ function metric(value, name, minimum = 0) {
 }
 
 export function verifyTrafficReports(baseline, hardened) {
+  assert.equal(baseline.schemaVersion, 2, 'Current baseline accounting schema v2 receipt required');
+  assert.equal(baseline.evidenceStatus, 'current-synthetic-measurement', 'Historical baseline cannot pass current comparison');
+  assert.equal(baseline.accountingVersion, hardened.accountingVersion, 'Accounting versions must match');
+  assert.equal(baseline.fixtureFingerprint, hardened.fixtureFingerprint, 'Fixture fingerprints must match');
+  assert.deepEqual(baseline.fixtureConfig, hardened.fixtureConfig, 'Fixture config must match');
+  assert.equal(hardened.fixtureConfig?.processStartOutputLineLimit, 0, 'Declared no-preview drain fixture required');
+  assert.equal(typeof hardened.fixtureFingerprint, 'string', 'Fixture fingerprint required');
+  assert.equal(hardened.fixtureFingerprint, createHash('sha256').update(JSON.stringify(hardened.fixtureConfig)).digest('hex'),
+    'Fixture fingerprint must match declared config');
   assert.equal(hardened.schemaVersion, 2, 'Current accounting schema v2 receipt required');
   assert.equal(hardened.evidenceStatus, 'current-synthetic-measurement', 'Historical evidence cannot pass acceptance');
   assert.equal(hardened.accountingVersion, 'actual-timestamps-all-empty-receipts-max-config-v2');
@@ -33,6 +43,7 @@ export function verifyTrafficReports(baseline, hardened) {
       metric(run.totalCalls, `${label} totalCalls`, 1);
       metric(run.totalBytes, `${label} totalBytes`, 1);
       metric(run.emptyPolls, `${label} emptyPolls`);
+      metric(run.suppressedLaunches, `${label} suppressedLaunches`);
       metric(run.peakRatePerMin, `${label} peakRatePerMin`, 1);
       assert.equal(run.peakRateBasis, 'observed-call-starts-rolling-60s-half-open', `${label} rate measurement basis`);
       assert(Array.isArray(run.callStartTimestamps) && run.callStartTimestamps.length === run.totalCalls,

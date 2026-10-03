@@ -30,19 +30,30 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import os from 'os';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { createTestEnv } from '../helpers/test-env.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+export const fixtureConfig = Object.freeze({ processStartOutputLineLimit: 0 });
+export const fixtureFingerprint = createHash('sha256').update(JSON.stringify(fixtureConfig)).digest('hex');
 
 export function validateToolReceipt(name, result) {
   if (!result || typeof result !== 'object' || result.isError) {
     throw new Error(`Benchmark ${name} failed: missing result or tool error`);
   }
-  if (name === 'start_process' && (!Number.isSafeInteger(result.structuredContent?.pid) || result.structuredContent.pid <= 0)) {
-    throw new Error('Benchmark start_process failed: valid PID receipt required');
+  if (name === 'start_process') {
+    const receipt = result.structuredContent;
+    if (receipt?.suppressed === true) {
+      if (receipt.pid !== null || !Number.isSafeInteger(receipt.retryAfterMs) || receipt.retryAfterMs <= 0) {
+        throw new Error('Benchmark start_process failed: valid suppression receipt required');
+      }
+    } else {
+      requireProcessPid(result);
+    }
   }
   if (name === 'start_search') {
     const text = result.content?.filter(c => c.type === 'text').map(c => c.text).join('\n') ?? '';
@@ -52,6 +63,14 @@ export function validateToolReceipt(name, result) {
     }
     return sessionId;
   }
+}
+
+export function requireProcessPid(result) {
+  const processId = result?.structuredContent?.pid;
+  if (!Number.isSafeInteger(processId) || processId <= 0) {
+    throw new Error('Benchmark start_process failed: valid PID receipt required for dependent workload');
+  }
+  return processId;
 }
 
 function quantile(arr, q) {
@@ -100,6 +119,23 @@ export class TrafficClientHarness {
     }
 
     this.testEnvironment = createTestEnv();
+    try {
+    // Preserve the target's complete defaults; config-manager treats an existing
+    // config as complete rather than merging omitted settings. The child only
+    // reads its pure default factory, with identity bound to the isolated home.
+    const defaultConfigScript = `
+      import { pathToFileURL } from 'node:url';
+      const { configManager } = await import(pathToFileURL(process.argv[1]).href);
+      console.log(JSON.stringify(configManager.getDefaultConfig()));
+    `;
+    const defaults = JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', defaultConfigScript,
+      path.join(this.targetDir, 'dist', 'config-manager.js')], {
+      env: { ...this.testEnvironment.env, DESKTOP_COMMANDER_DISABLE_TELEMETRY: '1', DC_FLAG_URL: 'http://127.0.0.1:9/' },
+      encoding: 'utf8', windowsHide: true,
+    }));
+    const configDirectory = path.join(this.testEnvironment.home, '.claude-server-commander');
+    fs.mkdirSync(configDirectory, { recursive: true });
+    fs.writeFileSync(path.join(configDirectory, 'config.json'), JSON.stringify({ ...defaults, ...fixtureConfig }));
     this.transport = new StdioClientTransport({
       command: process.execPath,
       args: [serverPath, '--no-onboarding'],
@@ -116,7 +152,6 @@ export class TrafficClientHarness {
     this.transport.stderr?.resume();
 
     this.client = new Client({ name: 'traffic-benchmark-client', version: '1.0.0' }, { capabilities: {} });
-    try {
       await this.client.connect(this.transport, { timeout: 30000 });
     } catch (error) {
       await this.close();
@@ -180,6 +215,7 @@ export class TrafficClientHarness {
       timestamp: startTime,
       isEmptyPoll,
       isError: !!result?.isError,
+      isSuppressedLaunch: name === 'start_process' && result?.structuredContent?.suppressed === true,
     };
     this.records.push(record);
     try {
@@ -227,6 +263,7 @@ export class TrafficClientHarness {
       peakRateBasis: 'observed-call-starts-rolling-60s-half-open',
       callStartTimestamps: this.records.map(r => r.timestamp),
       errorCalls: this.records.filter(r => r.isError).length,
+      suppressedLaunches: this.records.filter(r => r.isSuppressedLaunch).length,
       stderrBytes: this.stderrBytes,
       stderrChunks: this.stderrChunks,
       responseSizeDistribution: stats(allBytes),
@@ -272,8 +309,7 @@ export async function runDrainWorkload(targetDir, payloadBytes) {
       timeout_ms: 10000,
     });
 
-    const pid = startResult.structuredContent?.pid;
-    if (!pid) throw new Error('start_process failed to return PID');
+    const pid = requireProcessPid(startResult);
 
     // Drain loop: continue while buffer has more output or was sizeLimited
     let finished = false;
@@ -317,7 +353,7 @@ export async function runIncidentProfileWorkload(targetDir) {
       shell: 'cmd.exe',
       timeout_ms: 5000,
     });
-    const pollPid = bgPoll.structuredContent?.pid;
+    const pollPid = requireProcessPid(bgPoll);
 
     // 2. Large output processes for drain reads (total ~290 KiB raw output -> ~600 KiB serialized in baseline)
     const { result: bgDrain1 } = await harness.callTool('start_process', {
@@ -325,14 +361,14 @@ export async function runIncidentProfileWorkload(targetDir) {
       shell: 'cmd.exe',
       timeout_ms: 10000,
     });
-    const drainPid1 = bgDrain1.structuredContent?.pid;
+    const drainPid1 = requireProcessPid(bgDrain1);
 
     const { result: bgDrain2 } = await harness.callTool('start_process', {
       command: `node "${emitScript}" 145000 2`,
       shell: 'cmd.exe',
       timeout_ms: 10000,
     });
-    const drainPid2 = bgDrain2.structuredContent?.pid;
+    const drainPid2 = requireProcessPid(bgDrain2);
 
     let startProcessCount = 3; // already called 3 above
     let readProcessCount = 0;
@@ -565,6 +601,9 @@ export async function runAllBenchmarks(targetDir, runs = 3) {
     evidenceStatus: 'current-synthetic-measurement',
     workloadTiming: 'compressed-synthetic; no production call-rate or empty-poll reduction claim',
     accountingVersion: 'actual-timestamps-all-empty-receipts-max-config-v2',
+    fixtureConfig,
+    fixtureFingerprint,
+    sourceCommit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: targetDir, encoding: 'utf8', windowsHide: true }).trim(),
     targetDir,
     timestamp: new Date().toISOString(),
     drain20KiB: await evaluateWorkloadMultiRun('20 KiB Drain Workload', () => runDrainWorkload(targetDir, 20480), runs),
