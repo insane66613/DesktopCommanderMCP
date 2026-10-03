@@ -37,6 +37,23 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+export function validateToolReceipt(name, result) {
+  if (!result || typeof result !== 'object' || result.isError) {
+    throw new Error(`Benchmark ${name} failed: missing result or tool error`);
+  }
+  if (name === 'start_process' && (!Number.isSafeInteger(result.structuredContent?.pid) || result.structuredContent.pid <= 0)) {
+    throw new Error('Benchmark start_process failed: valid PID receipt required');
+  }
+  if (name === 'start_search') {
+    const text = result.content?.filter(c => c.type === 'text').map(c => c.text).join('\n') ?? '';
+    const sessionId = result.structuredContent?.sessionId ?? /session:\s*(\S+)/.exec(text)?.[1];
+    if (typeof sessionId !== 'string' || !sessionId.trim()) {
+      throw new Error('Benchmark start_search failed: sessionId receipt required');
+    }
+    return sessionId;
+  }
+}
+
 function quantile(arr, q) {
   if (arr.length === 0) return 0;
   const sorted = [...arr].sort((a, b) => a - b);
@@ -73,6 +90,7 @@ export class TrafficClientHarness {
     this.stderrBytes = 0;
     this.stderrChunks = 0;
     this.testEnvironment = null;
+    this.failure = null;
   }
 
   async connect() {
@@ -121,8 +139,15 @@ export class TrafficClientHarness {
   }
 
   async callTool(name, args = {}) {
+    if (this.failure) throw this.failure;
     const startTime = Date.now();
-    const result = await this.client.callTool({ name, arguments: args });
+    let result;
+    try {
+      result = await this.client.callTool({ name, arguments: args });
+    } catch (error) {
+      this.failure = error;
+      throw error;
+    }
     const endTime = Date.now();
 
     // Serialized MCP response delivered to client (JSON-RPC 2.0 envelope + result)
@@ -137,8 +162,8 @@ export class TrafficClientHarness {
     // Detect empty-poll response
     let isEmptyPoll = false;
     if (name === 'read_process_output') {
-      const text = result.content?.filter(c => c.type === 'text').map(c => c.text).join('\n') ?? '';
-      const sc = result.structuredContent;
+      const text = result?.content?.filter(c => c.type === 'text').map(c => c.text).join('\n') ?? '';
+      const sc = result?.structuredContent;
       const isNoOutput = text.includes('No new output') || text.includes('(No output in requested range)') ||
                          text.includes('[Reading 0 new lines') || 
                          (sc && sc.text && (sc.text.includes('No new output') || sc.text.includes('(No output in requested range)') || sc.text.includes('[Reading 0 new lines')));
@@ -154,9 +179,16 @@ export class TrafficClientHarness {
       durationMs: endTime - startTime,
       timestamp: startTime,
       isEmptyPoll,
-      isError: !!result.isError,
+      isError: !!result?.isError,
     };
     this.records.push(record);
+    try {
+      validateToolReceipt(name, result);
+    } catch (error) {
+      record.isError = true;
+      this.failure = error;
+      throw error;
+    }
     return { result, record };
   }
 
@@ -317,6 +349,7 @@ export async function runIncidentProfileWorkload(targetDir) {
     let getFileInfoCount = 0;
 
     let searchSessionId = null;
+    let incidentIterations = 0;
 
     // Exact Target Counts matching Incident Telemetry (Sum = 218):
     // 83 start_process
@@ -348,6 +381,9 @@ export async function runIncidentProfileWorkload(targetDir) {
       getUsageStatsCount < 1 ||
       getFileInfoCount < 1
     ) {
+      if (++incidentIterations > 250) {
+        throw new Error('Benchmark incident profile exceeded 250-iteration budget before completing its target counts');
+      }
       // 1. get_config (16 calls)
       if (getConfigCount < 16 && (startProcessCount % 5 === 0 || startProcessCount >= 83)) {
         await harness.callTool('get_config', {});
@@ -381,8 +417,7 @@ export async function runIncidentProfileWorkload(targetDir) {
           path: path.join(targetDir, 'src'),
           pattern: 'config',
         });
-        const match = /session:\s*(\S+)/.exec(sr.content?.[0]?.text ?? '');
-        if (match) searchSessionId = match[1];
+        searchSessionId = validateToolReceipt('start_search', sr);
         startSearchCount++;
       }
 

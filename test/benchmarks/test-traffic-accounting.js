@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { TrafficClientHarness, evaluateWorkloadMultiRun } from './benchmark-traffic.js';
+import { TrafficClientHarness, evaluateWorkloadMultiRun, validateToolReceipt } from './benchmark-traffic.js';
 import { verifyTrafficReports } from './verify-traffic-gate.js';
 
 test('rate uses sorted actual timestamps and half-open rolling windows', () => {
@@ -100,4 +100,29 @@ test('archived reports cannot pass current acceptance', () => {
   const candidate = JSON.parse(fs.readFileSync(new URL('./hardened-report.json', import.meta.url)));
   assert.equal(candidate.evidenceStatus, 'historical-unverified');
   assert.throws(() => verifyTrafficReports(baseline, candidate), /Current accounting schema v2 receipt required/);
+});
+
+test('tool errors and missing search receipts stop dispatch without duplicate calls', async () => {
+  for (const result of [
+    null,
+    { isError: true, content: [{ type: 'text', text: 'Error' }] },
+    { content: [{ type: 'text', text: 'Search started but no identity receipt' }] },
+  ]) {
+    const harness = new TrafficClientHarness('.');
+    let dispatches = 0;
+    harness.client = { callTool: async () => { dispatches++; return result; } };
+    await assert.rejects(harness.callTool('start_search'), /Benchmark start_search failed/);
+    await assert.rejects(harness.callTool('start_search'), /Benchmark start_search failed/);
+    assert.equal(dispatches, 1);
+    assert.equal(harness.getMetrics().errorCalls, 1);
+  }
+});
+
+test('process and search identity receipts are validated before dependents run', () => {
+  for (const pid of [undefined, null, 0, -1, '12', 1.5]) {
+    assert.throws(() => validateToolReceipt('start_process', { structuredContent: { pid } }), /valid PID/);
+  }
+  assert.doesNotThrow(() => validateToolReceipt('start_process', { structuredContent: { pid: 12 } }));
+  assert.equal(validateToolReceipt('start_search', { structuredContent: { sessionId: 'search_1' } }), 'search_1');
+  assert.equal(validateToolReceipt('start_search', { content: [{ type: 'text', text: 'Started search session: search_2' }] }), 'search_2');
 });
