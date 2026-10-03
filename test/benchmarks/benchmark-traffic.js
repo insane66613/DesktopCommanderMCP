@@ -30,6 +30,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import os from 'os';
+import { createTestEnv } from '../helpers/test-env.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
@@ -71,6 +72,7 @@ export class TrafficClientHarness {
     this.records = [];
     this.stderrBytes = 0;
     this.stderrChunks = 0;
+    this.testEnvironment = null;
   }
 
   async connect() {
@@ -79,12 +81,13 @@ export class TrafficClientHarness {
       throw new Error(`Server build not found at: ${serverPath}. Run npm run build first.`);
     }
 
+    this.testEnvironment = createTestEnv();
     this.transport = new StdioClientTransport({
       command: process.execPath,
       args: [serverPath, '--no-onboarding'],
       cwd: this.targetDir,
       stderr: 'pipe',
-      env: { ...process.env, NO_COLOR: '1', DESKTOP_COMMANDER_DISABLE_TELEMETRY: '1' },
+      env: { ...this.testEnvironment.env, NO_COLOR: '1', DESKTOP_COMMANDER_DISABLE_TELEMETRY: '1', DC_FLAG_URL: 'http://127.0.0.1:9/' },
     });
 
     // CRITICAL: Actively drain transport.stderr to prevent OS pipe buffer backpressure
@@ -95,7 +98,12 @@ export class TrafficClientHarness {
     this.transport.stderr?.resume();
 
     this.client = new Client({ name: 'traffic-benchmark-client', version: '1.0.0' }, { capabilities: {} });
-    await this.client.connect(this.transport, { timeout: 30000 });
+    try {
+      await this.client.connect(this.transport, { timeout: 30000 });
+    } catch (error) {
+      await this.close();
+      throw error;
+    }
   }
 
   async close() {
@@ -106,9 +114,13 @@ export class TrafficClientHarness {
         // ignore close errors
       }
     }
+    if (this.testEnvironment) {
+      this.testEnvironment.cleanup();
+      this.testEnvironment = null;
+    }
   }
 
-  async callTool(name, args = {}, logicalTimestamp = null) {
+  async callTool(name, args = {}) {
     const startTime = Date.now();
     const result = await this.client.callTool({ name, arguments: args });
     const endTime = Date.now();
@@ -125,11 +137,11 @@ export class TrafficClientHarness {
     // Detect empty-poll response
     let isEmptyPoll = false;
     if (name === 'read_process_output') {
-      const text = result.content?.[0]?.text ?? '';
+      const text = result.content?.filter(c => c.type === 'text').map(c => c.text).join('\n') ?? '';
       const sc = result.structuredContent;
-      const isNoOutput = text.includes('(No output in requested range)') || 
+      const isNoOutput = text.includes('No new output') || text.includes('(No output in requested range)') ||
                          text.includes('[Reading 0 new lines') || 
-                         (sc && sc.text && (sc.text.includes('(No output in requested range)') || sc.text.includes('[Reading 0 new lines')));
+                         (sc && sc.text && (sc.text.includes('No new output') || sc.text.includes('(No output in requested range)') || sc.text.includes('[Reading 0 new lines')));
       if (isNoOutput) {
         isEmptyPoll = true;
       }
@@ -141,7 +153,6 @@ export class TrafficClientHarness {
       bytes,
       durationMs: endTime - startTime,
       timestamp: startTime,
-      logicalTimestamp: logicalTimestamp ?? startTime,
       isEmptyPoll,
       isError: !!result.isError,
     };
@@ -149,7 +160,7 @@ export class TrafficClientHarness {
     return { result, record };
   }
 
-  getMetrics(logicalPeakRate = null) {
+  getMetrics() {
     const totalCalls = this.records.length;
     const allBytes = this.records.map(r => r.bytes);
     const totalBytes = allBytes.reduce((a, b) => a + b, 0);
@@ -162,13 +173,13 @@ export class TrafficClientHarness {
     const readProcessSizes = readProcessRecords.map(r => r.bytes);
 
     // Peak call frequency: max calls in any rolling 60-second window
-    let peakRatePerMin = logicalPeakRate;
-    if (peakRatePerMin === null && this.records.length > 0) {
-      const timestamps = this.records.map(r => r.logicalTimestamp);
+    let peakRatePerMin = 0;
+    if (this.records.length > 0) {
+      const timestamps = this.records.map(r => r.timestamp).sort((a, b) => a - b);
       for (let i = 0; i < timestamps.length; i++) {
         const windowEnd = timestamps[i] + 60000;
         let count = 0;
-        for (let j = i; j < timestamps.length && timestamps[j] <= windowEnd; j++) {
+        for (let j = i; j < timestamps.length && timestamps[j] < windowEnd; j++) {
           count++;
         }
         if (count > peakRatePerMin) peakRatePerMin = count;
@@ -181,6 +192,9 @@ export class TrafficClientHarness {
       totalBytesKiB: (totalBytes / 1024).toFixed(2),
       emptyPolls,
       peakRatePerMin,
+      peakRateBasis: 'observed-call-starts-rolling-60s-half-open',
+      callStartTimestamps: this.records.map(r => r.timestamp),
+      errorCalls: this.records.filter(r => r.isError).length,
       stderrBytes: this.stderrBytes,
       stderrChunks: this.stderrChunks,
       responseSizeDistribution: stats(allBytes),
@@ -443,8 +457,9 @@ export async function runIncidentProfileWorkload(targetDir) {
       }
     }
 
-    // Normalized incident schedule: 10 calls/min hardened peak (down from 20 calls/min baseline)
-    return harness.getMetrics(10);
+    // This compressed synthetic workload measures actual call timestamps. It
+    // does not replay the incident timing or establish a production rate.
+    return harness.getMetrics();
   } finally {
     if (fs.existsSync(scratchFile)) {
       try { fs.unlinkSync(scratchFile); } catch {}
@@ -474,6 +489,7 @@ export async function evaluateWorkloadMultiRun(workloadName, runnerFn, runs = 3)
   const emptyArr = results.map(r => r.emptyPolls);
   const peakArr = results.map(r => r.peakRatePerMin);
   const getConfigSizesArr = results.map(r => r.getConfigDistribution.p50);
+  const getConfigMaxSizesArr = results.map(r => r.getConfigDistribution.max);
   const p95SizesArr = results.map(r => r.responseSizeDistribution.p95);
   const maxSizesArr = results.map(r => r.responseSizeDistribution.max);
 
@@ -496,7 +512,7 @@ export async function evaluateWorkloadMultiRun(workloadName, runnerFn, runs = 3)
       totalBytesKiB: (Math.max(...bytesArr) / 1024).toFixed(2),
       emptyPolls: Math.max(...emptyArr),
       peakRatePerMin: Math.max(...peakArr),
-      getConfigBytesMax: Math.max(...getConfigSizesArr),
+      getConfigBytesMax: Math.max(...getConfigMaxSizesArr),
       responseBytesMax: Math.max(...maxSizesArr),
     },
     rawRuns: results,
@@ -510,6 +526,10 @@ export async function evaluateWorkloadMultiRun(workloadName, runnerFn, runs = 3)
 
 export async function runAllBenchmarks(targetDir, runs = 3) {
   const report = {
+    schemaVersion: 2,
+    evidenceStatus: 'current-synthetic-measurement',
+    workloadTiming: 'compressed-synthetic; no production call-rate or empty-poll reduction claim',
+    accountingVersion: 'actual-timestamps-all-empty-receipts-max-config-v2',
     targetDir,
     timestamp: new Date().toISOString(),
     drain20KiB: await evaluateWorkloadMultiRun('20 KiB Drain Workload', () => runDrainWorkload(targetDir, 20480), runs),
