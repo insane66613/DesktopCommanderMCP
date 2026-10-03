@@ -4,6 +4,7 @@ export type ConfigFieldDefinition = {
   label: string;
   description: string;
   valueType: ConfigFieldValueType;
+  options?: readonly string[];
 };
 
 // Single source of truth for user-editable configuration fields.
@@ -17,6 +18,27 @@ export const CONFIG_FIELD_DEFINITIONS = {
     label: 'Allowed Folders',
     description: 'These are the folders Desktop Commander is allowed to read and edit. Think of this as a permission list. Keeping it small is safer. If this list is empty, Desktop Commander can access your entire filesystem.',
     valueType: 'array',
+  },
+  sensitiveProjectFilePolicy: {
+    label: 'Sensitive Project File Policy',
+    description: 'Controls export_project_file when a filename matches a protected credential/secret pattern. Block denies all sensitive exports; Require explicit override requires allowSensitiveProjectFile=true on that individual call; Allow permits them normally.',
+    valueType: 'string',
+    options: ['block', 'require_explicit_override', 'allow'],
+  },
+  sensitiveProjectFileExtraPatterns: {
+    label: 'Extra Sensitive File Patterns',
+    description: 'Additional filename patterns treated as sensitive by export_project_file. Built-in credential and private-key patterns always remain active. Wildcards use *.',
+    valueType: 'array',
+  },
+  sensitiveProjectFileAllowedPatterns: {
+    label: 'Sensitive File Exceptions',
+    description: 'Filename patterns explicitly treated as safe even when they match a built-in or extra sensitive pattern. Defaults include .env.example, .env.sample, and .env.template.',
+    valueType: 'array',
+  },
+  sensitiveProjectFileAudit: {
+    label: 'Sensitive File Audit Log',
+    description: 'Log blocked sensitive export attempts and successful explicit overrides without logging file contents.',
+    valueType: 'boolean',
   },
   defaultShell: {
     label: 'Default Shell',

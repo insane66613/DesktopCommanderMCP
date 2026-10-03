@@ -214,7 +214,9 @@ class UsageTracker {
       }
     } catch (error) {
       // If we can't import server, continue with other checks
-      console.log('[FEEDBACK DEBUG] Could not check client name, continuing...');
+      if (process.env.DEBUG_MODE === 'true') {
+        console.log('[FEEDBACK DEBUG] Could not check client name, continuing...');
+      }
     }
 
     const stats = await this.getStats();
@@ -439,7 +441,9 @@ class UsageTracker {
       }
     } catch (error) {
       // If we can't import server, continue with other checks
-      console.log('[ONBOARDING DEBUG] Could not check client name, continuing...');
+      if (process.env.DEBUG_MODE === 'true') {
+        console.log('[ONBOARDING DEBUG] Could not check client name, continuing...');
+      }
     }
 
     const stats = await this.getStats();
@@ -533,7 +537,9 @@ For anonymous_user_use_case: Look at conversation history to understand what use
     state.attemptsShown++;
     state.lastShownAt = now;
 
-    console.log(`[ONBOARDING DEBUG] Marked onboarding shown (attempt ${state.attemptsShown}/3)`);
+    if (process.env.DEBUG_MODE === 'true') {
+      console.log(`[ONBOARDING DEBUG] Marked onboarding shown (attempt ${state.attemptsShown}/3)`);
+    }
 
     await this.saveOnboardingState(state);
   }
@@ -567,7 +573,9 @@ For anonymous_user_use_case: Look at conversation history to understand what use
       lastShownAt: 0
     };
     await this.saveOnboardingState(defaultState);
-    console.log(`[ONBOARDING DEBUG] Reset onboarding state for testing`);
+    if (process.env.DEBUG_MODE === 'true') {
+      console.log('[ONBOARDING DEBUG] Reset onboarding state for testing');
+    }
   }
 }
 

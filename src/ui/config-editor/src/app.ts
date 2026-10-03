@@ -132,13 +132,15 @@ function formatKeyLabel(key: string): string {
         .join(' ');
 }
 
-function getConfigFieldMetadata(key: string): { label: string; description: string } | undefined {
+function getConfigFieldMetadata(key: string): { label: string; description: string; options?: readonly string[] } | undefined {
     if (!isConfigFieldKey(key)) {
         return undefined;
     }
+    const definition = CONFIG_FIELD_DEFINITIONS[key];
     return {
-        label: CONFIG_FIELD_DEFINITIONS[key].label,
-        description: CONFIG_FIELD_DEFINITIONS[key].description,
+        label: definition.label,
+        description: definition.description,
+        options: 'options' in definition ? definition.options : undefined,
     };
 }
 
@@ -548,6 +550,7 @@ function render(container: HTMLElement, controller: ReturnType<typeof createConf
         const keyTitle = entry.label ?? formatKeyLabel(entry.key);
         const description = entry.description ?? '';
         const summary = getSettingSummary(entry);
+        const fieldOptions = getConfigFieldMetadata(entry.key)?.options;
 
         let controlHtml: string;
         if (entry.key === 'defaultShell') {
@@ -566,6 +569,12 @@ function render(container: HTMLElement, controller: ReturnType<typeof createConf
                   <input class="setting-inline-input setting-shell-custom${isCustomShell ? '' : ' hidden'}" data-action="shell-custom" data-key-index="${index}" type="text" value="${escapeHtml(currentShell)}" placeholder="Type custom shell path"/>
                 </div>
             `;
+        } else if (fieldOptions && fieldOptions.length > 0) {
+            const currentValue = String(entry.value ?? '');
+            const options = fieldOptions
+                .map((option) => `<option value="${escapeHtml(option)}" ${option === currentValue ? 'selected' : ''}>${escapeHtml(formatKeyLabel(option))}</option>`)
+                .join('');
+            controlHtml = `<select class="setting-inline-select" data-action="select-option" data-key-index="${index}">${options}</select>`;
         } else if (entry.valueType === 'boolean') {
             const checked = String(entry.value) === 'true' ? 'checked' : '';
             controlHtml = `<label class="setting-switch"><input type="checkbox" data-action="toggle-boolean" data-key-index="${index}" ${checked}/><span class="config-boolean-slider"></span></label>`;
@@ -679,6 +688,27 @@ function render(container: HTMLElement, controller: ReturnType<typeof createConf
                 }
                 if (result.ok) {
                     emitConfigChanged(entry.key, input.checked);
+                }
+            });
+            return;
+        }
+
+        if (action === 'select-option') {
+            target.addEventListener('change', async () => {
+                const select = target as HTMLSelectElement;
+                const previousValue = String(entry.value ?? '');
+                controller.setSelection(entry.key);
+                controller.setDraftValue(select.value);
+                const result = await controller.apply();
+                emitTooltip(result);
+                const updatedEntry = getUpdatedEntryByKey(entry.key);
+                if (updatedEntry) {
+                    select.value = String(updatedEntry.value ?? previousValue);
+                } else if (!result.ok) {
+                    select.value = previousValue;
+                }
+                if (result.ok) {
+                    emitConfigChanged(entry.key, select.value);
                 }
             });
             return;

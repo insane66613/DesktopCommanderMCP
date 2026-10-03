@@ -34,12 +34,18 @@ export function getDockerInfoMessage(): string {
  */
 export async function processDockerPrompt(result: any, toolName: string): Promise<any> {
     const shouldPromptDocker = await shouldPromptForDockerInfo();
-    console.log(`[DOCKER DEBUG] Should prompt for Docker info: ${shouldPromptDocker}`);
+    if (process.env.DEBUG_MODE === 'true') {
+        console.log(`[DOCKER DEBUG] Should prompt for Docker info: ${shouldPromptDocker}`);
+    }
 
     if (shouldPromptDocker) {
-        console.log(`[DOCKER DEBUG] Generating Docker message...`);
+        if (process.env.DEBUG_MODE === 'true') {
+            console.log('[DOCKER DEBUG] Generating Docker message...');
+        }
         const dockerMessage = getDockerInfoMessage();
-        console.log(`[DOCKER DEBUG] Generated Docker message`);
+        if (process.env.DEBUG_MODE === 'true') {
+            console.log('[DOCKER DEBUG] Generated Docker message');
+        }
 
         // Inject Docker instruction for the LLM
         if (result.content && result.content.length > 0 && result.content[0].type === "text") {

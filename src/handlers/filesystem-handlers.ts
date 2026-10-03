@@ -17,6 +17,11 @@ import { ServerResult } from '../types.js';
 import { withTimeout } from '../utils/withTimeout.js';
 import { createErrorResponse } from '../error-handlers.js';
 import { configManager } from '../config-manager.js';
+import {
+    DEFAULT_SENSITIVE_PROJECT_FILE_ALLOWED_PATTERNS,
+    DEFAULT_SENSITIVE_PROJECT_FILE_POLICY,
+    evaluateSensitiveProjectFileAccess,
+} from '../sensitive-project-file-policy.js';
 
 import {
     ReadFileArgsSchema,
@@ -449,52 +454,6 @@ export async function handleReceiveFile(args: unknown): Promise<ServerResult> {
     }
 }
 
-function isSensitiveProjectFile(basename: string): boolean {
-    const lowerBasename = basename.toLowerCase();
-
-    const allowedExamples = [
-        '.env.example',
-        '.env.sample',
-        '.env.template',
-    ];
-    if (allowedExamples.includes(lowerBasename)) {
-        return false;
-    }
-
-    const sensitivePatterns = [
-        '.env',
-        '.env.*',
-        'id_rsa',
-        'id_dsa',
-        'id_ecdsa',
-        'id_ed25519',
-        '*.pem',
-        '*.key',
-        '*.p12',
-        '*.pfx',
-        'credentials.json',
-        'token.json',
-        'tokens.json',
-        'secrets.json',
-        'secret.json',
-        'firebase-adminsdk*.json',
-        'service-account*.json',
-    ];
-
-    for (const pattern of sensitivePatterns) {
-        if (pattern.includes('*')) {
-            const regexPattern = '^' + pattern.replace(/\./g, '\\.').replace(/\*/g, '.*') + '$';
-            if (new RegExp(regexPattern, 'i').test(lowerBasename)) {
-                return true;
-            }
-        } else if (lowerBasename === pattern.toLowerCase()) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
 function sha256Buffer(content: Buffer): string {
     return createHash('sha256').update(content).digest('hex');
 }
@@ -516,9 +475,46 @@ export async function handleExportProjectFile(args: unknown): Promise<ServerResu
         }
 
         const basename = path.basename(validPath);
-        if (!parsed.allowSensitiveProjectFile && isSensitiveProjectFile(basename)) {
+        const config = await configManager.getConfig();
+        const policy = typeof config.sensitiveProjectFilePolicy === 'string'
+            ? config.sensitiveProjectFilePolicy
+            : DEFAULT_SENSITIVE_PROJECT_FILE_POLICY;
+        const extraPatterns = Array.isArray(config.sensitiveProjectFileExtraPatterns)
+            ? config.sensitiveProjectFileExtraPatterns.filter((value): value is string => typeof value === 'string')
+            : [];
+        const allowedPatterns = Array.isArray(config.sensitiveProjectFileAllowedPatterns)
+            ? config.sensitiveProjectFileAllowedPatterns.filter((value): value is string => typeof value === 'string')
+            : [...DEFAULT_SENSITIVE_PROJECT_FILE_ALLOWED_PATTERNS];
+        const decision = evaluateSensitiveProjectFileAccess({
+            basename,
+            policy,
+            explicitOverride: parsed.allowSensitiveProjectFile,
+            extraPatterns,
+            allowedPatterns,
+        });
+
+        if (
+            decision.sensitive &&
+            config.sensitiveProjectFileAudit !== false &&
+            (!decision.allowed || decision.reason === 'explicit_override')
+        ) {
+            console.warn(`[sensitive-project-file-audit] ${JSON.stringify({
+                path: validPath,
+                policy,
+                explicitOverride: parsed.allowSensitiveProjectFile,
+                result: decision.allowed ? 'allowed' : 'blocked',
+                reason: decision.reason,
+            })}`);
+        }
+
+        if (!decision.allowed) {
+            if (decision.reason === 'blocked_policy') {
+                return createErrorResponse(
+                    'Sensitive project file export is blocked by the Sensitive Project File Policy setting. Per-call overrides cannot bypass policy=block.'
+                );
+            }
             return createErrorResponse(
-                'This looks like a sensitive project file. Re-run with allowSensitiveProjectFile=true only if the user explicitly requested this exact file.'
+                'Sensitive project file export requires an explicit per-call override. Re-run with allowSensitiveProjectFile=true only if the user explicitly requested this exact file.'
             );
         }
 

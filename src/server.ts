@@ -345,6 +345,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         - blockedCommands (array of blocked shell commands)
                         - defaultShell (shell to use for commands)
                         - allowedDirectories (paths the server can access)
+                        - sensitiveProjectFilePolicy (block | require_explicit_override | allow)
+                        - sensitiveProjectFileExtraPatterns (additional sensitive filename patterns)
+                        - sensitiveProjectFileAllowedPatterns (explicit safe filename exceptions)
+                        - sensitiveProjectFileAudit (log blocked attempts and explicit overrides without file contents)
                         - fileReadLineLimit (max lines for read_file, default 1000)
                         - fileWriteLineLimit (max lines per write_file call, default 50)
                         - processStartOutputLineLimit (initial command-preview lines; 0 disables, default 25)
@@ -377,6 +381,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         - blockedCommands (array)
                         - defaultShell (string)
                         - allowedDirectories (array of paths)
+                        - sensitiveProjectFilePolicy (string: block | require_explicit_override | allow)
+                        - sensitiveProjectFileExtraPatterns (array of additional sensitive filename patterns)
+                        - sensitiveProjectFileAllowedPatterns (array of explicit safe filename exceptions)
+                        - sensitiveProjectFileAudit (boolean)
                         - fileReadLineLimit (number, max lines for read_file)
                         - fileWriteLineLimit (number, max lines per write_file call)
                         - processStartOutputLineLimit (number, initial start_process preview lines; 0 disables)
@@ -605,10 +613,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         - Use offset/maxBytes for pagination on large files.
 
                         SENSITIVE FILE HANDLING:
-                        - By default blocks obvious credential/private-key files (.env, .env.*, id_rsa, *.pem, *.key, *.p12, *.pfx, credentials.json, token*.json, secrets.json, firebase-adminsdk*.json, service-account*.json).
-                        - Does NOT block normal project code, package files, lockfiles, configs, tsconfig, vite config, webpack config, eslint config, GitHub workflows, Dockerfiles, compose files, README files, scripts, patches, test fixtures.
-                        - Does NOT block .env.example, .env.sample, .env.template unless basename exactly matches a blocked pattern.
-                        - Error message guides user to re-run with allowSensitiveProjectFile=true only if explicitly requested.
+                        - Built-in credential/private-key filename patterns remain active and can be extended with sensitiveProjectFileExtraPatterns.
+                        - sensitiveProjectFileAllowedPatterns defines explicit safe exceptions; defaults include .env.example, .env.sample, and .env.template.
+                        - sensitiveProjectFilePolicy controls enforcement: block denies classified sensitive exports, require_explicit_override requires allowSensitiveProjectFile=true for the individual call, and allow permits them normally.
+                        - sensitiveProjectFileAudit logs blocked attempts and successful explicit overrides without logging file contents.
+                        - Normal project code, package files, lockfiles, GitHub workflows, Dockerfiles, README files, scripts, patches, and test fixtures are unaffected unless their filenames match configured sensitive patterns.
 
                         SAFETY:
                         - Uses the same allowed-directory and symlink validation path as read_file/write_file.
@@ -1773,19 +1782,29 @@ async function handleCallToolRequestCore(request: CallToolRequest): Promise<Serv
 
         if (result.isError) {
             await usageTracker.trackFailure(name);
-            console.log(`[FEEDBACK DEBUG] Tool ${name} failed, not checking feedback`);
+            if (process.env.DEBUG_MODE === 'true') {
+                console.log(`[FEEDBACK DEBUG] Tool ${name} failed, not checking feedback`);
+            }
         } else {
             await usageTracker.trackSuccess(name);
-            console.log(`[FEEDBACK DEBUG] Tool ${name} succeeded, checking feedback...`);
+            if (process.env.DEBUG_MODE === 'true') {
+                console.log(`[FEEDBACK DEBUG] Tool ${name} succeeded, checking feedback...`);
+            }
 
             // Check if should show onboarding (before feedback - first-time users are priority)
             const shouldShowOnboarding = await usageTracker.shouldShowOnboarding();
-            console.log(`[ONBOARDING DEBUG] Should show onboarding: ${shouldShowOnboarding}`);
+            if (process.env.DEBUG_MODE === 'true') {
+                console.log(`[ONBOARDING DEBUG] Should show onboarding: ${shouldShowOnboarding}`);
+            }
 
             if (shouldShowOnboarding) {
-                console.log(`[ONBOARDING DEBUG] Generating onboarding message...`);
+                if (process.env.DEBUG_MODE === 'true') {
+                    console.log('[ONBOARDING DEBUG] Generating onboarding message...');
+                }
                 const onboardingResult = await usageTracker.getOnboardingMessage();
-                console.log(`[ONBOARDING DEBUG] Generated variant: ${onboardingResult.variant}`);
+                if (process.env.DEBUG_MODE === 'true') {
+                    console.log(`[ONBOARDING DEBUG] Generated variant: ${onboardingResult.variant}`);
+                }
 
                 // Capture onboarding prompt injection event
                 const stats = await usageTracker.getStats();
@@ -1818,12 +1837,18 @@ async function handleCallToolRequestCore(request: CallToolRequest): Promise<Serv
 
             // Check if should prompt for feedback (only on successful operations)
             const shouldPrompt = await usageTracker.shouldPromptForFeedback();
-            console.log(`[FEEDBACK DEBUG] Should prompt for feedback: ${shouldPrompt}`);
+            if (process.env.DEBUG_MODE === 'true') {
+                console.log(`[FEEDBACK DEBUG] Should prompt for feedback: ${shouldPrompt}`);
+            }
 
             if (shouldPrompt) {
-                console.log(`[FEEDBACK DEBUG] Generating feedback message...`);
+                if (process.env.DEBUG_MODE === 'true') {
+                    console.log('[FEEDBACK DEBUG] Generating feedback message...');
+                }
                 const feedbackResult = await usageTracker.getFeedbackPromptMessage();
-                console.log(`[FEEDBACK DEBUG] Generated variant: ${feedbackResult.variant}`);
+                if (process.env.DEBUG_MODE === 'true') {
+                    console.log(`[FEEDBACK DEBUG] Generated variant: ${feedbackResult.variant}`);
+                }
 
                 // Capture feedback prompt injection event
                 const stats = await usageTracker.getStats();

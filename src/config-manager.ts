@@ -8,6 +8,12 @@ import { VERSION } from './version.js';
 import { CONFIG_FILE } from './config.js';
 import { writeFileAtomic } from './utils/atomic-write.js';
 import {
+  DEFAULT_SENSITIVE_PROJECT_FILE_ALLOWED_PATTERNS,
+  DEFAULT_SENSITIVE_PROJECT_FILE_POLICY,
+  SENSITIVE_PROJECT_FILE_POLICIES,
+  type SensitiveProjectFilePolicy,
+} from './sensitive-project-file-policy.js';
+import {
   keepDamagedCopy,
   RecoveryEvents,
   replacementConfig,
@@ -39,6 +45,10 @@ export interface ServerConfig {
   blockedCommands?: string[];
   defaultShell?: string;
   allowedDirectories?: string[];
+  sensitiveProjectFilePolicy?: SensitiveProjectFilePolicy;
+  sensitiveProjectFileExtraPatterns?: string[];
+  sensitiveProjectFileAllowedPatterns?: string[];
+  sensitiveProjectFileAudit?: boolean;
   telemetryEnabled?: boolean; // New field for telemetry control
   fileWriteLineLimit?: number; // Line limit for file write operations
   fileReadLineLimit?: number; // Default line limit for file read operations (changed from character-based)
@@ -102,6 +112,21 @@ function migrateLegacyConfig(config: ServerConfig): void {
   if (config['welcomeOnboardingEligible'] === undefined) {
     config['welcomeOnboardingEligible'] = false;
     config['pendingWelcomeOnboarding'] = false;
+  }
+}
+
+function migrateSensitiveProjectFileConfig(config: ServerConfig): void {
+  if (!SENSITIVE_PROJECT_FILE_POLICIES.includes(config.sensitiveProjectFilePolicy as SensitiveProjectFilePolicy)) {
+    config.sensitiveProjectFilePolicy = DEFAULT_SENSITIVE_PROJECT_FILE_POLICY;
+  }
+  if (!Array.isArray(config.sensitiveProjectFileExtraPatterns)) {
+    config.sensitiveProjectFileExtraPatterns = [];
+  }
+  if (!Array.isArray(config.sensitiveProjectFileAllowedPatterns)) {
+    config.sensitiveProjectFileAllowedPatterns = [...DEFAULT_SENSITIVE_PROJECT_FILE_ALLOWED_PATTERNS];
+  }
+  if (config.sensitiveProjectFileAudit === undefined) {
+    config.sensitiveProjectFileAudit = true;
   }
 }
 
@@ -212,6 +237,15 @@ class ConfigManager {
         await this.performConfigMutation(migrateLegacyConfig);
       }
 
+      if (
+        !SENSITIVE_PROJECT_FILE_POLICIES.includes(this.config.sensitiveProjectFilePolicy as SensitiveProjectFilePolicy) ||
+        !Array.isArray(this.config.sensitiveProjectFileExtraPatterns) ||
+        !Array.isArray(this.config.sensitiveProjectFileAllowedPatterns) ||
+        this.config.sensitiveProjectFileAudit === undefined
+      ) {
+        await this.performConfigMutation(migrateSensitiveProjectFileConfig);
+      }
+
       this.config['version'] = VERSION;
       this.initialized = true;
       this.startConfigWatcher();
@@ -239,9 +273,13 @@ class ConfigManager {
         // system, a full disk, a lock that can't be taken). The settings read stay in effect,
         // never the defaults' allowedDirectories [] (#419); changes wait until it is writable.
         migrateLegacyConfig(this.config);
+        migrateSensitiveProjectFileConfig(this.config);
         this.failedSaves = 1;
         this.holdSaves(); // the warning below says why
-        this.queueMutation(migrateLegacyConfig);
+        this.queueMutation((latest) => {
+          migrateLegacyConfig(latest);
+          migrateSensitiveProjectFileConfig(latest);
+        });
         warnUser(`config.json was read, but saving to it failed (${error instanceof Error ? error.message : String(error)}). ` +
           `Desktop Commander uses the settings it read; changes to them can't be saved until config.json is writable.`);
       } else {
@@ -342,6 +380,10 @@ class ConfigManager {
         return userShell;
       })(),
       allowedDirectories: [],
+      sensitiveProjectFilePolicy: DEFAULT_SENSITIVE_PROJECT_FILE_POLICY,
+      sensitiveProjectFileExtraPatterns: [],
+      sensitiveProjectFileAllowedPatterns: [...DEFAULT_SENSITIVE_PROJECT_FILE_ALLOWED_PATTERNS],
+      sensitiveProjectFileAudit: true,
       telemetryEnabled: true, // Default to opt-out approach (telemetry on by default)
       fileWriteLineLimit: 50,  // Default line limit for file write operations (changed from 100)
       fileReadLineLimit: 1000,  // Default line limit for file read operations (changed from character-based)
