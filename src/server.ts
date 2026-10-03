@@ -1538,7 +1538,7 @@ async function handleCallToolRequestCore(request: CallToolRequest): Promise<Serv
             // Config tools
             case "get_config":
                 try {
-                    result = await getConfig();
+                    result = await getConfig(args);
                 } catch (error) {
                     capture('server_request_error', { message: `Error in get_config handler: ${error}` });
                     result = {

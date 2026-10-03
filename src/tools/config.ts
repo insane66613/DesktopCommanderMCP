@@ -118,7 +118,8 @@ async function detectAvailableShells(systemInfo: ReturnType<typeof getSystemInfo
 }
 
 /**
- * Get configuration. Defaults to a compact representation (< 2,048 serialized bytes)
+ * Get configuration. Defaults to a bounded compact representation. Large values
+ * are explicitly omitted with a request for verbose mode, never reported as empty.
  * containing essential configuration fields and entries without verbose system telemetry.
  * When verbose === true or origin === 'ui', returns the full comprehensive diagnostic
  * and schema payload.
@@ -126,7 +127,13 @@ async function detectAvailableShells(systemInfo: ReturnType<typeof getSystemInfo
 export async function getConfig(args?: unknown) {
   try {
     const parsed = GetConfigArgsSchema.safeParse(args ?? {});
-    const isVerbose = parsed.success && (
+    if (!parsed.success) {
+      return {
+        content: [{ type: 'text' as const, text: 'Invalid get_config arguments.' }],
+        isError: true,
+      };
+    }
+    const isVerbose = (
       parsed.data.verbose === true ||
       parsed.data.origin === 'ui' ||
       parsed.data.compact === false
@@ -218,10 +225,7 @@ export async function getConfig(args?: unknown) {
     };
 
     const blockedCount = Array.isArray(compactConfig.blockedCommands) ? compactConfig.blockedCommands.length : 0;
-    const allowedDirText = Array.isArray(compactConfig.allowedDirectories) && compactConfig.allowedDirectories.length > 0
-      ? compactConfig.allowedDirectories.join(', ')
-      : 'all';
-    let textSummary = `Desktop Commander configuration active: ${blockedCount} blocked commands, ${allowedDirText} directories allowed. Telemetry: ${compactConfig.telemetryEnabled ? 'enabled' : 'disabled'}.`;
+    const textSummary = `Desktop Commander config active (${blockedCount} blocked).`;
 
     // Core editable entries excluding duplicate blockedCommands array
     const compactKeys = CONFIG_FIELD_KEYS.filter((k) => k !== 'blockedCommands');
@@ -266,12 +270,40 @@ export async function getConfig(args?: unknown) {
       },
     };
 
-    // Budget safeguard: keep payload well under the 2,048 byte threshold
-    if (Buffer.byteLength(JSON.stringify(payload), 'utf8') >= 2040) {
-      payload.content[0].text = `Desktop Commander config active (${blockedCount} blocked).`;
+    // Reserve space for the JSON-RPC envelope and server result normalization.
+    // Configurable arrays/strings are unbounded; expose explicit omission metadata
+    // rather than silently replacing security controls with empty lists.
+    const compactResultBudget = 1920;
+    if (Buffer.byteLength(JSON.stringify(payload), 'utf8') <= compactResultBudget) {
+      return payload;
     }
-
-    return payload;
+    const summaryConfig: Record<string, unknown> = {};
+    const omittedFields: string[] = [];
+    for (const [key, value] of Object.entries(compactConfig)) {
+      if (Buffer.byteLength(JSON.stringify(value) ?? 'null', 'utf8') <= 256) {
+        summaryConfig[key] = value;
+      } else {
+        omittedFields.push(key);
+      }
+    }
+    const summary = {
+      content: [{ type: 'text' as const, text: 'Compact configuration summary. Request verbose:true for all values and editable entries.' }],
+      structuredContent: {
+        config: summaryConfig,
+        entries: [],
+        requiresVerbose: true,
+        omittedFields,
+        fieldCounts: Object.fromEntries(Object.entries(compactConfig)
+          .filter(([, value]) => Array.isArray(value))
+          .map(([key, value]) => [key, (value as unknown[]).length])),
+      },
+    };
+    // Even individually small values may collectively exceed the summary budget.
+    if (Buffer.byteLength(JSON.stringify(summary), 'utf8') > compactResultBudget) {
+      summary.structuredContent.config = {};
+      summary.structuredContent.omittedFields = Object.keys(compactConfig);
+    }
+    return summary;
   } catch (error) {
     console.error(`Error in getConfig: ${error instanceof Error ? error.message : String(error)}`);
     console.error(error instanceof Error && error.stack ? error.stack : 'No stack trace available');

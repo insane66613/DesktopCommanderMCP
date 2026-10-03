@@ -160,6 +160,7 @@ async function runTests() {
     env: env.env,
     stderr: 'pipe',
   });
+  transport.stderr?.resume();
   const client = new Client({ name: 'test-config-traffic-hardening', version: '1.0.0' });
 
   try {
@@ -176,13 +177,54 @@ async function runTests() {
     assert.ok(wireConfig, 'wire structuredContent.config must exist');
     assert.strictEqual(wireConfig.blockedCommands?.length, 35, 'wire blockedCommands must contain 35 items');
     assert.ok(Array.isArray(mcpResult.structuredContent?.entries), 'wire structuredContent.entries must exist');
+
+    // Exercise the dispatcher, including a compact request before each override
+    // so read-only deduplication cannot hide argument-routing regressions.
+    for (const args of [{ verbose: true }, { origin: 'ui' }, { compact: false }]) {
+      await client.callTool({ name: 'get_config', arguments: {} });
+      const full = await client.callTool({ name: 'get_config', arguments: args });
+      assert.notStrictEqual(full.isError, true);
+      assert.ok(full.structuredContent?.config?.systemInfo, `full configuration missing for ${JSON.stringify(args)}`);
+      assert.ok(Array.isArray(full.structuredContent?.uiHints?.availableShells));
+      assert.ok(full.structuredContent.entries.some(entry => entry.key === 'blockedCommands'));
+    }
+
+    const invalid = await client.callTool({ name: 'get_config', arguments: { verbose: 'yes' } });
+    assert.strictEqual(invalid.isError, true, 'invalid arguments must fail at the tool boundary');
   } finally {
     await client.close();
     env.cleanup();
   }
   console.log('  ✓ Test 7 PASSED\n');
 
-  console.log('=== ALL 7 TEST CASES PASSED SUCCESSFULLY ===');
+  // Oversized configurable values must produce an explicit summary without
+  // changing the stored security policy or representing omitted arrays as empty.
+  const originalGetConfig = configManager.getConfig;
+  const hugeConfig = {
+    ...compactConfig,
+    blockedCommands: Array.from({ length: 100 }, (_, i) => `blocked-${i}-` + 'x'.repeat(100)),
+    allowedDirectories: ['C:/' + '\\'.repeat(3000)],
+    clientId: '\u0000'.repeat(3000),
+    defaultShell: 'x'.repeat(3000),
+    sensitiveProjectFileExtraPatterns: ['secret' + 'x'.repeat(3000)],
+  };
+  try {
+    configManager.getConfig = async () => hugeConfig;
+    const bounded = await getConfig({});
+    const envelope = { jsonrpc: '2.0', id: 999999999, result: bounded };
+    assert.ok(Buffer.byteLength(JSON.stringify(envelope), 'utf8') < BYTE_BUDGET_GATE);
+    assert.strictEqual(bounded.structuredContent.requiresVerbose, true);
+    assert.strictEqual(bounded.structuredContent.config.blockedCommands, undefined);
+    assert.ok(bounded.structuredContent.omittedFields.includes('blockedCommands'));
+    assert.strictEqual(bounded.structuredContent.fieldCounts.blockedCommands, 100);
+    assert.strictEqual((await configManager.getConfig()).blockedCommands.length, 100);
+    const full = await getConfig({ verbose: true });
+    assert.deepEqual(full.structuredContent.config.blockedCommands, hugeConfig.blockedCommands);
+  } finally {
+    configManager.getConfig = originalGetConfig;
+  }
+
+  console.log('=== ALL 8 TEST CASES PASSED SUCCESSFULLY ===');
 }
 
 runTests().catch((err) => {
