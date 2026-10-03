@@ -5,7 +5,8 @@ import { runIfMain } from './helpers/run-if-main.js';
 import { terminalManager, TerminalManager } from '../dist/terminal-manager.js';
 import { startProcess, readProcessOutput } from '../dist/tools/improved-process-tools.js';
 import { ReadProcessOutputArgsSchema } from '../dist/tools/schemas.js';
-import { MAX_TOOL_RESPONSE_BYTES, DEFAULT_PROCESS_PAGE_BYTES } from '../dist/utils/response-budget.js';
+import { MAX_TOOL_RESPONSE_BYTES, DEFAULT_PROCESS_PAGE_BYTES, budgetToolResponse, serializedBytes } from '../dist/utils/response-budget.js';
+import { enrichStructuredContent } from '../dist/structured-content.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -274,6 +275,70 @@ async function testSchemaValidation() {
   console.log('✅ Test 4 passed: Schema correctly bounds maxBytes and pageSize between 512 and 32768');
 }
 
+/** Every character covered by a continuation cursor must survive the final wire limiter. */
+async function testSerializedWireReconstruction() {
+  const fixtures = [
+    { name: 'NUL default', lines: ['\0'.repeat(8192)], options: {} },
+    { name: 'ASCII maximum', lines: ['X'.repeat(32768)], options: { maxBytes: 32768 } },
+    { name: 'escaped multiline', lines: Array.from({ length: 2000 }, () => '\0\t\r"\\'.repeat(10)), options: { pageSize: 16384 } },
+    { name: 'Unicode minimum', lines: ['😀漢字\ud800'.repeat(2000)], options: { maxBytes: 512 } },
+  ];
+  for (const explicit of [false, true]) {
+    for (const fixture of fixtures) {
+      const testPid = 88006;
+      const completed = {
+        pid: testPid, outputLines: fixture.lines, exitCode: 0,
+        startTime: new Date(0), endTime: new Date(100),
+        evictedLines: 123, evictedChars: 0, lastReadIndex: 0, lastReadCharacter: 0,
+      };
+      terminalManager.completedSessions.set(testPid, completed);
+      let offset = 0;
+      let character = 0;
+      let calls = 0;
+      try {
+        while (offset < fixture.lines.length && calls++ < 300) {
+          const result = await readProcessOutput({
+            pid: testPid, timeout_ms: 0, verbose_timing: true, ...fixture.options,
+            ...(explicit ? { offset, character_offset: character } : {}),
+          });
+          const enriched = enrichStructuredContent('read_process_output', result);
+          const wire = budgetToolResponse(enriched);
+          assert.strictEqual(wire, enriched, `${fixture.name}: final limiter must not discard consumed output`);
+          assert(serializedBytes(wire) <= MAX_TOOL_RESPONSE_BYTES);
+          const cursor = wire.structuredContent;
+          assert(cursor.nextOffset > offset || cursor.nextCharacterOffset > character,
+            `${fixture.name}: cursor must make progress`);
+          const pieces = fixture.lines.slice(offset, cursor.nextOffset);
+          if (pieces.length) pieces[0] = pieces[0].slice(character);
+          if (cursor.nextCharacterOffset > 0) {
+            pieces.push(fixture.lines[cursor.nextOffset].slice(
+              cursor.nextOffset === offset ? character : 0, cursor.nextCharacterOffset));
+          }
+          const expectedPayload = pieces.join('\n');
+          const text = wire.content[0].text;
+          // All status/eviction prefixes precede the payload; timing/completion follow it.
+          const warningEnd = text.indexOf('retained buffer only]') + 'retained buffer only]'.length;
+          assert(warningEnd >= 'retained buffer only]'.length, 'eviction warning must be present');
+          assert(text.slice(warningEnd + 1).startsWith(expectedPayload),
+            `${fixture.name}: emitted text must contain every character covered by cursor`);
+          if (!explicit) {
+            assert.equal(completed.lastReadIndex, cursor.nextOffset);
+            assert.equal(completed.lastReadCharacter, cursor.nextCharacterOffset);
+          }
+          offset = cursor.nextOffset;
+          character = cursor.nextCharacterOffset;
+          assert.equal(cursor.hasMoreOutput, offset < fixture.lines.length);
+        }
+        assert.equal(offset, fixture.lines.length, `${fixture.name}: bounded drain must reach EOF`);
+        assert.equal(character, 0);
+      } finally {
+        terminalManager.completedSessions.delete(testPid);
+      }
+      console.log(`  ${fixture.name}, ${explicit ? 'explicit' : 'implicit'} continuation: ${calls} lossless pages`);
+    }
+  }
+}
+
 /**
  * Test 5: Live process output generation, draining, and wire byte bounding.
  */
@@ -333,6 +398,7 @@ async function runAllTests() {
     await testBulkReadOverride();
     await testMonotonicCursorAdvancementAndEOF();
     await testSchemaValidation();
+    await testSerializedWireReconstruction();
     await testLiveProcessDrain();
     console.log('\n🎉 ALL PROCESS TRAFFIC HARDENING ACCEPTANCE TESTS PASSED (100%)!');
     return true;

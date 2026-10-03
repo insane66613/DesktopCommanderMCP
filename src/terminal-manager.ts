@@ -1,5 +1,5 @@
 import { spawn } from 'child_process';
-import { boundedText, serializedBytes, MAX_PROCESS_PAGE_BYTES, DEFAULT_PROCESS_PAGE_BYTES, MAX_TOOL_RESPONSE_BYTES } from './utils/response-budget.js';
+import { boundedText, serializedBytes, DEFAULT_PROCESS_PAGE_BYTES, MAX_TOOL_RESPONSE_BYTES } from './utils/response-budget.js';
 import { existsSync } from 'fs';
 import path from 'path';
 import { TerminalSession, CommandExecutionResult, ActiveSession, TimingInfo, OutputEvent } from './types.js';
@@ -698,7 +698,9 @@ export class TerminalManager {
       : (options?.maxBytes ?? options?.pageSize);
     const effectiveBudget = Math.min(
       overrideBudget !== undefined ? Math.max(512, overrideBudget) : DEFAULT_PROCESS_PAGE_BYTES,
-      MAX_TOOL_RESPONSE_BYTES
+      // Leave room for the read tool's status, cursor, eviction warning, timing,
+      // and MCP envelope. The final limiter must never discard consumed output.
+      MAX_TOOL_RESPONSE_BYTES - 2048
     );
 
     // First check active sessions
@@ -788,15 +790,18 @@ export class TerminalManager {
     const page: string[] = [];
     let nextOffset = startIndex;
     let nextCharacterOffset = characterOffset ?? (offset === 0 ? lastReadCharacter : 0);
-    let budget = effectiveBudget;
+    // Count JSON-serialized text, including quotes and escaped separators.
+    // Raw UTF-8 undercounts control characters (e.g. NUL becomes six bytes).
+    let budget = effectiveBudget - 2;
     let sizeLimited = false;
     for (const line of linesToRead) {
       const unread = line.slice(nextCharacterOffset);
       if (unread.length === 0 && !isComplete && nextOffset === totalLines - 1) break;
-      const unreadBytes = Buffer.byteLength(unread, 'utf8');
-      if (unreadBytes <= budget) {
+      const separatorBytes = page.length > 0 ? 2 : 0;
+      const unreadBytes = serializedBytes(unread) - 2;
+      if (unreadBytes + separatorBytes <= budget) {
         page.push(unread);
-        budget -= unreadBytes + 1;
+        budget -= unreadBytes + separatorBytes;
         nextOffset++;
         nextCharacterOffset = 0;
         if (budget < 8 && nextOffset < startIndex + linesToRead.length) { sizeLimited = true; break; }
@@ -805,10 +810,10 @@ export class TerminalManager {
           sizeLimited = true;
           break;
         }
-        const piece = boundedText(unread, budget);
+        const piece = boundedText(unread, budget + 2);
         if (piece.length === 0 && unread.length > 0) { sizeLimited = true; break; }
         page.push(piece);
-        budget -= Buffer.byteLength(piece, 'utf8') + 1;
+        budget -= serializedBytes(piece) - 2;
         if (piece.length < unread.length) {
           nextCharacterOffset += piece.length;
           sizeLimited = true;
