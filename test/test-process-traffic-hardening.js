@@ -282,6 +282,7 @@ async function testSerializedWireReconstruction() {
     { name: 'ASCII maximum', lines: ['X'.repeat(32768)], options: { maxBytes: 32768 } },
     { name: 'escaped multiline', lines: Array.from({ length: 2000 }, () => '\0\t\r"\\'.repeat(10)), options: { pageSize: 16384 } },
     { name: 'Unicode minimum', lines: ['😀漢字\ud800'.repeat(2000)], options: { maxBytes: 512 } },
+    { name: '100 KiB regular lines', lines: Array.from({ length: 100 }, (_, index) => `${String(index).padStart(3, '0')}${'X'.repeat(1020)}`), options: {}, maxCalls: 14 },
   ];
   for (const explicit of [false, true]) {
     for (const fixture of fixtures) {
@@ -331,6 +332,8 @@ async function testSerializedWireReconstruction() {
         }
         assert.equal(offset, fixture.lines.length, `${fixture.name}: bounded drain must reach EOF`);
         assert.equal(character, 0);
+        if (fixture.maxCalls) assert(calls <= fixture.maxCalls,
+          `${fixture.name}: drain must use at most ${fixture.maxCalls} calls, got ${calls}`);
       } finally {
         terminalManager.completedSessions.delete(testPid);
       }

@@ -806,14 +806,13 @@ export class TerminalManager {
         nextCharacterOffset = 0;
         if (budget < 8 && nextOffset < startIndex + linesToRead.length) { sizeLimited = true; break; }
       } else {
-        if (page.length > 0) {
-          sizeLimited = true;
-          break;
-        }
-        const piece = boundedText(unread, budget + 2);
+        // Use the rest of the page for the next line, recording its character
+        // cursor. Refusing a partial subsequent line wastes almost a full line
+        // per page and inflates call counts for regularly sized output.
+        const piece = boundedText(unread, budget - separatorBytes + 2);
         if (piece.length === 0 && unread.length > 0) { sizeLimited = true; break; }
         page.push(piece);
-        budget -= serializedBytes(piece) - 2;
+        budget -= serializedBytes(piece) - 2 + separatorBytes;
         if (piece.length < unread.length) {
           nextCharacterOffset += piece.length;
           sizeLimited = true;
