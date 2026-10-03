@@ -36,7 +36,6 @@ async function runTests() {
     'allowedDirectories',
     'blockedCommands',
     'telemetryEnabled',
-    'clientId',
     'sensitiveProjectFilePolicy',
     'sensitiveProjectFileExtraPatterns',
     'sensitiveProjectFileAllowedPatterns',
@@ -52,6 +51,7 @@ async function runTests() {
   assert.strictEqual(compactConfig.usageStats, undefined, 'usageStats must be omitted in compact mode');
   assert.strictEqual(compactConfig._metrics, undefined, '_metrics must be omitted in compact mode');
   assert.strictEqual(compactConfig.systemInfo, undefined, 'verbose systemInfo must be omitted in compact mode');
+  assert.strictEqual(compactConfig.clientId, undefined, 'diagnostic identifiers belong to verbose mode');
 
   // Verify content[0].text is concise
   assert.ok(Array.isArray(resEmptyArgs.content) && resEmptyArgs.content.length > 0, 'content array must exist');
@@ -115,9 +115,10 @@ async function runTests() {
   assert.ok(compactTrueBytes < BYTE_BUDGET_GATE, `{ compact: true } payload size ${compactTrueBytes} must be < ${BYTE_BUDGET_GATE}`);
   console.log('  ✓ Test 4 PASSED\n');
 
-  // Test 5: structuredContent.entries compatibility
-  console.log('Test 5: Validating structuredContent.entries compatibility...');
-  const entries = resEmptyArgs.structuredContent?.entries;
+  // Test 5: compact settings appear once; the UI retains editable metadata.
+  console.log('Test 5: Validating compact settings and full editable entries...');
+  assert.deepEqual(resEmptyArgs.structuredContent?.entries, []);
+  const entries = uiRes.structuredContent?.entries;
   assert.ok(Array.isArray(entries), 'structuredContent.entries must be an array');
   const entryMap = Object.fromEntries(entries.map((e) => [e.key, e.value]));
 
@@ -126,6 +127,9 @@ async function runTests() {
   assert.ok(Array.isArray(entryMap.sensitiveProjectFileAllowedPatterns), 'sensitiveProjectFileAllowedPatterns must be array');
   assert.strictEqual(entryMap.sensitiveProjectFileAudit, true, 'sensitiveProjectFileAudit must be true');
   assert.ok('allowedDirectories' in entryMap, 'allowedDirectories entry must exist');
+  for (const entry of entries) {
+    assert.deepEqual(compactConfig[entry.key], entry.value, `Compact setting ${entry.key} must retain its value`);
+  }
 
   // All entries must have editable: true and valueType
   for (const entry of entries) {
@@ -160,6 +164,7 @@ async function runTests() {
     env: env.env,
     stderr: 'pipe',
   });
+  transport.stderr?.resume();
   const client = new Client({ name: 'test-config-traffic-hardening', version: '1.0.0' });
 
   try {
@@ -176,13 +181,54 @@ async function runTests() {
     assert.ok(wireConfig, 'wire structuredContent.config must exist');
     assert.strictEqual(wireConfig.blockedCommands?.length, 35, 'wire blockedCommands must contain 35 items');
     assert.ok(Array.isArray(mcpResult.structuredContent?.entries), 'wire structuredContent.entries must exist');
+
+    // Exercise the dispatcher, including a compact request before each override
+    // so read-only deduplication cannot hide argument-routing regressions.
+    for (const args of [{ verbose: true }, { origin: 'ui' }, { compact: false }]) {
+      await client.callTool({ name: 'get_config', arguments: {} });
+      const full = await client.callTool({ name: 'get_config', arguments: args });
+      assert.notStrictEqual(full.isError, true);
+      assert.ok(full.structuredContent?.config?.systemInfo, `full configuration missing for ${JSON.stringify(args)}`);
+      assert.ok(Array.isArray(full.structuredContent?.uiHints?.availableShells));
+      assert.ok(full.structuredContent.entries.some(entry => entry.key === 'blockedCommands'));
+    }
+
+    const invalid = await client.callTool({ name: 'get_config', arguments: { verbose: 'yes' } });
+    assert.strictEqual(invalid.isError, true, 'invalid arguments must fail at the tool boundary');
   } finally {
     await client.close();
     env.cleanup();
   }
   console.log('  ✓ Test 7 PASSED\n');
 
-  console.log('=== ALL 7 TEST CASES PASSED SUCCESSFULLY ===');
+  // Oversized configurable values must produce an explicit summary without
+  // changing the stored security policy or representing omitted arrays as empty.
+  const originalGetConfig = configManager.getConfig;
+  const hugeConfig = {
+    ...compactConfig,
+    blockedCommands: Array.from({ length: 100 }, (_, i) => `blocked-${i}-` + 'x'.repeat(100)),
+    allowedDirectories: ['C:/' + '\\'.repeat(3000)],
+    clientId: '\u0000'.repeat(3000),
+    defaultShell: 'x'.repeat(3000),
+    sensitiveProjectFileExtraPatterns: ['secret' + 'x'.repeat(3000)],
+  };
+  try {
+    configManager.getConfig = async () => hugeConfig;
+    const bounded = await getConfig({});
+    const envelope = { jsonrpc: '2.0', id: 999999999, result: bounded };
+    assert.ok(Buffer.byteLength(JSON.stringify(envelope), 'utf8') < BYTE_BUDGET_GATE);
+    assert.strictEqual(bounded.structuredContent.requiresVerbose, true);
+    assert.strictEqual(bounded.structuredContent.config.blockedCommands, undefined);
+    assert.ok(bounded.structuredContent.omittedFields.includes('blockedCommands'));
+    assert.strictEqual(bounded.structuredContent.fieldCounts.blockedCommands, 100);
+    assert.strictEqual((await configManager.getConfig()).blockedCommands.length, 100);
+    const full = await getConfig({ verbose: true });
+    assert.deepEqual(full.structuredContent.config.blockedCommands, hugeConfig.blockedCommands);
+  } finally {
+    configManager.getConfig = originalGetConfig;
+  }
+
+  console.log('=== ALL 8 TEST CASES PASSED SUCCESSFULLY ===');
 }
 
 runTests().catch((err) => {

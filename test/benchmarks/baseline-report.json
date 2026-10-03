@@ -1,4 +1,6 @@
 {
+  "evidenceStatus": "historical-unverified",
+  "limitations": "Historical comparison only. Peak rate was supplied rather than observed; empty-poll detection omitted No new output receipts; config maximum was derived from p50. These metrics are invalid for acceptance. Byte counts do not establish lossless delivery. Require current schema v2 measurements and separate live scheduling evidence.",
   "targetDir": "X:\\Code\\DesktopCommanderMCP-traffic-hardening-20261002",
   "timestamp": "2026-10-03T02:26:41.458Z",
   "drain20KiB": {

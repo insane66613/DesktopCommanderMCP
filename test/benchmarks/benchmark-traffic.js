@@ -30,11 +30,48 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import os from 'os';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { createTestEnv } from '../helpers/test-env.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+export const fixtureConfig = Object.freeze({ processStartOutputLineLimit: 0 });
+export const fixtureFingerprint = createHash('sha256').update(JSON.stringify(fixtureConfig)).digest('hex');
+
+export function validateToolReceipt(name, result) {
+  if (!result || typeof result !== 'object' || result.isError) {
+    throw new Error(`Benchmark ${name} failed: missing result or tool error`);
+  }
+  if (name === 'start_process') {
+    const receipt = result.structuredContent;
+    if (receipt?.suppressed === true) {
+      if (receipt.pid !== null || !Number.isSafeInteger(receipt.retryAfterMs) || receipt.retryAfterMs <= 0) {
+        throw new Error('Benchmark start_process failed: valid suppression receipt required');
+      }
+    } else {
+      requireProcessPid(result);
+    }
+  }
+  if (name === 'start_search') {
+    const text = result.content?.filter(c => c.type === 'text').map(c => c.text).join('\n') ?? '';
+    const sessionId = result.structuredContent?.sessionId ?? /session:\s*(\S+)/.exec(text)?.[1];
+    if (typeof sessionId !== 'string' || !sessionId.trim()) {
+      throw new Error('Benchmark start_search failed: sessionId receipt required');
+    }
+    return sessionId;
+  }
+}
+
+export function requireProcessPid(result) {
+  const processId = result?.structuredContent?.pid;
+  if (!Number.isSafeInteger(processId) || processId <= 0) {
+    throw new Error('Benchmark start_process failed: valid PID receipt required for dependent workload');
+  }
+  return processId;
+}
 
 function quantile(arr, q) {
   if (arr.length === 0) return 0;
@@ -71,6 +108,8 @@ export class TrafficClientHarness {
     this.records = [];
     this.stderrBytes = 0;
     this.stderrChunks = 0;
+    this.testEnvironment = null;
+    this.failure = null;
   }
 
   async connect() {
@@ -79,12 +118,30 @@ export class TrafficClientHarness {
       throw new Error(`Server build not found at: ${serverPath}. Run npm run build first.`);
     }
 
+    this.testEnvironment = createTestEnv();
+    try {
+    // Preserve the target's complete defaults; config-manager treats an existing
+    // config as complete rather than merging omitted settings. The child only
+    // reads its pure default factory, with identity bound to the isolated home.
+    const defaultConfigScript = `
+      import { pathToFileURL } from 'node:url';
+      const { configManager } = await import(pathToFileURL(process.argv[1]).href);
+      console.log(JSON.stringify(configManager.getDefaultConfig()));
+    `;
+    const defaults = JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', defaultConfigScript,
+      path.join(this.targetDir, 'dist', 'config-manager.js')], {
+      env: { ...this.testEnvironment.env, DESKTOP_COMMANDER_DISABLE_TELEMETRY: '1', DC_FLAG_URL: 'http://127.0.0.1:9/' },
+      encoding: 'utf8', windowsHide: true,
+    }));
+    const configDirectory = path.join(this.testEnvironment.home, '.claude-server-commander');
+    fs.mkdirSync(configDirectory, { recursive: true });
+    fs.writeFileSync(path.join(configDirectory, 'config.json'), JSON.stringify({ ...defaults, ...fixtureConfig }));
     this.transport = new StdioClientTransport({
       command: process.execPath,
       args: [serverPath, '--no-onboarding'],
       cwd: this.targetDir,
       stderr: 'pipe',
-      env: { ...process.env, NO_COLOR: '1', DESKTOP_COMMANDER_DISABLE_TELEMETRY: '1' },
+      env: { ...this.testEnvironment.env, NO_COLOR: '1', DESKTOP_COMMANDER_DISABLE_TELEMETRY: '1', DC_FLAG_URL: 'http://127.0.0.1:9/' },
     });
 
     // CRITICAL: Actively drain transport.stderr to prevent OS pipe buffer backpressure
@@ -95,7 +152,11 @@ export class TrafficClientHarness {
     this.transport.stderr?.resume();
 
     this.client = new Client({ name: 'traffic-benchmark-client', version: '1.0.0' }, { capabilities: {} });
-    await this.client.connect(this.transport, { timeout: 30000 });
+      await this.client.connect(this.transport, { timeout: 30000 });
+    } catch (error) {
+      await this.close();
+      throw error;
+    }
   }
 
   async close() {
@@ -106,11 +167,22 @@ export class TrafficClientHarness {
         // ignore close errors
       }
     }
+    if (this.testEnvironment) {
+      this.testEnvironment.cleanup();
+      this.testEnvironment = null;
+    }
   }
 
-  async callTool(name, args = {}, logicalTimestamp = null) {
+  async callTool(name, args = {}) {
+    if (this.failure) throw this.failure;
     const startTime = Date.now();
-    const result = await this.client.callTool({ name, arguments: args });
+    let result;
+    try {
+      result = await this.client.callTool({ name, arguments: args });
+    } catch (error) {
+      this.failure = error;
+      throw error;
+    }
     const endTime = Date.now();
 
     // Serialized MCP response delivered to client (JSON-RPC 2.0 envelope + result)
@@ -125,11 +197,11 @@ export class TrafficClientHarness {
     // Detect empty-poll response
     let isEmptyPoll = false;
     if (name === 'read_process_output') {
-      const text = result.content?.[0]?.text ?? '';
-      const sc = result.structuredContent;
-      const isNoOutput = text.includes('(No output in requested range)') || 
+      const text = result?.content?.filter(c => c.type === 'text').map(c => c.text).join('\n') ?? '';
+      const sc = result?.structuredContent;
+      const isNoOutput = text.includes('No new output') || text.includes('(No output in requested range)') ||
                          text.includes('[Reading 0 new lines') || 
-                         (sc && sc.text && (sc.text.includes('(No output in requested range)') || sc.text.includes('[Reading 0 new lines')));
+                         (sc && sc.text && (sc.text.includes('No new output') || sc.text.includes('(No output in requested range)') || sc.text.includes('[Reading 0 new lines')));
       if (isNoOutput) {
         isEmptyPoll = true;
       }
@@ -141,15 +213,22 @@ export class TrafficClientHarness {
       bytes,
       durationMs: endTime - startTime,
       timestamp: startTime,
-      logicalTimestamp: logicalTimestamp ?? startTime,
       isEmptyPoll,
-      isError: !!result.isError,
+      isError: !!result?.isError,
+      isSuppressedLaunch: name === 'start_process' && result?.structuredContent?.suppressed === true,
     };
     this.records.push(record);
+    try {
+      validateToolReceipt(name, result);
+    } catch (error) {
+      record.isError = true;
+      this.failure = error;
+      throw error;
+    }
     return { result, record };
   }
 
-  getMetrics(logicalPeakRate = null) {
+  getMetrics() {
     const totalCalls = this.records.length;
     const allBytes = this.records.map(r => r.bytes);
     const totalBytes = allBytes.reduce((a, b) => a + b, 0);
@@ -162,13 +241,13 @@ export class TrafficClientHarness {
     const readProcessSizes = readProcessRecords.map(r => r.bytes);
 
     // Peak call frequency: max calls in any rolling 60-second window
-    let peakRatePerMin = logicalPeakRate;
-    if (peakRatePerMin === null && this.records.length > 0) {
-      const timestamps = this.records.map(r => r.logicalTimestamp);
+    let peakRatePerMin = 0;
+    if (this.records.length > 0) {
+      const timestamps = this.records.map(r => r.timestamp).sort((a, b) => a - b);
       for (let i = 0; i < timestamps.length; i++) {
         const windowEnd = timestamps[i] + 60000;
         let count = 0;
-        for (let j = i; j < timestamps.length && timestamps[j] <= windowEnd; j++) {
+        for (let j = i; j < timestamps.length && timestamps[j] < windowEnd; j++) {
           count++;
         }
         if (count > peakRatePerMin) peakRatePerMin = count;
@@ -181,6 +260,10 @@ export class TrafficClientHarness {
       totalBytesKiB: (totalBytes / 1024).toFixed(2),
       emptyPolls,
       peakRatePerMin,
+      peakRateBasis: 'observed-call-starts-rolling-60s-half-open',
+      callStartTimestamps: this.records.map(r => r.timestamp),
+      errorCalls: this.records.filter(r => r.isError).length,
+      suppressedLaunches: this.records.filter(r => r.isSuppressedLaunch).length,
       stderrBytes: this.stderrBytes,
       stderrChunks: this.stderrChunks,
       responseSizeDistribution: stats(allBytes),
@@ -226,8 +309,7 @@ export async function runDrainWorkload(targetDir, payloadBytes) {
       timeout_ms: 10000,
     });
 
-    const pid = startResult.structuredContent?.pid;
-    if (!pid) throw new Error('start_process failed to return PID');
+    const pid = requireProcessPid(startResult);
 
     // Drain loop: continue while buffer has more output or was sizeLimited
     let finished = false;
@@ -271,7 +353,7 @@ export async function runIncidentProfileWorkload(targetDir) {
       shell: 'cmd.exe',
       timeout_ms: 5000,
     });
-    const pollPid = bgPoll.structuredContent?.pid;
+    const pollPid = requireProcessPid(bgPoll);
 
     // 2. Large output processes for drain reads (total ~290 KiB raw output -> ~600 KiB serialized in baseline)
     const { result: bgDrain1 } = await harness.callTool('start_process', {
@@ -279,14 +361,14 @@ export async function runIncidentProfileWorkload(targetDir) {
       shell: 'cmd.exe',
       timeout_ms: 10000,
     });
-    const drainPid1 = bgDrain1.structuredContent?.pid;
+    const drainPid1 = requireProcessPid(bgDrain1);
 
     const { result: bgDrain2 } = await harness.callTool('start_process', {
       command: `node "${emitScript}" 145000 2`,
       shell: 'cmd.exe',
       timeout_ms: 10000,
     });
-    const drainPid2 = bgDrain2.structuredContent?.pid;
+    const drainPid2 = requireProcessPid(bgDrain2);
 
     let startProcessCount = 3; // already called 3 above
     let readProcessCount = 0;
@@ -303,6 +385,7 @@ export async function runIncidentProfileWorkload(targetDir) {
     let getFileInfoCount = 0;
 
     let searchSessionId = null;
+    let incidentIterations = 0;
 
     // Exact Target Counts matching Incident Telemetry (Sum = 218):
     // 83 start_process
@@ -334,6 +417,9 @@ export async function runIncidentProfileWorkload(targetDir) {
       getUsageStatsCount < 1 ||
       getFileInfoCount < 1
     ) {
+      if (++incidentIterations > 250) {
+        throw new Error('Benchmark incident profile exceeded 250-iteration budget before completing its target counts');
+      }
       // 1. get_config (16 calls)
       if (getConfigCount < 16 && (startProcessCount % 5 === 0 || startProcessCount >= 83)) {
         await harness.callTool('get_config', {});
@@ -367,8 +453,7 @@ export async function runIncidentProfileWorkload(targetDir) {
           path: path.join(targetDir, 'src'),
           pattern: 'config',
         });
-        const match = /session:\s*(\S+)/.exec(sr.content?.[0]?.text ?? '');
-        if (match) searchSessionId = match[1];
+        searchSessionId = validateToolReceipt('start_search', sr);
         startSearchCount++;
       }
 
@@ -443,8 +528,9 @@ export async function runIncidentProfileWorkload(targetDir) {
       }
     }
 
-    // Normalized incident schedule: 10 calls/min hardened peak (down from 20 calls/min baseline)
-    return harness.getMetrics(10);
+    // This compressed synthetic workload measures actual call timestamps. It
+    // does not replay the incident timing or establish a production rate.
+    return harness.getMetrics();
   } finally {
     if (fs.existsSync(scratchFile)) {
       try { fs.unlinkSync(scratchFile); } catch {}
@@ -474,6 +560,7 @@ export async function evaluateWorkloadMultiRun(workloadName, runnerFn, runs = 3)
   const emptyArr = results.map(r => r.emptyPolls);
   const peakArr = results.map(r => r.peakRatePerMin);
   const getConfigSizesArr = results.map(r => r.getConfigDistribution.p50);
+  const getConfigMaxSizesArr = results.map(r => r.getConfigDistribution.max);
   const p95SizesArr = results.map(r => r.responseSizeDistribution.p95);
   const maxSizesArr = results.map(r => r.responseSizeDistribution.max);
 
@@ -496,7 +583,7 @@ export async function evaluateWorkloadMultiRun(workloadName, runnerFn, runs = 3)
       totalBytesKiB: (Math.max(...bytesArr) / 1024).toFixed(2),
       emptyPolls: Math.max(...emptyArr),
       peakRatePerMin: Math.max(...peakArr),
-      getConfigBytesMax: Math.max(...getConfigSizesArr),
+      getConfigBytesMax: Math.max(...getConfigMaxSizesArr),
       responseBytesMax: Math.max(...maxSizesArr),
     },
     rawRuns: results,
@@ -510,6 +597,13 @@ export async function evaluateWorkloadMultiRun(workloadName, runnerFn, runs = 3)
 
 export async function runAllBenchmarks(targetDir, runs = 3) {
   const report = {
+    schemaVersion: 2,
+    evidenceStatus: 'current-synthetic-measurement',
+    workloadTiming: 'compressed-synthetic; no production call-rate or empty-poll reduction claim',
+    accountingVersion: 'actual-timestamps-all-empty-receipts-max-config-v2',
+    fixtureConfig,
+    fixtureFingerprint,
+    sourceCommit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: targetDir, encoding: 'utf8', windowsHide: true }).trim(),
     targetDir,
     timestamp: new Date().toISOString(),
     drain20KiB: await evaluateWorkloadMultiRun('20 KiB Drain Workload', () => runDrainWorkload(targetDir, 20480), runs),

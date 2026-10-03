@@ -61,7 +61,9 @@ async function run() {
 
     await check("the user's own settings from the BOM file are in effect", async () => {
       assert(server, 'the server did not start');
-      const result = await server.client.callTool({ name: 'get_config', arguments: {} });
+      // Diagnostic identifiers are available in full mode; compact mode only
+      // carries operational settings. Retain the saved-value checks for all fields.
+      const result = await server.client.callTool({ name: 'get_config', arguments: { verbose: true } });
       const config = result.structuredContent?.config ?? {};
       for (const key of ['blockedCommands', 'allowedDirectories', 'telemetryEnabled', 'clientId']) {
         const expected = expectedValue(key);

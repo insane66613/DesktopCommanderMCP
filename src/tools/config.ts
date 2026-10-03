@@ -118,7 +118,8 @@ async function detectAvailableShells(systemInfo: ReturnType<typeof getSystemInfo
 }
 
 /**
- * Get configuration. Defaults to a compact representation (< 2,048 serialized bytes)
+ * Get configuration. Defaults to a bounded compact representation. Large values
+ * are explicitly omitted with a request for verbose mode, never reported as empty.
  * containing essential configuration fields and entries without verbose system telemetry.
  * When verbose === true or origin === 'ui', returns the full comprehensive diagnostic
  * and schema payload.
@@ -126,7 +127,13 @@ async function detectAvailableShells(systemInfo: ReturnType<typeof getSystemInfo
 export async function getConfig(args?: unknown) {
   try {
     const parsed = GetConfigArgsSchema.safeParse(args ?? {});
-    const isVerbose = parsed.success && (
+    if (!parsed.success) {
+      return {
+        content: [{ type: 'text' as const, text: 'Invalid get_config arguments.' }],
+        isError: true,
+      };
+    }
+    const isVerbose = (
       parsed.data.verbose === true ||
       parsed.data.origin === 'ui' ||
       parsed.data.compact === false
@@ -206,72 +213,69 @@ export async function getConfig(args?: unknown) {
     }
 
     // DEFAULT COMPACT MODE (< 2,048 bytes)
-    const compactConfig = {
+    const compactConfig: Record<string, unknown> = {
       allowedDirectories: config.allowedDirectories ?? [],
       blockedCommands: config.blockedCommands ?? [],
       telemetryEnabled: config.telemetryEnabled,
-      clientId: config.clientId,
       sensitiveProjectFilePolicy: (config as Record<string, unknown>).sensitiveProjectFilePolicy ?? 'require_explicit_override',
       sensitiveProjectFileExtraPatterns: (config as Record<string, unknown>).sensitiveProjectFileExtraPatterns ?? [],
       sensitiveProjectFileAllowedPatterns: (config as Record<string, unknown>).sensitiveProjectFileAllowedPatterns ?? ['.env.example', '.env.sample', '.env.template'],
       sensitiveProjectFileAudit: (config as Record<string, unknown>).sensitiveProjectFileAudit ?? true,
     };
 
-    const blockedCount = Array.isArray(compactConfig.blockedCommands) ? compactConfig.blockedCommands.length : 0;
-    const allowedDirText = Array.isArray(compactConfig.allowedDirectories) && compactConfig.allowedDirectories.length > 0
-      ? compactConfig.allowedDirectories.join(', ')
-      : 'all';
-    let textSummary = `Desktop Commander configuration active: ${blockedCount} blocked commands, ${allowedDirText} directories allowed. Telemetry: ${compactConfig.telemetryEnabled ? 'enabled' : 'disabled'}.`;
-
-    // Core editable entries excluding duplicate blockedCommands array
-    const compactKeys = CONFIG_FIELD_KEYS.filter((k) => k !== 'blockedCommands');
-    const entries: Array<{ key: string; value: unknown; valueType: string; editable: boolean }> = compactKeys.map((key) => {
-      const definition = CONFIG_FIELD_DEFINITIONS[key];
-      const value = (config as Record<string, unknown>)[key];
-      return {
-        key,
-        value: value === undefined ? null : value,
-        valueType: definition.valueType,
-        editable: true,
-      };
-    });
-
-    // Ensure sensitive project file policy entries are included in entries
-    const sensitiveEntries: Array<{ key: string; valueType: 'string' | 'array' | 'boolean'; defaultValue: unknown }> = [
-      { key: 'sensitiveProjectFilePolicy', valueType: 'string', defaultValue: 'require_explicit_override' },
-      { key: 'sensitiveProjectFileExtraPatterns', valueType: 'array', defaultValue: [] },
-      { key: 'sensitiveProjectFileAllowedPatterns', valueType: 'array', defaultValue: ['.env.example', '.env.sample', '.env.template'] },
-      { key: 'sensitiveProjectFileAudit', valueType: 'boolean', defaultValue: true },
-    ];
-    for (const se of sensitiveEntries) {
-      if (!entries.some((e) => e.key === se.key)) {
-        const val = (config as Record<string, unknown>)[se.key];
-        entries.push({
-          key: se.key,
-          value: val !== undefined ? val : se.defaultValue,
-          valueType: se.valueType,
-          editable: true,
-        });
+    // Operational callers need each setting once. Editable entry metadata and
+    // diagnostic identifiers belong to the full UI/verbose response above.
+    for (const key of CONFIG_FIELD_KEYS) {
+      if (!(key in compactConfig)) {
+        compactConfig[key] = config[key] ?? null;
       }
     }
 
     const payload = {
       content: [{
         type: "text" as const,
-        text: textSummary,
+        text: 'Configuration active.',
       }],
       structuredContent: {
         config: compactConfig,
-        entries,
+        entries: [],
       },
     };
 
-    // Budget safeguard: keep payload well under the 2,048 byte threshold
-    if (Buffer.byteLength(JSON.stringify(payload), 'utf8') >= 2040) {
-      payload.content[0].text = `Desktop Commander config active (${blockedCount} blocked).`;
+    // Reserve space for the JSON-RPC envelope and server result normalization.
+    // Configurable arrays/strings are unbounded; expose explicit omission metadata
+    // rather than silently replacing security controls with empty lists.
+    const compactResultBudget = 1920;
+    if (Buffer.byteLength(JSON.stringify(payload), 'utf8') <= compactResultBudget) {
+      return payload;
     }
-
-    return payload;
+    const summaryConfig: Record<string, unknown> = {};
+    const omittedFields: string[] = [];
+    for (const [key, value] of Object.entries(compactConfig)) {
+      if (Buffer.byteLength(JSON.stringify(value) ?? 'null', 'utf8') <= 256) {
+        summaryConfig[key] = value;
+      } else {
+        omittedFields.push(key);
+      }
+    }
+    const summary = {
+      content: [{ type: 'text' as const, text: 'Compact configuration summary. Request verbose:true for all values and editable entries.' }],
+      structuredContent: {
+        config: summaryConfig,
+        entries: [],
+        requiresVerbose: true,
+        omittedFields,
+        fieldCounts: Object.fromEntries(Object.entries(compactConfig)
+          .filter(([, value]) => Array.isArray(value))
+          .map(([key, value]) => [key, (value as unknown[]).length])),
+      },
+    };
+    // Even individually small values may collectively exceed the summary budget.
+    if (Buffer.byteLength(JSON.stringify(summary), 'utf8') > compactResultBudget) {
+      summary.structuredContent.config = {};
+      summary.structuredContent.omittedFields = Object.keys(compactConfig);
+    }
+    return summary;
   } catch (error) {
     console.error(`Error in getConfig: ${error instanceof Error ? error.message : String(error)}`);
     console.error(error instanceof Error && error.stack ? error.stack : 'No stack trace available');
