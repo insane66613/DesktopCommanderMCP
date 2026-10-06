@@ -49,8 +49,13 @@ export function loadMdToPdf() {
     const puppeteer: PuppeteerNode = requireFromMdToPdf('puppeteer');
     const serveHandler: (request: IncomingMessage, response: ServerResponse, config: { public: string; directoryListing: boolean; cleanUrls: boolean }) => Promise<void> =
         requireFromMdToPdf('serve-handler');
+    const grayMatterPath = requireFromMdToPdf.resolve('gray-matter');
+    const requireFromGrayMatter = createRequire(grayMatterPath);
     const grayMatter: (input: string, options: unknown) => { content: string; data: unknown } = requireFromMdToPdf('gray-matter');
-    return { convertMdToPdf, defaultConfig, puppeteer, serveHandler, grayMatter };
+    const yaml: { load: (input: string, options?: unknown) => unknown; dump: (input: unknown, options?: unknown) => string } =
+        requireFromGrayMatter('js-yaml');
+    const yamlEngine = { parse: yaml.load.bind(yaml), stringify: yaml.dump.bind(yaml) };
+    return { convertMdToPdf, defaultConfig, puppeteer, serveHandler, grayMatter, yamlEngine };
 }
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
@@ -120,7 +125,11 @@ interface ResolvedRender {
  * both names are switched off. `defaultConfig` is md-to-pdf's, loaded on first use
  * (loadMdToPdf()).
  */
-function safeGrayMatterOptions(callerOptions: unknown, defaultConfig: ReturnType<typeof loadMdToPdf>['defaultConfig']): Record<string, unknown> {
+function safeGrayMatterOptions(
+    callerOptions: unknown,
+    defaultConfig: ReturnType<typeof loadMdToPdf>['defaultConfig'],
+    yamlEngine: ReturnType<typeof loadMdToPdf>['yamlEngine'],
+): Record<string, unknown> {
     // md-to-pdf's switch-off of gray-matter's JavaScript engine, which evaluates the header's code
     const disabledJsEngine = (defaultConfig.gray_matter_options as { engines: Record<string, unknown> }).engines.javascript;
     const caller = isPlainObject(callerOptions) ? callerOptions : {};
@@ -128,7 +137,9 @@ function safeGrayMatterOptions(callerOptions: unknown, defaultConfig: ReturnType
     return {
         ...defaultConfig.gray_matter_options,
         ...caller,
-        engines: { ...callerEngines, js: disabledJsEngine, javascript: disabledJsEngine },
+        // gray-matter 4 calls js-yaml.safeLoad/safeDump, which js-yaml 4 removed.
+        // Keep js-yaml 4 for the dependency security fix, but provide the modern API explicitly.
+        engines: { ...callerEngines, yaml: yamlEngine, js: disabledJsEngine, javascript: disabledJsEngine },
     };
 }
 
@@ -141,11 +152,11 @@ function safeGrayMatterOptions(callerOptions: unknown, defaultConfig: ReturnType
  * md-to-pdf merging the front matter a second time.
  */
 export function resolveRender(markdown: string, options: unknown = {}): ResolvedRender {
-    const { defaultConfig, grayMatter } = loadMdToPdf();
+    const { defaultConfig, grayMatter, yamlEngine } = loadMdToPdf();
     const fromOptions = isPlainObject(options) ? options : {};
     // Parse the front matter the way md-to-pdf would, with the caller's
     // gray_matter_options, but never with gray-matter's JavaScript engine
-    const grayMatterOptions = safeGrayMatterOptions(fromOptions.gray_matter_options, defaultConfig);
+    const grayMatterOptions = safeGrayMatterOptions(fromOptions.gray_matter_options, defaultConfig, yamlEngine);
     const { content, data } = grayMatter(markdown, grayMatterOptions);
     const frontMatter = isPlainObject(data) ? data : {};
 
@@ -312,12 +323,33 @@ export async function pruneOldPuppeteerChromeBuilds(activeExecutablePath: string
  */
 function windowsChromePaths(): string[] {
     const env = process.env;
-    const programFiles = [...new Set([env.ProgramFiles, env.ProgramW6432, env['ProgramFiles(x86)']])]
-        .filter((dir): dir is string => Boolean(dir));
+    const systemDrive = env.SystemDrive || 'C:';
+    const defaultProgramFiles = [
+        join(systemDrive + '\\', 'Program Files'),
+        join(systemDrive + '\\', 'Program Files (x86)'),
+    ];
+    const configuredProgramFiles = [...new Set([
+        env.ProgramFiles,
+        env.ProgramW6432,
+        env['ProgramFiles(x86)'],
+    ])].filter((dir): dir is string => Boolean(dir));
+    const programFiles = configuredProgramFiles.length > 0 ? configuredProgramFiles : defaultProgramFiles;
+
+    let localAppData = env.LOCALAPPDATA;
+    if (!localAppData) {
+        try {
+            localAppData = join(userInfo().homedir, 'AppData', 'Local');
+        } catch {
+            // The machine-wide Program Files locations are still enough to continue.
+        }
+    }
+
     return [
         ...programFiles.map(dir => join(dir, 'Google', 'Chrome', 'Application', 'chrome.exe')),
-        ...(env.LOCALAPPDATA ? [join(env.LOCALAPPDATA, 'Google', 'Chrome', 'Application', 'chrome.exe')] : []),
+        ...(localAppData ? [join(localAppData, 'Google', 'Chrome', 'Application', 'chrome.exe')] : []),
         ...programFiles.map(dir => join(dir, 'Chromium', 'Application', 'chrome.exe')),
+        ...programFiles.map(dir => join(dir, 'Microsoft', 'Edge', 'Application', 'msedge.exe')),
+        ...(localAppData ? [join(localAppData, 'Microsoft', 'Edge', 'Application', 'msedge.exe')] : []),
     ];
 }
 
@@ -676,8 +708,10 @@ async function installChrome(): Promise<CachedPuppeteerChrome> {
 
 /**
  * Find or install Chrome for PDF generation
- * Priority: 1. Puppeteer cache, 2. System Chrome, 3. Install Chrome
- * Results are cached to avoid repeated lookups
+ * Priority: 1. Installed Chromium browser, 2. Puppeteer cache, 3. Install Chrome.
+ * Prefer the browser already maintained for this machine: it avoids redundant
+ * downloads and can be more compatible with local CPU/GPU/driver constraints.
+ * Results are cached to avoid repeated lookups.
  */
 async function getChromePath(): Promise<string | undefined> {
     // Return cached result if available
@@ -692,19 +726,19 @@ async function getChromePath(): Promise<string | undefined> {
     
     // Start the check
     chromeCheckPromise = (async () => {
-        // 1. Check puppeteer cache first (exact compatible version)
+        // 1. Prefer an installed Chrome/Chromium/Edge build maintained for this machine.
+        const systemChrome = findSystemChrome();
+        if (systemChrome) {
+            cachedChromePath = systemChrome;
+            return systemChrome;
+        }
+
+        // 2. Fall back to Desktop Commander's private Puppeteer cache.
         const cachedChrome = findPuppeteerChrome();
         if (cachedChrome) {
             await pruneOldPuppeteerChromeBuilds(cachedChrome.executablePath);
             cachedChromePath = cachedChrome.executablePath;
             return cachedChrome.executablePath;
-        }
-        
-        // 2. Check system Chrome
-        const systemChrome = findSystemChrome();
-        if (systemChrome) {
-            cachedChromePath = systemChrome;
-            return systemChrome;
         }
         
         // 3. Install Chrome as last resort

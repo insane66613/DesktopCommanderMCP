@@ -24,6 +24,7 @@ import { runIfMain, skip } from './helpers/run-if-main.js';
 const SETTINGS = ['ProgramFiles', 'ProgramW6432', 'ProgramFiles(x86)', 'LOCALAPPDATA'];
 const CHROME = ['Google', 'Chrome', 'Application', 'chrome.exe'];
 const CHROMIUM = ['Chromium', 'Application', 'chrome.exe'];
+const EDGE = ['Microsoft', 'Edge', 'Application', 'msedge.exe'];
 
 /**
  * Runs `check(expected, folder)` with `setting` pointed at a folder holding a stand-in
@@ -63,6 +64,9 @@ async function run() {
         ['LOCALAPPDATA', CHROME, 'Chrome installed for the user (LOCALAPPDATA)'],
         ['ProgramFiles', CHROMIUM, 'Chromium under Program Files'],
         ['ProgramFiles(x86)', CHROMIUM, 'Chromium under Program Files (x86)'],
+        ['ProgramFiles', EDGE, 'Edge under Program Files'],
+        ['ProgramFiles(x86)', EDGE, 'Edge under Program Files (x86)'],
+        ['LOCALAPPDATA', EDGE, 'Edge installed for the user (LOCALAPPDATA)'],
     ];
     for (const [setting, subPath, what] of cases) {
         try {
@@ -89,6 +93,9 @@ async function run() {
             `${process.env.LOCALAPPDATA}\\Google\\Chrome\\Application\\chrome.exe`,
             'C:\\Program Files\\Chromium\\Application\\chrome.exe',
             'C:\\Program Files (x86)\\Chromium\\Application\\chrome.exe',
+            'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+            'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+            `${process.env.LOCALAPPDATA}\\Microsoft\\Edge\\Application\\msedge.exe`,
         ].find((file) => fs.existsSync(file));
         try {
             assert.strictEqual(findSystemChrome(), before, 'with this machine\'s own settings, a different browser was found than before');
