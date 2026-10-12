@@ -79,6 +79,8 @@ interface CompletedSession {
   generation: number;
   outputVersion: number;
   lifecycleVersion: number;
+  bufferedChars: number;
+  outputClosed?: boolean;
 }
 
 /**
@@ -408,6 +410,7 @@ export class TerminalManager {
     };
 
     this.sessions.set(childProcess.pid, session);
+    this.completedSessions.delete(session.pid);
 
     // Timing telemetry
     const startTime = Date.now();
@@ -420,6 +423,8 @@ export class TerminalManager {
       let resolved = false;
       let periodicCheck: NodeJS.Timeout | null = null;
       let timeoutFallback: NodeJS.Timeout | null = null;
+      let exitDrainTimeout: NodeJS.Timeout | null = null;
+      let completedSession: CompletedSession | null = null;
 
       // Quick prompt patterns for immediate detection
       const quickPromptPatterns = />>>\s*$|>\s*$|\$\s*$|#\s*$/;
@@ -429,6 +434,7 @@ export class TerminalManager {
         resolved = true;
         if (periodicCheck) clearInterval(periodicCheck);
         if (timeoutFallback) clearTimeout(timeoutFallback);
+        if (exitDrainTimeout) clearTimeout(exitDrainTimeout);
 
         // Add timing info if requested
         if (collectTiming) {
@@ -453,7 +459,7 @@ export class TerminalManager {
       // waiting for output that will never arrive.
       forwardProcessError = (err: Error) => {
         session.lifecycleVersion++;
-        this.sessions.delete(childProcess.pid!);
+        if (this.sessions.get(session.pid) === session) this.sessions.delete(session.pid);
         exitReason = 'process_exit';
         resolveOnce({
           pid: childProcess.pid!,
@@ -483,7 +489,7 @@ export class TerminalManager {
           }
         }
         // Append to line-based buffer
-        this.appendToLineBuffer(session, text);
+        this.appendToLineBuffer(completedSession ?? session, text);
 
         // Record output event if collecting timing
         if (collectTiming) {
@@ -497,7 +503,7 @@ export class TerminalManager {
         }
 
         // Immediate check for obvious prompts
-        if (quickPromptPatterns.test(text)) {
+        if (!completedSession && quickPromptPatterns.test(text)) {
           session.isBlocked = true;
           exitReason = 'early_exit_quick_pattern';
 
@@ -527,7 +533,7 @@ export class TerminalManager {
           }
         }
         // Append to line-based buffer
-        this.appendToLineBuffer(session, text);
+        this.appendToLineBuffer(completedSession ?? session, text);
 
         // Record output event if collecting timing
         if (collectTiming) {
@@ -570,13 +576,12 @@ export class TerminalManager {
         });
       }, timeoutMs);
 
-      // 'exit' can precede the last stdout/stderr data; 'close' seals the buffer.
-      childProcess.on('close', (code: any) => {
-        if (childProcess.pid) {
+      const completeSession = (code: number | null) => {
+        if (!completedSession && (this.sessions.get(session.pid) === session ||
+            (!this.sessions.has(session.pid) && !this.completedSessions.has(session.pid)))) {
           session.lifecycleVersion++;
-          // Store completed session before removing active session
-          this.completedSessions.set(childProcess.pid, {
-            pid: childProcess.pid,
+          completedSession = {
+            pid: session.pid,
             outputLines: [...session.outputLines], // Copy line buffer
             exitCode: code,
             startTime: session.startTime,
@@ -588,7 +593,10 @@ export class TerminalManager {
             generation: session.generation,
             outputVersion: session.outputVersion,
             lifecycleVersion: session.lifecycleVersion,
-          });
+            bufferedChars: session.bufferedChars,
+            outputClosed: false,
+          };
+          this.completedSessions.set(session.pid, completedSession);
 
           // Keep only last 100 completed sessions
           if (this.completedSessions.size > 100) {
@@ -596,14 +604,32 @@ export class TerminalManager {
             this.completedSessions.delete(oldestKey);
           }
 
-          this.sessions.delete(childProcess.pid);
+          this.sessions.delete(session.pid);
         }
+      };
+      const resolveExit = () => {
         exitReason = 'process_exit';
         resolveOnce({
           pid: childProcess.pid!,
           output,
           isBlocked: false
         });
+      };
+      // Descendants can retain inherited pipes after this PID exits. Keep draining
+      // into its completed buffer, but bound the initial wait for stdio close.
+      childProcess.on('exit', (code: number | null) => {
+        completeSession(code);
+        if (periodicCheck) clearInterval(periodicCheck);
+        if (timeoutFallback) clearTimeout(timeoutFallback);
+        if (!resolved) exitDrainTimeout = setTimeout(resolveExit, 100);
+      });
+      childProcess.on('close', (code: number | null) => {
+        completeSession(code);
+        if (completedSession && !completedSession.outputClosed) {
+          completedSession.outputClosed = true;
+          completedSession.lifecycleVersion++;
+        }
+        resolveExit();
       });
     });
   }
@@ -612,7 +638,7 @@ export class TerminalManager {
    * Append text to a session's line buffer
    * Handles partial lines and newline splitting
    */
-  private appendToLineBuffer(session: VersionedTerminalSession, text: string): void {
+  private appendToLineBuffer(session: VersionedTerminalSession | CompletedSession, text: string): void {
     if (!text) return;
     session.outputVersion++;
 
@@ -738,7 +764,8 @@ export class TerminalManager {
         runtimeMs,
         completedSession.lastReadCharacter ?? 0,
         characterOffset,
-        effectiveBudget
+        effectiveBudget,
+        completedSession.outputClosed !== false
       );
       result.evictedLines = completedSession.evictedLines;
       return result;
@@ -761,7 +788,8 @@ export class TerminalManager {
     runtimeMs?: number,
     lastReadCharacter: number = 0,
     characterOffset?: number,
-    effectiveBudget: number = DEFAULT_PROCESS_PAGE_BYTES
+    effectiveBudget: number = DEFAULT_PROCESS_PAGE_BYTES,
+    outputClosed: boolean = isComplete
   ): PaginatedOutputResult {
     const totalLines = lines.length;
     let startIndex: number;
@@ -796,7 +824,7 @@ export class TerminalManager {
     let sizeLimited = false;
     for (const line of linesToRead) {
       const unread = line.slice(nextCharacterOffset);
-      if (unread.length === 0 && !isComplete && nextOffset === totalLines - 1) break;
+      if (unread.length === 0 && !outputClosed && nextOffset === totalLines - 1) break;
       const separatorBytes = page.length > 0 ? 2 : 0;
       const unreadBytes = serializedBytes(unread) - 2;
       if (unreadBytes + separatorBytes <= budget) {
@@ -824,8 +852,8 @@ export class TerminalManager {
       }
     }
     linesToRead = page;
-    // The final active line can still grow without a newline. Keep its character cursor.
-    if (!isComplete && nextOffset === totalLines && totalLines > 0) {
+    // Until stdio closes, the final line can still grow after the PID exits.
+    if (!outputClosed && nextOffset === totalLines && totalLines > 0) {
       nextOffset = totalLines - 1;
       nextCharacterOffset = lines[nextOffset].length;
     }
@@ -833,7 +861,7 @@ export class TerminalManager {
     const readCount = linesToRead.length;
     const endIndex = nextOffset;
     const remaining = Math.max(0, totalLines - endIndex -
-      (!isComplete && endIndex === totalLines - 1 && nextCharacterOffset === lines[endIndex]?.length ? 1 : 0));
+      (!outputClosed && endIndex === totalLines - 1 && nextCharacterOffset === lines[endIndex]?.length ? 1 : 0));
 
     return {
       lines: linesToRead,
@@ -1022,7 +1050,7 @@ export class TerminalManager {
     try {
         session.process.kill('SIGINT');
         setTimeout(() => {
-          if (this.sessions.has(pid)) {
+          if (this.sessions.get(pid) === session) {
             session.process.kill('SIGKILL');
           }
         }, 1000);

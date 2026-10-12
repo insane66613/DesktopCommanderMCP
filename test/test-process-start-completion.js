@@ -74,9 +74,10 @@ try {
       }
       child.emit('exit', 7);
       await Promise.resolve();
-      assert.deepEqual(terminalManager.getProcessStatus(fakePid), { isComplete: false, exitCode: null },
-        'exit must leave the output session open until stdio drains');
-      assert.equal(terminalManager.readOutputPaginated(fakePid, -1, 1).isComplete, false);
+      assert.deepEqual(terminalManager.getProcessStatus(fakePid), { isComplete: true, exitCode: 7 },
+        'exit completes the PID while remaining stdio continues draining');
+      assert.equal(terminalManager.readOutputPaginated(fakePid, -1, 1).isComplete, true);
+      assert.equal(terminalManager.getSession(fakePid), undefined);
       if (mode === 'completion') assert.equal(settled, false, 'completion wait must include stream drain');
       child.stdout.emit('data', Buffer.from('\nfinal-stdout\n'));
       child.stderr.emit('data', Buffer.from('final-stderr\n'));
