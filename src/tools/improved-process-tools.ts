@@ -196,6 +196,8 @@ export async function startProcess(args: unknown): Promise<ServerResult> {
     return {
       content: [{ type: "text", text }],
       structuredContent: {
+        text,
+        success: false,
         pid: null,
         suppressed: true,
         retryAfterMs,
