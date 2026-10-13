@@ -1,4 +1,5 @@
 import { terminalManager, MAX_BUFFERED_OUTPUT_CHARS } from '../terminal-manager.js';
+import { DEFAULT_PROCESS_PAGE_BYTES, MAX_TOOL_RESPONSE_BYTES } from '../utils/response-budget.js';
 import { commandManager } from '../command-manager.js';
 import { StartProcessArgsSchema, ReadProcessOutputArgsSchema, InteractWithProcessArgsSchema, ForceTerminateArgsSchema, ListSessionsArgsSchema } from './schemas.js';
 import { z } from 'zod';
@@ -515,13 +516,20 @@ async function executeReadProcessOutputCore(
     await waitForOutput();
   }
 
-  // Read output with pagination
+  // Preserve the existing 8 KiB default page and cursor efficiency. Because
+  // model-facing clients may receive only structuredContent, send the page in
+  // both MCP surfaces. Limit explicit larger pages so the full dual-surface
+  // envelope remains below the 32 KiB MCP response budget.
+  const requestedPageBytes = maxBytes ?? pageSize ?? DEFAULT_PROCESS_PAGE_BYTES;
+  const pairedPageBytes = maxBytes === undefined && pageSize === undefined
+    ? DEFAULT_PROCESS_PAGE_BYTES
+    : Math.max(512, Math.floor(Math.min(requestedPageBytes, MAX_TOOL_RESPONSE_BYTES - 2048) / 2) - 256);
   const result = terminalManager.readOutputPaginated(
-    pid, 
-    offset, 
-    length, 
+    pid,
+    offset,
+    length,
     character_offset,
-    { maxBytes, pageSize }
+    { maxBytes: pairedPageBytes }
   );
   
   if (!result) {
@@ -635,6 +643,9 @@ async function executeReadProcessOutputCore(
     structuredContent: {
       pid,
       text: `[PID ${pid}: read ${result.lines.length} lines, ${result.remaining} remaining]`,
+      // Some MCP clients present only structuredContent. Keep the bounded page
+      // output available there without changing the existing text pagination receipt.
+      output,
       success: true,
       isFinished: result.isComplete,
       exitCode: result.exitCode ?? null,

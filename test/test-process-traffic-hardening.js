@@ -22,8 +22,8 @@ function getSerializedMcpBytes(result) {
 }
 
 /**
- * Test 1: Default page budget is bounded between 4 KiB and ~8.5 KiB,
- * content[0].text retains full output text, and structuredContent.text is compacted.
+ * Test 1: Default page preserves the original 8 KiB content payload,
+ * provides the same output via structuredContent, and bounds the dual-surface wire size.
  */
 async function testDefaultPageBudgetAndCompaction() {
   console.log('📋 Test 1: Default page budget and structured content compaction...');
@@ -68,6 +68,8 @@ async function testDefaultPageBudgetAndCompaction() {
     sc.text.length < 120,
     `structuredContent.text must be compact (< 120 chars), got length ${sc.text.length}`
   );
+  assert(sc.output.includes('line-0000'), 'structuredContent.output must expose the actual process page');
+  assert(readResult.content[0].text.includes(sc.output), 'content and structured process pages must agree');
 
   // Verify total serialized MCP wire bytes is bounded
   const wireBytes = getSerializedMcpBytes(readResult);
@@ -77,8 +79,8 @@ async function testDefaultPageBudgetAndCompaction() {
     `Wire bytes must be at least 4 KiB for full page, got ${wireBytes}`
   );
   assert(
-    wireBytes <= 8900,
-    `Wire bytes must not exceed ~8.5 KiB (<= 8,900), got ${wireBytes}`
+    wireBytes <= 18000,
+    `Dual-surface default page must stay under 18 KiB, got ${wireBytes}`
   );
 
   // Invariant checks
@@ -379,8 +381,8 @@ async function testLiveProcessDrain() {
 
     // Verify wire byte bounding on every page
     assert(
-      bytes <= 8900,
-      `Each default page wire bytes must remain <= 8,900, got ${bytes}`
+      bytes <= 18000,
+      `Each dual-surface page must remain <= 18,000 wire bytes, got ${bytes}`
     );
 
     const sc = res.structuredContent;

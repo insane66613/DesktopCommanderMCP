@@ -89,6 +89,9 @@ async function testAbsoluteOffset() {
   assert(read.content[0].text.includes('line7'), 'Should contain line7');
   assert(!read.content[0].text.includes('line4'), 'Should NOT contain line4');
   assert(read.content[0].text.includes('from line 5'), 'Status should show reading from line 5');
+  assert(read.structuredContent.output.includes('line5'), 'Structured process output must include the requested page');
+  assert(read.structuredContent.output.includes('line7'), 'Structured process output must include the last selected line');
+  assert(!read.structuredContent.output.includes('line4'), 'Structured process output must respect page boundaries');
   
   console.log('✅ Test 2 passed: Absolute position works correctly');
 }
