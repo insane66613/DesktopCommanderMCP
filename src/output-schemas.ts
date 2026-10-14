@@ -77,7 +77,7 @@ const PROCESS_OUTPUT_SCHEMA: JsonSchema = {
     isBlocked: { type: ['boolean', 'null'] },
     isFinished: { type: ['boolean', 'null'] },
     exitCode: { type: ['integer', 'number', 'null'] },
-    state: { type: ['string', 'null'] },
+    state: { type: ['string', 'null'], enum: ['running', 'blocked', 'finished', null] },
     success: { type: 'boolean' },
     error: { type: ['string', 'null'] },
   },

@@ -35,7 +35,13 @@ try {
     }));
     assert.equal(result.structuredContent?.isFinished, completed, 'completion must follow process lifecycle');
     assert.equal(result.structuredContent.exitCode, exitCode);
-    assert.equal(result.structuredContent.state, state);
+    const publicState = state === 'finished' ? 'finished' : state === 'waiting_for_input' ? 'blocked' : 'running';
+    assert.equal(result.structuredContent.state, publicState);
+    assert(['running', 'blocked', 'finished'].includes(result.structuredContent.state));
+    if (state === 'waiting_for_input') {
+      assert.equal(result.structuredContent.isBlocked, true);
+      assert.match(result.structuredContent.text, /waiting for input/i);
+    }
     for (const key of outputSchemaForTool('start_process').required) {
       assert(Object.hasOwn(result.structuredContent, key), `advertised schema requires ${key}`);
     }
@@ -70,7 +76,8 @@ try {
         const early = await pending;
         assert.equal(early.structuredContent.isFinished, false);
         assert.equal(early.structuredContent.exitCode, null);
-        assert.equal(early.structuredContent.state, mode === 'prompt' ? 'waiting_for_input' : 'running');
+        assert.equal(early.structuredContent.state, mode === 'prompt' ? 'blocked' : 'running');
+        if (mode === 'prompt') assert.equal(early.structuredContent.isBlocked, true);
       }
       child.emit('exit', 7);
       await Promise.resolve();

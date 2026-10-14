@@ -320,10 +320,12 @@ export async function startProcess(args: unknown): Promise<ServerResult> {
     structuredContent: {
       pid: result.pid,
       text,
-      ...((!isFinished && result.isBlocked) ? { isBlocked: true } : {}),
+      ...((!isFinished && (result.isBlocked || processState.isWaitingForInput)) ? { isBlocked: true } : {}),
       isFinished,
       exitCode,
-      state: isFinished ? 'finished' : !lifecycle ? 'unknown' : processState.isWaitingForInput ? 'waiting_for_input' : 'running',
+      // Public MCP consumers accept only running/blocked/finished. Keep the
+      // more specific waiting-for-input diagnosis in the text response.
+      state: isFinished ? 'finished' : processState.isWaitingForInput ? 'blocked' : 'running',
       success: true,
     },
   };
