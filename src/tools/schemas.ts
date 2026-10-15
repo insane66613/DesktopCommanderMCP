@@ -104,11 +104,19 @@ export const WriteFileArgsSchema = z.object({
 
 export const ReceiveFileArgsSchema = z.object({
   path: z.string(),
-  content: z.string(),
+  content: z.string().optional(),
+  file: z.object({
+    download_url: z.string(),
+    file_id: z.string(),
+    mime_type: z.string().optional(),
+    file_name: z.string().optional(),
+  }).optional(),
   encoding: z.enum(['utf8', 'base64']).default('base64'),
   mode: z.enum(['rewrite', 'append']).default('rewrite'),
   expectedSha256: z.string().regex(/^[a-fA-F0-9]{64}$/).optional(),
   createParentDirectories: z.boolean().optional().default(false),
+}).refine(value => (value.content !== undefined) !== (value.file !== undefined), {
+  message: 'Provide exactly one of file (native file reference) or content (inline fallback)',
 });
 
 export const ExportProjectFileArgsSchema = z.object({

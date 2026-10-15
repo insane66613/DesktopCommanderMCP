@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { randomBytes } from 'node:crypto';
+import { redactToolArguments } from './tool-argument-privacy.js';
 
 export interface ToolCallOutcome {
   request_id: string;
@@ -296,7 +297,7 @@ class ToolHistory {
     const record: ToolCallRecord = {
       timestamp: new Date().toISOString(),
       toolName,
-      arguments: args,
+      arguments: redactToolArguments(toolName, args),
       output: this.capOutput(output),
       duration,
       ...outcome,

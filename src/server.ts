@@ -543,7 +543,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             {
                 name: "receive_file",
                 description: `
-                        Receive and write a complete generated file in one tool call.
+                        Save a ChatGPT file directly to the authorized Windows filesystem.
+
+                        PREFERRED: supply file as a native ChatGPT file reference. ChatGPT resolves it
+                        to {download_url, file_id, mime_type?, file_name?}; the server streams exact
+                        bytes over HTTPS into a temporary file, verifies SHA-256, then saves atomically.
+                        Supports binary files (PDF, XLSX, ZIP, images) without base64 or model-side re-encoding.
+                        Maximum 100 MiB, total download deadline 45 seconds. Public HTTPS URLs only;
+                        local/private network targets, credentials and non-443 ports are rejected.
+                        Never invent a download_url or pass a sandbox path as one. If ChatGPT cannot
+                        resolve the file reference, ask for an accessible file instead of retrying.
+                        Native file input refuses overwrite by default; explicit mode=rewrite replaces
+                        an existing regular file only after successful download and verification.
+                        Append is not supported for native file input. Signed URLs expire: obtain a
+                        fresh reference on expiry; failed transfers never publish a partial file.
+
+                        INLINE FALLBACK: supply content instead of file for generated text or existing
+                        base64 callers. Provide exactly one input source. Do not base64-encode large
+                        artifacts through the model when native file input is available.
 
                         Use this instead of write_file when ChatGPT needs to send a complete script,
                         source file, config file, or other text artifact directly without manual copy/paste
@@ -551,11 +568,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 
                         INPUTS:
                         - path: Absolute destination path.
-                        - content: Complete file content. Base64 is preferred for scripts because it avoids
-                          escaping issues with quotes, backticks, heredocs, and PowerShell syntax.
-                        - encoding: "base64" by default; "utf8" is also accepted.
-                        - mode: "rewrite" by default, or "append".
-                        - expectedSha256: Optional integrity check of the decoded UTF-8 content.
+                        - file: Native file reference (preferred); ChatGPT supplies its temporary download URL.
+                        - content: Inline fallback, mutually exclusive with file.
+                        - encoding: Inline only: "base64" by default, or "utf8".
+                        - mode: Inline defaults to rewrite; native files require explicit rewrite to overwrite.
+                        - expectedSha256: Optional integrity check of the exact received bytes.
                         - createParentDirectories: Optional; creates parent directories before writing.
 
                         SAFETY:
@@ -584,12 +601,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                     },
                     additionalProperties: true,
                 },
-                _meta: buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true, showFilePreviews),
+                _meta: { ...buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true, showFilePreviews),
+                    'openai/fileParams': ['file'] },
                 annotations: {
                     title: "Receive File",
                     readOnlyHint: false,
                     destructiveHint: true,
-                    openWorldHint: false,
+                    openWorldHint: true,
                 },
             },
             {
