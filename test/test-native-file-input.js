@@ -40,6 +40,15 @@ if (!isTestHome()) {
   const append = await handleReceiveFile({ path: target, file, mode: 'append' });
   assert(append.isError);
   assert(!fs.existsSync(target));
+  const relative = `native-relative-${process.pid}/file.bin`;
+  assert((await handleReceiveFile({ path: relative, file, createParentDirectories: true })).isError);
+  assert(!fs.existsSync(path.dirname(relative)), 'invalid native input must not create directories');
+  const cancelled = await server._requestHandlers.get('tools/call')({ method: 'tools/call', params: {
+    name: 'receive_file', arguments: { path: target, file },
+  } }, { signal: AbortSignal.abort() });
+  assert(cancelled.isError);
+  assert(JSON.stringify(cancelled).includes('cancelled or timed out'), 'MCP cancellation reaches the downloader');
+  assert(!fs.existsSync(target));
   const bytes = Buffer.from([0, 255, 128, 13, 10, 0, 42]);
   const legacy = await handleReceiveFile({ path: target, content: bytes.toString('base64'), encoding: 'base64' });
   assert(!legacy.isError);

@@ -1419,7 +1419,7 @@ server.setRequestHandler(SetLevelRequestSchema, async (request) => {
 
 const toolRequestOutcomes = new WeakMap<CallToolRequest, ToolCallOutcome & { execution_deduplicated: boolean }>();
 
-server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest): Promise<ServerResult> => {
+server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest, extra): Promise<ServerResult> => {
     const started = performance.now();
     const receivedAt = new Date().toISOString();
     const correlation = { ...toolRequestCorrelation(request.params._meta), execution_deduplicated: false };
@@ -1427,7 +1427,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
     let result: ServerResult | undefined;
     let bounded: ServerResult | undefined;
     try {
-        result = await executeCallToolRequest(request);
+        result = await executeCallToolRequest(request, extra?.signal);
         bounded = budgetToolResponse(result);
         return bounded;
     } finally {
@@ -1449,7 +1449,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
     }
 });
 
-async function executeCallToolRequest(request: CallToolRequest): Promise<ServerResult> {
+async function executeCallToolRequest(request: CallToolRequest, signal?: AbortSignal): Promise<ServerResult> {
     const args = request.params.arguments;
     // Calls fired programmatically by the widget UIs (file preview, config
     // editor) carry origin:'ui'. They are real tool executions but not agent
@@ -1486,13 +1486,13 @@ async function executeCallToolRequest(request: CallToolRequest): Promise<ServerR
                     });
                 }
             }
-            return handleCallToolRequest(request);
+            return handleCallToolRequest(request, signal);
         });
     }
-    return handleCallToolRequest(request);
+    return handleCallToolRequest(request, signal);
 }
 
-async function handleCallToolRequest(request: CallToolRequest): Promise<ServerResult> {
+async function handleCallToolRequest(request: CallToolRequest, signal?: AbortSignal): Promise<ServerResult> {
     const { name, arguments: args } = request.params;
 
     // Single-flight dedup for tools that are most affected by request
@@ -1511,7 +1511,7 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
         try {
             const { result } = await dedupRequest(name, args, () => {
                 executed = true;
-                return handleCallToolRequestCore(request);
+                return handleCallToolRequestCore(request, signal);
             });
             return result!;
         } finally {
@@ -1519,10 +1519,10 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
         }
     }
 
-    return handleCallToolRequestCore(request);
+    return handleCallToolRequestCore(request, signal);
 }
 
-async function handleCallToolRequestCore(request: CallToolRequest): Promise<ServerResult> {
+async function handleCallToolRequestCore(request: CallToolRequest, signal?: AbortSignal): Promise<ServerResult> {
     const { name, arguments: args } = request.params;
     const startTime = Date.now();
     // Hoisted above the try so the finally block can read them when emitting the
@@ -1748,7 +1748,7 @@ async function handleCallToolRequestCore(request: CallToolRequest): Promise<Serv
                 break;
 
             case "receive_file":
-                result = await handlers.handleReceiveFile(args);
+                result = await handlers.handleReceiveFile(args, signal);
                 break;
 
             case "export_project_file":

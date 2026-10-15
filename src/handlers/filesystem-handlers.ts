@@ -395,11 +395,14 @@ export async function handleWriteFile(args: unknown): Promise<ServerResult> {
 /**
  * Handle receive_file command
  */
-export async function handleReceiveFile(args: unknown): Promise<ServerResult> {
+export async function handleReceiveFile(args: unknown, signal?: AbortSignal): Promise<ServerResult> {
     try {
         const modeProvided = !!(args && typeof args === 'object' && 'mode' in args);
         const parsed = ReceiveFileArgsSchema.parse(args);
         if (parsed.file) {
+            if (!path.isAbsolute(parsed.path)) {
+                return createErrorResponse('Native file destination must be an absolute path.');
+            }
             if (parsed.mode === 'append') {
                 return createErrorResponse('Native file transfers do not support append; choose a new path or explicit rewrite.');
             }
@@ -411,6 +414,7 @@ export async function handleReceiveFile(args: unknown): Promise<ServerResult> {
                 path: parsed.path,
                 expectedSha256: parsed.expectedSha256,
                 overwrite: modeProvided && parsed.mode === 'rewrite',
+                signal,
             });
             const destination = resolveAbsolutePath(parsed.path);
             return {
