@@ -2,8 +2,28 @@ import { ServerResult } from '../types.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { randomBytes } from 'node:crypto';
 
-export interface ToolCallRecord {
+export interface ToolCallOutcome {
+  request_id: string;
+  attempt: 0 | 1;
+  outcome?: 'success' | 'error' | 'handler_exception';
+  argument_bytes?: number;
+  started_at?: string;
+  exit_code?: number;
+}
+
+export function toolRequestCorrelation(metadata: unknown): ToolCallOutcome {
+  const meta = metadata && typeof metadata === 'object' ? metadata as Record<string, unknown> : {};
+  const validId = typeof meta.sanitycloud_request_id === 'string'
+    && /^[a-f0-9]{32}$/.test(meta.sanitycloud_request_id);
+  return {
+    request_id: validId ? meta.sanitycloud_request_id as string : randomBytes(16).toString('hex'),
+    attempt: validId && meta.sanitycloud_attempt === 1 ? 1 : 0,
+  };
+}
+
+export interface ToolCallRecord extends Partial<ToolCallOutcome> {
   timestamp: string;
   toolName: string;
   arguments: any;
@@ -270,14 +290,16 @@ class ToolHistory {
     toolName: string,
     args: any,
     output: ServerResult,
-    duration?: number
+    duration?: number,
+    outcome?: ToolCallOutcome,
   ): void {
     const record: ToolCallRecord = {
       timestamp: new Date().toISOString(),
       toolName,
       arguments: args,
       output: this.capOutput(output),
-      duration
+      duration,
+      ...outcome,
     };
 
     this.history.push(record);

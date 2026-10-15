@@ -71,7 +71,7 @@ import { usageTracker } from './utils/usageTracker.js';
 import { processDockerPrompt } from './utils/dockerPrompt.js';
 import { dedupRequest } from './utils/request-dedup.js';
 import { isUiPreviewReadCall, UiPreviewReadCircuitBreaker } from './utils/ui-preview-read-guard.js';
-import { toolHistory } from './utils/toolHistory.js';
+import { toolHistory, toolRequestCorrelation, type ToolCallOutcome } from './utils/toolHistory.js';
 import { handleWelcomePageOnboarding, skipWelcomePageOnboarding } from './utils/welcome-onboarding.js';
 
 import { VERSION } from './version.js';
@@ -1399,18 +1399,36 @@ server.setRequestHandler(SetLevelRequestSchema, async (request) => {
     return {};
 });
 
+const toolRequestOutcomes = new WeakMap<CallToolRequest, ToolCallOutcome & { execution_deduplicated: boolean }>();
+
 server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest): Promise<ServerResult> => {
     const started = performance.now();
-    const result = await executeCallToolRequest(request);
-    const bounded = budgetToolResponse(result);
-    // Bypass redirected console methods: diagnostics must never become MCP notifications.
-    process.stderr.write(JSON.stringify({ event: 'tool_response_size', tool: request.params.name.slice(0, 80),
-        response_bytes: serializedBytes(bounded), response_limited: bounded !== result,
-        duration_ms: Math.round(performance.now() - started),
-        is_error: bounded.isError === true,
-        process_page_limited: (bounded.structuredContent as Record<string, unknown> | undefined)?.sizeLimited === true,
-        ...(bounded !== result ? { original_response_bytes: serializedBytes(result) } : {}) }) + '\n');
-    return bounded;
+    const receivedAt = new Date().toISOString();
+    const correlation = { ...toolRequestCorrelation(request.params._meta), execution_deduplicated: false };
+    toolRequestOutcomes.set(request, correlation);
+    let result: ServerResult | undefined;
+    let bounded: ServerResult | undefined;
+    try {
+        result = await executeCallToolRequest(request);
+        bounded = budgetToolResponse(result);
+        return bounded;
+    } finally {
+        // One receipt per received request; execution history stays inside single-flight.
+        const exitCode = (bounded?.structuredContent as Record<string, unknown> | undefined)?.exitCode;
+        const execution = toolRequestOutcomes.get(request)!;
+        process.stderr.write(JSON.stringify({ event: 'tool_response_size', record_type: 'request_completion',
+            timestamp: new Date().toISOString(), received_at: receivedAt, ...execution,
+            outcome: bounded ? execution.outcome ?? (bounded.isError ? 'error' : 'success') : 'request_exception',
+            tool: request.params.name.slice(0, 80), argument_bytes: serializedBytes(request.params.arguments ?? {}),
+            response_bytes: bounded ? serializedBytes(bounded) : null,
+            response_limited: bounded !== undefined && bounded !== result,
+            duration_ms: Math.round(performance.now() - started),
+            is_error: bounded ? bounded.isError === true : true,
+            ...(typeof exitCode === 'number' && Number.isFinite(exitCode) ? { exit_code: exitCode } : {}),
+            process_page_limited: (bounded?.structuredContent as Record<string, unknown> | undefined)?.sizeLimited === true,
+            ...(bounded && result && bounded !== result ? { original_response_bytes: serializedBytes(result) } : {}) }) + '\n');
+        toolRequestOutcomes.delete(request);
+    }
 });
 
 async function executeCallToolRequest(request: CallToolRequest): Promise<ServerResult> {
@@ -1471,12 +1489,16 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
         'get_file_info',
     ]);
     if (DEDUP_TOOLS.has(name)) {
-        const { result } = await dedupRequest(name, args, () =>
-            handleCallToolRequestCore(request),
-        );
-        return result!;
-        // Stale duplicate (winner already settled) — return an empty placeholder.
-
+        let executed = false;
+        try {
+            const { result } = await dedupRequest(name, args, () => {
+                executed = true;
+                return handleCallToolRequestCore(request);
+            });
+            return result!;
+        } finally {
+            toolRequestOutcomes.get(request)!.execution_deduplicated = !executed;
+        }
     }
 
     return handleCallToolRequestCore(request);
@@ -1488,7 +1510,7 @@ async function handleCallToolRequestCore(request: CallToolRequest): Promise<Serv
     // Hoisted above the try so the finally block can read them when emitting the
     // server_call_tool completion event (duration + status), even on the crash path.
     let telemetryData: any = { tool_name: name };
-    let result: ServerResult;
+    let result: ServerResult = { content: [{ type: 'text', text: 'Tool execution failed' }], isError: true };
     let isError = false;
 
     try {
@@ -1763,17 +1785,7 @@ async function handleCallToolRequestCore(request: CallToolRequest): Promise<Serv
                 };
         }
 
-        // Add tool call to history (exclude only get_recent_tool_calls to prevent recursion)
-        const duration = Date.now() - startTime;
         isError = !!result.isError;
-        const EXCLUDED_TOOLS = [
-            'get_recent_tool_calls',
-            'track_ui_event'
-        ];
-
-        if (!EXCLUDED_TOOLS.includes(name)) {
-            toolHistory.addCall(name, args, result, duration);
-        }
 
         // Track success or failure based on result
         if (name === 'track_ui_event') {
@@ -1905,10 +1917,16 @@ async function handleCallToolRequestCore(request: CallToolRequest): Promise<Serv
             // Never let the advisory warning break an otherwise-successful call.
         }
 
-        return enrichStructuredContent(name, result);
+        result = enrichStructuredContent(name, result);
+        return result;
     } catch (error) {
         isError = true;
         const errorMessage = error instanceof Error ? error.message : String(error);
+        toolRequestOutcomes.get(request)!.outcome = 'handler_exception';
+        result = enrichStructuredContent(name, {
+            content: [{ type: "text", text: `Error: ${errorMessage}` }],
+            isError: true,
+        });
 
         // Track the failure
         await usageTracker.trackFailure(name);
@@ -1916,11 +1934,19 @@ async function handleCallToolRequestCore(request: CallToolRequest): Promise<Serv
         capture('server_request_error', {
             error: errorMessage
         });
-        return enrichStructuredContent(name, {
-            content: [{ type: "text", text: `Error: ${errorMessage}` }],
-            isError: true,
-        });
+        return result;
     } finally {
+        if (name !== 'get_recent_tool_calls' && name !== 'track_ui_event') {
+            const output = result ?? { content: [{ type: 'text' as const, text: 'Tool execution failed' }], isError: true };
+            const correlation = toolRequestOutcomes.get(request)!;
+            const exitCode = (output.structuredContent as Record<string, unknown> | undefined)?.exitCode;
+            toolHistory.addCall(name, args, budgetToolResponse(output), Date.now() - startTime, {
+                request_id: correlation.request_id, attempt: correlation.attempt,
+                outcome: correlation.outcome ?? (output.isError ? 'error' : 'success'),
+                argument_bytes: serializedBytes(args ?? {}), started_at: new Date(startTime).toISOString(),
+                ...(typeof exitCode === 'number' && Number.isFinite(exitCode) ? { exit_code: exitCode } : {}),
+            });
+        }
         // Single tool-call telemetry event, fired AFTER execution so it can carry
         // timing. In a finally so it still fires on the hard-crash path (the catch
         // above). Only missed if a tool never returns or throws (a true hang).
