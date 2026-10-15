@@ -6,6 +6,7 @@ import {
     listDirectory,
     moveFile,
     getFileInfo,
+    validatePath,
     writePdf,
     getDefaultEditorMetadata,
     type FileResult,
@@ -38,6 +39,7 @@ import {
 import path from 'path';
 import os from 'os';
 import { createHash } from 'crypto';
+import { writeFile as writeBinaryFile } from 'node:fs/promises';
 import { resolvePreviewFileType } from '../ui/file-preview/shared/preview-file-types.js';
 
 /**
@@ -61,21 +63,24 @@ export function resolveAbsolutePath(filePath: string): string {
         : path.resolve(process.cwd(), expanded);
 }
 
-function decodeReceivedContent(content: string, encoding: 'utf8' | 'base64'): string {
+export function decodeReceivedContent(content: string, encoding: 'utf8' | 'base64'): Buffer {
     if (encoding === 'utf8') {
-        return content;
+        return Buffer.from(content, 'utf8');
     }
-
-    try {
-        return Buffer.from(content, 'base64').toString('utf8');
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`Invalid base64 file content: ${message}`);
+    // Node's base64 decoder silently tolerates malformed input. Reject it
+    // before writing so an apparent successful transfer never alters bytes.
+    if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(content)) {
+        throw new Error('Invalid base64 file content');
     }
+    const bytes = Buffer.from(content, 'base64');
+    if (bytes.toString('base64') !== content) {
+        throw new Error('Invalid base64 file content');
+    }
+    return bytes;
 }
 
-function sha256Hex(content: string): string {
-    return createHash('sha256').update(content, 'utf8').digest('hex');
+function sha256Hex(content: Buffer): string {
+    return createHash('sha256').update(content).digest('hex');
 }
 
 /**
@@ -422,11 +427,21 @@ export async function handleReceiveFile(args: unknown): Promise<ServerResult> {
             await createDirectory(path.dirname(resolveAbsolutePath(parsed.path)));
         }
 
-        await writeFile(parsed.path, decodedContent, parsed.mode);
+        if (parsed.encoding === 'base64') {
+            // TextFileHandler corrupts arbitrary binary payloads by decoding UTF-8.
+            // Preserve the exact decoded bytes while retaining path boundary checks.
+            const destination = await validatePath(parsed.path);
+            await writeBinaryFile(destination, decodedContent, {
+                flag: parsed.mode === 'append' ? 'a' : 'w',
+            });
+        } else {
+            await writeFile(parsed.path, decodedContent.toString('utf8'), parsed.mode);
+        }
 
         const resolvedWritePath = resolveAbsolutePath(parsed.path);
-        const byteCount = Buffer.byteLength(decodedContent, 'utf8');
-        const lineCount = decodedContent.split('\n').length;
+        const byteCount = decodedContent.length;
+        const lineCount = parsed.encoding === 'utf8'
+            ? decodedContent.toString('utf8').split('\n').length : 0;
         const modeMessage = parsed.mode === 'append' ? 'appended received file to' : 'received file and wrote to';
 
         return {
