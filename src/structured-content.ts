@@ -139,6 +139,12 @@ function normalizeFilePreview(structured: Record<string, unknown>): Record<strin
 }
 
 export function enrichStructuredContent(toolName: string, result: ServerResult): ServerResult {
+  if (['read_file', 'write_file', 'edit_block', 'list_directory'].includes(toolName)) {
+    const existing = result.structuredContent && typeof result.structuredContent === 'object'
+      ? normalizeFilePreview(result.structuredContent as Record<string, unknown>) : {};
+    // Keep file/image bodies in content[] once, with metadata-only structured output.
+    return { ...result, structuredContent: { ...existing, success: !Boolean(result.isError) } };
+  }
   if (result.structuredContent && typeof result.structuredContent === 'object') {
     const previewTools = new Set(['read_file', 'write_file', 'edit_block', 'list_directory', 'get_config']);
     if (previewTools.has(toolName)) {

@@ -15,7 +15,8 @@ const FILE_PREVIEW_PROPERTIES: JsonSchema = {
 
 export const FILE_PREVIEW_OUTPUT_SCHEMA: JsonSchema = {
   type: 'object',
-  properties: FILE_PREVIEW_PROPERTIES,
+  required: ['success'],
+  properties: { ...FILE_PREVIEW_PROPERTIES, success: { type: 'boolean' } },
   additionalProperties: true,
 };
 
@@ -51,18 +52,6 @@ const GET_CONFIG_OUTPUT_SCHEMA: JsonSchema = {
     config: { type: 'object', additionalProperties: true },
     entries: { type: 'array', items: CONFIG_ENTRY_SCHEMA },
     uiHints: { type: ['object', 'null'], additionalProperties: true },
-  },
-  additionalProperties: true,
-};
-
-const READ_FILE_OUTPUT_SCHEMA: JsonSchema = {
-  type: 'object',
-  required: ['filePath', 'fileType'],
-  properties: {
-    ...FILE_PREVIEW_PROPERTIES,
-    totalLines: { type: ['integer', 'number', 'null'] },
-    offset: { type: ['integer', 'number', 'null'] },
-    length: { type: ['integer', 'number', 'null'] },
   },
   additionalProperties: true,
 };
@@ -157,10 +146,10 @@ const SEARCH_LIST_OUTPUT_SCHEMA: JsonSchema = {
 export const OUTPUT_SCHEMAS: Record<string, JsonSchema> = {
   get_config: GET_CONFIG_OUTPUT_SCHEMA,
   set_config_value: ACTION_RESULT_SCHEMA,
-  // File-preview handlers emit structuredContent only for origin:'ui' calls.
-  // Advertising an outputSchema for ordinary model-facing calls makes MCP
-  // hosts reject their valid text-only results before the model can consume
-  // them. Widget-originated calls still carry their rich preview metadata.
+  read_file: FILE_PREVIEW_OUTPUT_SCHEMA,
+  write_file: FILE_PREVIEW_OUTPUT_SCHEMA,
+  edit_block: FILE_PREVIEW_OUTPUT_SCHEMA,
+  list_directory: FILE_PREVIEW_OUTPUT_SCHEMA,
   read_multiple_files: {
     type: 'object',
     required: ['summary', 'success'],
