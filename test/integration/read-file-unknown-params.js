@@ -20,6 +20,8 @@ import assert from 'assert';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { spawnSync } from 'node:child_process';
+import { createTestEnv, isTestHome } from '../helpers/test-env.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -65,6 +67,8 @@ async function setup(client) {
   const originalConfig = Object.fromEntries(
     entries.filter((e) => e && e.editable === true).map((e) => [e.key, e.value])
   );
+  // Do not depend on the UI editability flag to restore this security boundary.
+  originalConfig.allowedDirectories = original.structuredContent?.config?.allowedDirectories ?? [];
 
   const set = await callTool(client, 'set_config_value', {
     key: 'allowedDirectories', value: [TEST_DIR], origin: 'llm',
@@ -141,7 +145,21 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error('\nTEST FAILED:', err && err.message ? err.message : err);
-  process.exit(1);
-});
+// Direct invocation must be isolated, not only the aggregate test runner.
+// Otherwise set_config_value can persist a temporary path to the user's real config.
+if (!isTestHome()) {
+  const isolated = createTestEnv();
+  try {
+    const child = spawnSync(process.execPath, [__filename], {
+      env: isolated.env, stdio: 'inherit', timeout: 90_000,
+    });
+    assert.equal(child.status, 0, child.error?.message || 'isolated integration test failed');
+  } finally {
+    isolated.cleanup();
+  }
+} else {
+  main().catch((err) => {
+    console.error('\nTEST FAILED:', err && err.message ? err.message : err);
+    process.exit(1);
+  });
+}

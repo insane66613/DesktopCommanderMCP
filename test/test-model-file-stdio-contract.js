@@ -2,9 +2,12 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
+import { createTestEnv, isTestHome } from './helpers/test-env.js';
 import { connectToServer, closeClient } from './helpers/mcp-client.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+async function run() {
 const client = await connectToServer('file-content-stdio-contract');
 try {
   const { tools } = await client.listTools();
@@ -26,6 +29,14 @@ try {
   assert(!directory.structuredContent, 'directory contents must not be suppressed');
   assert.match(JSON.stringify(directory.content), /package\.json/);
 
+  // A UI-origin preview keeps its structured metadata without an outputSchema.
+  const preview = await client.callTool({ name: 'read_file', arguments: {
+    path: path.join(root, 'package.json'), origin: 'ui', offset: 0, length: 3,
+  } });
+  assert(!preview.isError, 'UI-origin preview should succeed');
+  assert.equal(preview.structuredContent?.fileName, 'package.json');
+  assert.equal(preview.structuredContent?.success, true);
+
   const missing = await client.callTool({ name: 'read_file', arguments: {
     path: path.join(root, 'missing-model-contract-test.txt'),
   } });
@@ -35,4 +46,20 @@ try {
   console.log('PASS: real stdio MCP tool discovery and file content/error delivery');
 } finally {
   await closeClient(client);
+}
+}
+
+// Prevent direct test invocation from reading or modifying the user's MCP config.
+if (!isTestHome()) {
+  const isolated = createTestEnv();
+  try {
+    const child = spawnSync(process.execPath, [fileURLToPath(import.meta.url)], {
+      env: isolated.env, stdio: 'inherit', timeout: 90_000,
+    });
+    assert.equal(child.status, 0, child.error?.message || 'isolated stdio test failed');
+  } finally {
+    isolated.cleanup();
+  }
+} else {
+  await run();
 }
