@@ -140,9 +140,11 @@ function normalizeFilePreview(structured: Record<string, unknown>): Record<strin
 
 export function enrichStructuredContent(toolName: string, result: ServerResult): ServerResult {
   if (['read_file', 'write_file', 'edit_block', 'list_directory'].includes(toolName)) {
-    const existing = result.structuredContent && typeof result.structuredContent === 'object'
-      ? normalizeFilePreview(result.structuredContent as Record<string, unknown>) : {};
-    // Keep file/image bodies in content[] once, with metadata-only structured output.
+    // Ordinary calls must keep content[] as their sole result body. Returning
+    // {success:true} as structuredContent can suppress that body in MCP hosts.
+    // UI-origin handlers supply their own preview metadata when needed.
+    if (!result.structuredContent || typeof result.structuredContent !== 'object') return result;
+    const existing = normalizeFilePreview(result.structuredContent as Record<string, unknown>);
     return { ...result, structuredContent: { ...existing, success: !Boolean(result.isError) } };
   }
   if (result.structuredContent && typeof result.structuredContent === 'object') {

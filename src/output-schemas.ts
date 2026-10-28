@@ -146,10 +146,10 @@ const SEARCH_LIST_OUTPUT_SCHEMA: JsonSchema = {
 export const OUTPUT_SCHEMAS: Record<string, JsonSchema> = {
   get_config: GET_CONFIG_OUTPUT_SCHEMA,
   set_config_value: ACTION_RESULT_SCHEMA,
-  read_file: FILE_PREVIEW_OUTPUT_SCHEMA,
-  write_file: FILE_PREVIEW_OUTPUT_SCHEMA,
-  edit_block: FILE_PREVIEW_OUTPUT_SCHEMA,
-  list_directory: FILE_PREVIEW_OUTPUT_SCHEMA,
+  // Content-bearing file tools intentionally omit outputSchema. Some MCP hosts
+  // surface structuredContent *instead of* content[] when a schema is advertised,
+  // which hides model-facing file bytes/text behind metadata-only success results.
+  // UI-origin calls retain optional structuredContent independently of tools/list.
   read_multiple_files: {
     type: 'object',
     required: ['summary', 'success'],
