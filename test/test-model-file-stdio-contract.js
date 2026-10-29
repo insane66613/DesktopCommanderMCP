@@ -14,19 +14,19 @@ try {
   for (const name of ['read_file', 'list_directory', 'write_file', 'edit_block']) {
     const tool = tools.find((candidate) => candidate.name === name);
     assert(tool, `missing MCP descriptor for ${name}`);
-    assert.equal(tool.outputSchema, undefined, `${name} must not mask content[]`);
+    assert(tool.outputSchema?.properties?.text, `${name} must advertise structured text`);
   }
 
   const read = await client.callTool({ name: 'read_file', arguments: {
     path: path.join(root, 'package.json'), offset: 0, length: 5,
   } });
   assert(!read.isError, 'model-facing read_file should succeed');
-  assert(!read.structuredContent, 'model-facing file content cannot be metadata-only');
+  assert.match(read.structuredContent?.text ?? '', /wonderwhy-er\/desktop-commander/, 'structured-only adapters must receive text');
   assert.match(JSON.stringify(read.content), /wonderwhy-er\/desktop-commander/);
 
   const directory = await client.callTool({ name: 'list_directory', arguments: { path: root, depth: 1 } });
   assert(!directory.isError, 'model-facing list_directory should succeed');
-  assert(!directory.structuredContent, 'directory contents must not be suppressed');
+  assert.match(directory.structuredContent?.text ?? '', /package\.json/, 'structured-only adapters must receive listing');
   assert.match(JSON.stringify(directory.content), /package\.json/);
 
   // A UI-origin preview keeps its structured metadata without an outputSchema.

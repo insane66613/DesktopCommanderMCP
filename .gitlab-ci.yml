@@ -15,7 +15,7 @@ variables:
   NPM_CONFIG_FUND: "false"
 
 default:
-  image: node:20-bookworm
+  image: node:24-bookworm
   interruptible: true
   cache:
     key:
