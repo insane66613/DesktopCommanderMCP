@@ -15,7 +15,7 @@ variables:
   NPM_CONFIG_FUND: "false"
 
 default:
-  image: node:20-bookworm
+  image: node:24-bookworm
   interruptible: true
   cache:
     key:
@@ -47,12 +47,15 @@ unit_tests:
     - !reference [default, before_script]
     - apt-get update
     - apt-get install -y --no-install-recommends chromium chromium-sandbox fonts-liberation
-    - chown -R node:node "$CI_PROJECT_DIR"
+    # Avoid the image's "node" account: log-redaction tests deliberately mask
+    # the current username, which would otherwise mask the Node executable name.
+    - useradd --create-home --shell /bin/sh dc-ci
+    - chown -R dc-ci:dc-ci "$CI_PROJECT_DIR"
   script:
     - mkdir -p ci-logs
     - |
       test_status=0
-      runuser -u node -- npm test > ci-logs/unit-tests.log 2>&1 || test_status=$?
+      runuser -u dc-ci -- npm test > ci-logs/unit-tests.log 2>&1 || test_status=$?
       tail -n 80 ci-logs/unit-tests.log
       exit "$test_status"
   artifacts:
