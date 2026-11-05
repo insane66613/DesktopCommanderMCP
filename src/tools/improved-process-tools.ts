@@ -445,7 +445,7 @@ async function executeReadProcessOutputCore(
     pid, 
     timeout_ms = 5000, 
     offset = 0,
-    length = defaultLength,
+    length: requestedLength = defaultLength,
     character_offset,
     maxBytes,
     pageSize,
@@ -454,6 +454,7 @@ async function executeReadProcessOutputCore(
 
   // Timing telemetry
   const startTime = Date.now();
+  const length = Math.min(10_000, Math.max(1, Math.trunc(requestedLength)));
   const initialVersion = terminalManager.getSessionStateVersion(pid);
 
   // For active sessions with no new output yet, optionally wait for output
@@ -489,13 +490,13 @@ async function executeReadProcessOutputCore(
         const poll = () => {
           if (resolved) return;
           const currentVersion = terminalManager.getSessionStateVersion(pid);
+          const currentStatus = terminalManager.getProcessStatus(pid);
           if (
-            !terminalManager.getSession(pid) ||
+            !currentStatus ||
             terminalManager.hasUnreadOutput(pid) ||
-            (initialVersion && currentVersion && (
-              currentVersion.outputVersion !== initialVersion.outputVersion ||
-              currentVersion.lifecycleVersion !== initialVersion.lifecycleVersion
-            ))
+            (currentStatus.isComplete && currentStatus.outputClosed) ||
+            (initialVersion && currentVersion &&
+              currentVersion.outputVersion !== initialVersion.outputVersion)
           ) {
             resolveOnce();
             return;
@@ -508,6 +509,7 @@ async function executeReadProcessOutputCore(
           const jitter = delay * 0.25 * (Math.random() - 0.5);
           const nextDelay = Math.min(delay + jitter, maxDelay, Math.max(0, deadline - Date.now()));
           timer = setTimeout(poll, nextDelay);
+          timer.unref?.();
           delay = Math.min(delay * 1.5, maxDelay);
         };
 
@@ -726,7 +728,7 @@ export async function interactWithProcess(args: unknown): Promise<ServerResult> 
     // This handles REPLs where output is appended to the prompt line
     const outputSnapshot = terminalManager.captureOutputSnapshot(pid);
 
-    const success = terminalManager.sendInputToProcess(pid, input);
+    const success = await terminalManager.sendInputToProcess(pid, input);
 
     if (!success) {
       return {
@@ -851,6 +853,7 @@ export async function interactWithProcess(args: unknown): Promise<ServerResult> 
           const jitter = delay * 0.25 * (Math.random() - 0.5);
           const nextDelay = Math.min(delay + jitter, maxDelay);
           timer = setTimeout(poll, nextDelay);
+          timer.unref?.();
           delay = Math.min(delay * 1.5, maxDelay);
         };
 

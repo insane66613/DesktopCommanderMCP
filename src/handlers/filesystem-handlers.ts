@@ -17,6 +17,7 @@ import type { ReadOptions } from '../utils/files/base.js';
 import { ServerResult } from '../types.js';
 import { withTimeout } from '../utils/withTimeout.js';
 import { createErrorResponse } from '../error-handlers.js';
+import { MAX_TOOL_RESPONSE_BYTES, serializedBytes } from '../utils/response-budget.js';
 import { configManager } from '../config-manager.js';
 import {
     DEFAULT_SENSITIVE_PROJECT_FILE_ALLOWED_PATTERNS,
@@ -588,7 +589,7 @@ export async function handleExportProjectFile(args: unknown): Promise<ServerResu
             textContent = `${metadataSummary}\n\n${content}`;
         }
 
-        return {
+        const fullResponse: ServerResult = {
             content: [{ type: "text", text: textContent }],
             structuredContent: {
                 fileName,
@@ -606,6 +607,58 @@ export async function handleExportProjectFile(args: unknown): Promise<ServerResu
                 message: metadataSummary,
             },
         };
+        // Model clients may require both native content and structuredContent.
+        // Bound the actual serialized envelope so a successful export never loses
+        // its entire payload to the final 32 KiB safety budget.
+        if (!parsed.includeContent || serializedBytes(fullResponse) <= MAX_TOOL_RESPONSE_BYTES - 512) {
+            return fullResponse;
+        }
+
+        const makePage = (candidateEnd: number): ServerResult => {
+            const pageSlice = fileBuffer.subarray(offset, candidateEnd);
+            const pageBytes = pageSlice.length;
+            const pageTruncated = candidateEnd < byteCount;
+            const pageContent = parsed.encoding === 'base64'
+                ? pageSlice.toString('base64') : pageSlice.toString('utf8');
+            const pageSummary = 'Exported ' + filePath + ' (' + byteCount + ' bytes, '
+                + pageBytes + ' bytes returned, encoding=' + parsed.encoding
+                + ', sha256=' + actualSha256 + (pageTruncated ? ', truncated' : '') + ')';
+            return {
+                content: [{ type: 'text', text: pageSummary + '\n\n' + pageContent }],
+                structuredContent: {
+                    ...fullResponse.structuredContent,
+                    content: pageContent,
+                    returnedBytes: pageBytes,
+                    truncated: pageTruncated,
+                    text: pageSummary,
+                    message: pageSummary,
+                },
+            };
+        };
+
+        let low = offset;
+        let high = end;
+        let best: ServerResult | undefined;
+        while (low <= high) {
+            const mid = low + Math.floor((high - low) / 2);
+            let safeEnd = mid;
+            // Do not split a UTF-8 code point between consecutive pages.
+            if (parsed.encoding === 'utf8' && safeEnd < byteCount) {
+                while (safeEnd > offset && (fileBuffer[safeEnd] & 0xc0) === 0x80) safeEnd--;
+            }
+            const candidate = makePage(safeEnd);
+            if (serializedBytes(candidate) <= MAX_TOOL_RESPONSE_BYTES - 512) {
+                best = candidate;
+                low = mid + 1;
+            } else {
+                high = mid - 1;
+            }
+        }
+        const deliveredBytes = (best?.structuredContent as Record<string, unknown> | undefined)?.returnedBytes;
+        if (typeof deliveredBytes !== 'number' || (deliveredBytes === 0 && end > offset)) {
+            return createErrorResponse('Unable to fit export content in the MCP response budget; use base64 or a larger maxBytes at a UTF-8 boundary.');
+        }
+        return best!;
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         return createErrorResponse(errorMessage);

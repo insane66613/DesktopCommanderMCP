@@ -140,12 +140,17 @@ function normalizeFilePreview(structured: Record<string, unknown>): Record<strin
 
 export function enrichStructuredContent(toolName: string, result: ServerResult): ServerResult {
   if (['read_file', 'write_file', 'edit_block', 'list_directory'].includes(toolName)) {
-    // Ordinary calls must keep content[] as their sole result body. Returning
-    // {success:true} as structuredContent can suppress that body in MCP hosts.
-    // UI-origin handlers supply their own preview metadata when needed.
-    if (!result.structuredContent || typeof result.structuredContent !== 'object') return result;
-    const existing = normalizeFilePreview(result.structuredContent as Record<string, unknown>);
-    return { ...result, structuredContent: { ...existing, success: !Boolean(result.isError) } };
+    // Preserve native MCP content[] and provide model-visible text for adapters
+    // that choose structuredContent over content[]. Never emit success-only
+    // structured data for a response with a textual body or error.
+    const existing = result.structuredContent && typeof result.structuredContent === 'object'
+      ? normalizeFilePreview(result.structuredContent as Record<string, unknown>) : {};
+    const text = textFromContent(result.content);
+    return { ...result, structuredContent: {
+      ...existing,
+      ...(text ? { text } : {}),
+      success: !Boolean(result.isError),
+    } };
   }
   if (result.structuredContent && typeof result.structuredContent === 'object') {
     const previewTools = new Set(['read_file', 'write_file', 'edit_block', 'list_directory', 'get_config']);

@@ -80,7 +80,7 @@ interface CompletedSession {
   outputVersion: number;
   lifecycleVersion: number;
   bufferedChars: number;
-  outputClosed?: boolean;
+  outputClosed: boolean;
 }
 
 /**
@@ -197,24 +197,29 @@ export class TerminalManager {
    * @param input Text to send to the process
    * @returns Whether input was successfully sent
    */
-  sendInputToProcess(pid: number, input: string): boolean {
+  async sendInputToProcess(pid: number, input: string): Promise<boolean> {
     const session = this.sessions.get(pid);
-    if (!session) {
+    const stdin = session?.process.stdin;
+    if (!stdin || stdin.destroyed || stdin.writableEnded || !stdin.writable) {
       return false;
     }
-    
-    try {
-      if (session.process.stdin && !session.process.stdin.destroyed) {
-        // Ensure input ends with a newline for most REPLs
-        const inputWithNewline = input.endsWith('\n') ? input : input + '\n';
-        session.process.stdin.write(inputWithNewline);
-        return true;
+    const inputWithNewline = input.endsWith('\n') ? input : input + '\n';
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finish = (success: boolean) => {
+        if (settled) return;
+        settled = true;
+        stdin.off('error', onError);
+        resolve(success);
+      };
+      const onError = (_error: Error) => finish(false);
+      stdin.once('error', onError);
+      try {
+        stdin.write(inputWithNewline, (error?: Error | null) => finish(!error));
+      } catch {
+        finish(false);
       }
-      return false;
-    } catch (error) {
-      console.error(`Error sending input to process ${pid}:`, error);
-      return false;
-    }
+    });
   }
   
   async executeCommand(
@@ -383,6 +388,17 @@ export class TerminalManager {
         console.error(`Process error for "${command}": ${err.message}`);
       }
     });
+    // Child stream errors are separate from ChildProcess 'error'. A benign
+    // EPIPE/ERR_STREAM_DESTROYED after exit must not crash the MCP host.
+    for (const [name, stream] of [
+      ['stdout', childProcess.stdout],
+      ['stderr', childProcess.stderr],
+      ['stdin', childProcess.stdin],
+    ] as const) {
+      stream?.on('error', (err: Error) => {
+        console.error(`Child ${name} stream error for PID ${childProcess.pid ?? 'unknown'}: ${err.message}`);
+      });
+    }
 
     // Ensure childProcess.pid is defined before proceeding
     if (!childProcess.pid) {
@@ -598,10 +614,12 @@ export class TerminalManager {
           };
           this.completedSessions.set(session.pid, completedSession);
 
-          // Keep only last 100 completed sessions
-          if (this.completedSessions.size > 100) {
-            const oldestKey = Array.from(this.completedSessions.keys())[0];
-            this.completedSessions.delete(oldestKey);
+          // Never evict a session whose inherited pipes can still deliver output.
+          // Clean up drained sessions first; pending sessions survive until close.
+          while (this.completedSessions.size > 100) {
+            const oldestClosed = [...this.completedSessions].find(([, entry]) => entry.outputClosed)?.[0];
+            if (oldestClosed === undefined) break;
+            this.completedSessions.delete(oldestClosed);
           }
 
           this.sessions.delete(session.pid);
@@ -628,6 +646,11 @@ export class TerminalManager {
         if (completedSession && !completedSession.outputClosed) {
           completedSession.outputClosed = true;
           completedSession.lifecycleVersion++;
+          while (this.completedSessions.size > 100) {
+            const oldestClosed = [...this.completedSessions].find(([, entry]) => entry.outputClosed)?.[0];
+            if (oldestClosed === undefined) break;
+            this.completedSessions.delete(oldestClosed);
+          }
         }
         resolveExit();
       });
@@ -698,10 +721,10 @@ export class TerminalManager {
     }
   }
 
-  getProcessStatus(pid: number): { isComplete: boolean; exitCode: number | null } | null {
-    if (this.sessions.has(pid)) return { isComplete: false, exitCode: null };
+  getProcessStatus(pid: number): { isComplete: boolean; exitCode: number | null; outputClosed: boolean } | null {
+    if (this.sessions.has(pid)) return { isComplete: false, exitCode: null, outputClosed: false };
     const completed = this.completedSessions.get(pid);
-    return completed ? { isComplete: true, exitCode: completed.exitCode } : null;
+    return completed ? { isComplete: true, exitCode: completed.exitCode, outputClosed: completed.outputClosed } : null;
   }
 
   /**

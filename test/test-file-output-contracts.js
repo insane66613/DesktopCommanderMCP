@@ -23,19 +23,20 @@ if (!isTestHome()) {
   usageTracker.shouldPromptForFeedback = async () => false;
   const listed = await server._requestHandlers.get('tools/list')({ method: 'tools/list' }, {});
   const tools = ['read_file', 'write_file', 'edit_block', 'list_directory'];
-  // Model-facing content-bearing tools cannot advertise metadata-only schemas:
-  // structured-only MCP hosts would otherwise hide their text and image bodies.
+  // Model-facing tools provide both native MCP bodies and an explicit
+  // text-bearing fallback for structured-only MCP adapters.
   for (const name of tools) {
     const descriptor = listed.tools.find(tool => tool.name === name);
     assert(descriptor, `${name} must be present in tools/list`);
-    assert.equal(descriptor.outputSchema, undefined, `${name} must deliver content[] to models`);
+    assert(descriptor.outputSchema?.properties?.text, `${name} must advertise structured text`);
   }
   for (const name of tools) {
     for (const content of [[], [{ type: 'text', text: 'original body' }], [{ type: 'image', data: 'AA==', mimeType: 'image/png' }]]) {
       for (const isError of [false, true]) {
         const result = enrichStructuredContent(name, { content, isError });
         assert.equal(result.content, content, 'original bodies stay intact');
-        assert.equal(result.structuredContent, undefined, 'model-facing bodies have no substitute structured result');
+        assert.equal(result.structuredContent?.success, !isError);
+        if (content[0]?.type === 'text') assert.equal(result.structuredContent?.text, content[0].text);
       }
     }
     const ui = enrichStructuredContent(name, { content: [], structuredContent: {
@@ -51,13 +52,16 @@ if (!isTestHome()) {
   const handler = server._requestHandlers.get('tools/call');
   const call = async (name, args) => {
     const result = await handler({ method: 'tools/call', params: { name, arguments: args } }, {});
-    assert.equal(result.structuredContent, undefined, `${name} model result must not mask content[]`);
+    assert.equal(result.structuredContent?.success, !Boolean(result.isError), `${name} must return success`);
+    if (result.content.some(item => item.type === 'text')) {
+      assert(result.structuredContent?.text, `${name} structured fallback must include body or error`);
+    }
     return result;
   };
   assert(!(await call('write_file', { path: target, content: 'before\n', mode: 'rewrite' })).isError);
   const read = await call('read_file', { path: target });
   assert(JSON.stringify(read.content).includes('before'));
-  assert.equal(read.structuredContent, undefined);
+  assert.match(read.structuredContent.text, /before/);
   const directory = await call('list_directory', { path: os.homedir() });
   assert(JSON.stringify(directory.content).includes('contract.txt'));
   assert(!(await call('edit_block', { file_path: target, old_string: 'before', new_string: 'after' })).isError);
