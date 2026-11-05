@@ -29,9 +29,9 @@ if (process.argv[2] === 'launcher') {
     try {
       assert.equal(closed, false, 'exited launcher must return before its descendant closes inherited stdio');
       assert.equal(result.isBlocked, false);
-      assert.deepEqual(manager.getProcessStatus(pid), { isComplete: true, exitCode: 0 });
+      assert.deepEqual(manager.getProcessStatus(pid), { isComplete: true, exitCode: 0, outputClosed: false });
       assert.deepEqual(manager.listActiveSessions(), []);
-      assert.equal(manager.sendInputToProcess(pid, 'input'), false);
+      assert.equal(await manager.sendInputToProcess(pid, 'input'), false);
       assert.equal(manager.forceTerminate(pid), false);
       assert.match(manager.readOutputPaginated(pid).lines.join('\n'), /launcher-output/);
     } finally { await close; }
@@ -77,7 +77,7 @@ if (process.argv[2] === 'launcher') {
       failed.emit('error', new Error('synthetic process failure'));
       assert.match((await failure).output, /synthetic process failure/);
       failed.emit('close', -1);
-      assert.deepEqual(manager.getProcessStatus(fakePid), { isComplete: true, exitCode: -1 });
+      assert.deepEqual(manager.getProcessStatus(fakePid), { isComplete: true, exitCode: -1, outputClosed: true });
       assert.match(manager.readOutputPaginated(fakePid).lines.join('\n'), /retained-error-output/);
     } finally {
       childProcess.spawn = originalSpawn;

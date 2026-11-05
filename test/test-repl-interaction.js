@@ -93,7 +93,7 @@ async function testPythonREPL() {
     console.log(`${colors.blue}Test value: ${testValue}${colors.reset}`);
     
     // Send two different commands to increase chances of seeing output
-    let success = terminalManager.sendInputToProcess(result.pid, `print("STARTING PYTHON TEST")\n`)
+    let success = await terminalManager.sendInputToProcess(result.pid, `print("STARTING PYTHON TEST")\n`)
     if (!success) {
       throw new Error('Failed to send initial input to Python REPL');
     }
@@ -102,7 +102,7 @@ async function testPythonREPL() {
     await sleep(1000);
     
     // Send the actual test command
-    success = terminalManager.sendInputToProcess(result.pid, `print(f"REPL_TEST_VALUE: {${testValue} * 2}")\n`)
+    success = await terminalManager.sendInputToProcess(result.pid, `print(f"REPL_TEST_VALUE: {${testValue} * 2}")\n`)
     if (!success) {
       throw new Error('Failed to send test input to Python REPL');
     }
@@ -165,7 +165,7 @@ async function testNodeREPL() {
     console.log(`${colors.blue}Test value: ${testValue}${colors.reset}`);
     
     // Send multiple commands to increase chances of seeing output
-    let success = terminalManager.sendInputToProcess(result.pid, `console.log("STARTING NODE TEST")\n`)
+    let success = await terminalManager.sendInputToProcess(result.pid, `console.log("STARTING NODE TEST")\n`)
     if (!success) {
       throw new Error('Failed to send initial input to Node.js REPL');
     }
@@ -174,7 +174,7 @@ async function testNodeREPL() {
     await sleep(1000);
     
     // Send the actual test command
-    success = terminalManager.sendInputToProcess(result.pid, `console.log("NODE_REPL_TEST_VALUE:", ${testValue} * 3)\n`)
+    success = await terminalManager.sendInputToProcess(result.pid, `console.log("NODE_REPL_TEST_VALUE:", ${testValue} * 3)\n`)
     if (!success) {
       throw new Error('Failed to send test input to Node.js REPL');
     }
