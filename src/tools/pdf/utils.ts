@@ -1,5 +1,25 @@
 
 /**
+ * A PDFDocumentProxy obtained from unpdf owns a loading task. Calling cleanup()
+ * releases page caches, but it does not terminate that task. In unpdf 1.8+
+ * there is no document.destroy() method, so close through loadingTask first.
+ * Older PDF implementations without a loading task can still use destroy().
+ * Cleanup errors must not hide the original PDF parsing/extraction error.
+ */
+export async function closePdfDocument(document: {
+    loadingTask?: { destroy?: () => Promise<void> };
+    destroy?: () => Promise<void>;
+}): Promise<void> {
+    try {
+        if (typeof document.loadingTask?.destroy === 'function') {
+            await document.loadingTask.destroy();
+        } else if (typeof document.destroy === 'function') {
+            await document.destroy();
+        }
+    } catch { /* A close failure must not mask the preceding read error. */ }
+}
+
+/**
  * Normalize page indexes, handling negative indices and removing duplicates
  */
 export const normalizePageIndexes = (pageIndexes: number[], pageCount: number): number[] => {

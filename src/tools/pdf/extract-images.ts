@@ -1,4 +1,6 @@
 
+import { closePdfDocument } from './utils.js';
+
 export interface ImageInfo {
     /** Object ID within PDF */
     objId: number;
@@ -129,7 +131,7 @@ export async function extractImagesFromPdf(
                 await pdfDocument.cleanup(false);
             }
         } catch (e) { /* Ignore cleanup errors */ }
-
+        await closePdfDocument(pdfDocument);
     }
 
     return pageResults;
