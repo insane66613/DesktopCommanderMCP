@@ -1,4 +1,4 @@
-import { terminalManager, MAX_BUFFERED_OUTPUT_CHARS } from '../terminal-manager.js';
+import { terminalManager, MAX_BUFFERED_OUTPUT_CHARS, validateWindowLaunchControls } from '../terminal-manager.js';
 import { DEFAULT_PROCESS_PAGE_BYTES, MAX_TOOL_RESPONSE_BYTES } from '../utils/response-budget.js';
 import { commandManager } from '../command-manager.js';
 import { StartProcessArgsSchema, ReadProcessOutputArgsSchema, InteractWithProcessArgsSchema, ForceTerminateArgsSchema, ListSessionsArgsSchema } from './schemas.js';
@@ -40,14 +40,18 @@ export function processLaunchAdmission(args: {
   origin?: string;
   visible?: boolean;
   exclude_self?: boolean;
+  keep_open?: boolean;
+  window_title?: string;
 }): { allowed: boolean; reason?: string; retryAfterMs?: number } {
   const now = Date.now();
-  // Include safety controls that are actually forwarded to the process launcher.
-  // keep_open and window_title are currently schema hints, not launcher inputs;
-  // including them here would allow duplicate executions for identical behavior.
+  // Include the controls that alter actual execution. Hidden window hints
+  // are invalid (rejected downstream), so do not let them evade deduplication.
+  const visible = args.visible ?? false;
   const key = JSON.stringify([
-    args.origin ?? 'llm', args.command, args.shell ?? '', args.visible ?? false,
+    args.origin ?? 'llm', args.command, args.shell ?? '', visible,
     args.exclude_self ?? false,
+    visible && (args.keep_open ?? false),
+    visible ? args.window_title ?? '' : '',
   ]);
   const previous = recentProcessLaunchKeys.get(key);
   if (previous !== undefined && now - previous < PROCESS_LAUNCH_DEDUP_MS) {
@@ -227,6 +231,17 @@ export async function startProcess(args: unknown): Promise<ServerResult> {
     };
   }
 
+  // Reject invalid window controls before consuming the global launch budget.
+  // The terminal manager additionally checks the resolved effective shell.
+  const windowError = validateWindowLaunchControls({
+    visible: parsed.data.visible,
+    keepOpen: parsed.data.keep_open,
+    windowTitle: parsed.data.window_title,
+  }, parsed.data.shell || 'pwsh.exe');
+  if (windowError) {
+    return { content: [{ type: 'text', text: `Error: ${windowError}` }], isError: true };
+  }
+
   const unsafeInlineReason = commandManager.getUnsafeInlineInterpreterReason(parsed.data.command, parsed.data.shell);
   if (unsafeInlineReason) {
     const text = `Error: Unsafe inline interpreter code blocked before shell launch (${unsafeInlineReason}). Use receive_file to write a standalone .py/.js script (Base64 preferred for shell-sensitive content), then call start_process with the script path. For small source edits, use edit_block.`;
@@ -330,6 +345,8 @@ export async function startProcess(args: unknown): Promise<ServerResult> {
     {
       visible: parsed.data.visible ?? false,
       excludeSelf: parsed.data.exclude_self ?? false,
+      keepOpen: parsed.data.keep_open ?? false,
+      windowTitle: parsed.data.window_title,
     }
   );
 
