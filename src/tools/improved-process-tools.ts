@@ -39,9 +39,16 @@ export function processLaunchAdmission(args: {
   shell?: string;
   origin?: string;
   visible?: boolean;
+  exclude_self?: boolean;
 }): { allowed: boolean; reason?: string; retryAfterMs?: number } {
   const now = Date.now();
-  const key = JSON.stringify([args.origin ?? 'llm', args.command, args.shell ?? '', args.visible ?? false]);
+  // Include safety controls that are actually forwarded to the process launcher.
+  // keep_open and window_title are currently schema hints, not launcher inputs;
+  // including them here would allow duplicate executions for identical behavior.
+  const key = JSON.stringify([
+    args.origin ?? 'llm', args.command, args.shell ?? '', args.visible ?? false,
+    args.exclude_self ?? false,
+  ]);
   const previous = recentProcessLaunchKeys.get(key);
   if (previous !== undefined && now - previous < PROCESS_LAUNCH_DEDUP_MS) {
     return {
