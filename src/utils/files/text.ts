@@ -35,6 +35,8 @@ const FILE_SIZE_LIMITS = {
 const READ_PERFORMANCE_THRESHOLDS = {
     SMALL_READ_THRESHOLD: 100,    // For very small reads
     CHUNK_SIZE: 8192,             // 8KB chunks for reverse reading
+    DEEP_OFFSET_THRESHOLD: 1000, // Switch to bounded native byte scanning
+    SCAN_CHUNK_SIZE: 64 * 1024,  // 64KB scan blocks; no retained content
 } as const;
 
 /**
@@ -265,14 +267,74 @@ export class TextFileHandler implements FileHandler {
                 return await this.readFromEndWithReadline(filePath, requestedLines, mimeType, includeStatusMessage, totalLines, signal);
             }
         }
-        // Exact line offsets require counting actual line boundaries. The old
-        // average-byte-size seek returned wrong lines when line lengths varied.
-        // A bounded streaming scan uses constant memory and closes its file
-        // descriptor before returning, even for multi-megabyte files.
-        return await this.readFromStartWithReadline(
+        // For large deep offsets, find the exact byte boundary with native
+        // chunk scanning rather than iterating thousands of readline strings.
+        // This uses bounded memory and preserves variable-length line accuracy.
+        if (fileSize > FILE_SIZE_LIMITS.LARGE_FILE_THRESHOLD &&
+            Number.isSafeInteger(offset) &&
+            offset >= READ_PERFORMANCE_THRESHOLDS.DEEP_OFFSET_THRESHOLD) {
+            const start = await this.findLineStartByte(filePath, offset, signal);
+            return this.readFromStartWithReadline(
+                filePath, 0, length, mimeType, includeStatusMessage,
+                totalLines, signal, undefined, start, offset
+            );
+        }
+        return this.readFromStartWithReadline(
             filePath, offset, length, mimeType, includeStatusMessage,
             totalLines, signal
         );
+    }
+
+    /**
+     * Find an exact UTF-8 line start without constructing JS strings for
+     * every preceding line. Both LF and CR/CRLF are delimiters, including
+     * CRLF split across read buffers. No approximated byte offsets or cache
+     * entries that could survive a file replacement.
+     */
+    private async findLineStartByte(
+        filePath: string,
+        targetLine: number,
+        signal?: AbortSignal
+    ): Promise<number> {
+        if (targetLine <= 0) return 0;
+        const fd = await fs.open(filePath, 'r');
+        const chunk = Buffer.allocUnsafe(READ_PERFORMANCE_THRESHOLDS.SCAN_CHUNK_SIZE);
+        let position = 0;
+        let lines = 0;
+        let skipLeadingLf = false;
+        try {
+            while (true) {
+                if (signal?.aborted) {
+                    const error = new Error('Read aborted');
+                    error.name = 'AbortError';
+                    throw error;
+                }
+                const { bytesRead } = await fd.read(chunk, 0, chunk.length, position);
+                if (bytesRead === 0) return position;
+                // Latin-1 preserves each original byte as one character;
+                // V8's native regexp engine finds delimiters without a slow
+                // JavaScript branch for every non-newline byte.
+                const scanText = chunk.toString('latin1', 0, bytesRead);
+                const lineBreak = /\r\n|\r|\n/g;
+                lineBreak.lastIndex = skipLeadingLf && scanText.charCodeAt(0) === 0x0a ? 1 : 0;
+                skipLeadingLf = false;
+                for (let match = lineBreak.exec(scanText); match; match = lineBreak.exec(scanText)) {
+                    let after = match.index + match[0].length;
+                    if (match[0] === '\r' && after === bytesRead) skipLeadingLf = true;
+                    if (++lines === targetLine) {
+                        if (skipLeadingLf) {
+                            const peek = Buffer.allocUnsafe(1);
+                            const seen = await fd.read(peek, 0, 1, position + bytesRead);
+                            if (seen.bytesRead === 1 && peek[0] === 0x0a) after++;
+                        }
+                        return position + after;
+                    }
+                }
+                position += bytesRead;
+            }
+        } finally {
+            await fd.close();
+        }
     }
 
     /**
@@ -417,7 +479,8 @@ export class TextFileHandler implements FileHandler {
         fileTotalLines?: number,
         signal?: AbortSignal,
         encoding?: BufferEncoding,
-        start?: number
+        start?: number,
+        statusOffset: number = offset
     ): Promise<FileResult> {
         const result: string[] = [];
         let lineNumber = 0;
@@ -433,7 +496,7 @@ export class TextFileHandler implements FileHandler {
         });
 
         if (includeStatusMessage) {
-            const statusMessage = this.generateEnhancedStatusMessage(result.length, offset, fileTotalLines, false);
+            const statusMessage = this.generateEnhancedStatusMessage(result.length, statusOffset, fileTotalLines, false);
             const content = `${statusMessage}\n\n${result.join('\n')}`;
             return { content, mimeType, metadata: {} };
         } else {
