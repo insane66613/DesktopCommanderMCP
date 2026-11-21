@@ -9,6 +9,7 @@ const FILE_PREVIEW_PROPERTIES: JsonSchema = {
   path: { type: ['string', 'null'] },
   fileType: { type: ['string', 'null'] },
   content: { type: ['string', 'array', 'object', 'null'] },
+  text: { type: ['string', 'null'] },
   imageData: { type: ['string', 'null'] },
   mimeType: { type: ['string', 'null'] },
 };
@@ -146,6 +147,8 @@ const SEARCH_LIST_OUTPUT_SCHEMA: JsonSchema = {
 export const OUTPUT_SCHEMAS: Record<string, JsonSchema> = {
   get_config: GET_CONFIG_OUTPUT_SCHEMA,
   set_config_value: ACTION_RESULT_SCHEMA,
+  // Some MCP adapters expose structuredContent rather than content[]. File tools
+  // must advertise the text-bearing structured fallback as well as keep content[].
   read_file: FILE_PREVIEW_OUTPUT_SCHEMA,
   write_file: FILE_PREVIEW_OUTPUT_SCHEMA,
   edit_block: FILE_PREVIEW_OUTPUT_SCHEMA,

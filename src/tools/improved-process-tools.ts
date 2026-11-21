@@ -445,7 +445,7 @@ async function executeReadProcessOutputCore(
     pid, 
     timeout_ms = 5000, 
     offset = 0,
-    length = defaultLength,
+    length: requestedLength = defaultLength,
     character_offset,
     maxBytes,
     pageSize,
@@ -454,6 +454,7 @@ async function executeReadProcessOutputCore(
 
   // Timing telemetry
   const startTime = Date.now();
+  const length = Math.min(10_000, Math.max(1, Math.trunc(requestedLength)));
   const initialVersion = terminalManager.getSessionStateVersion(pid);
 
   // For active sessions with no new output yet, optionally wait for output
@@ -489,13 +490,13 @@ async function executeReadProcessOutputCore(
         const poll = () => {
           if (resolved) return;
           const currentVersion = terminalManager.getSessionStateVersion(pid);
+          const currentStatus = terminalManager.getProcessStatus(pid);
           if (
-            !terminalManager.getSession(pid) ||
+            !currentStatus ||
             terminalManager.hasUnreadOutput(pid) ||
-            (initialVersion && currentVersion && (
-              currentVersion.outputVersion !== initialVersion.outputVersion ||
-              currentVersion.lifecycleVersion !== initialVersion.lifecycleVersion
-            ))
+            (currentStatus.isComplete && currentStatus.outputClosed) ||
+            (initialVersion && currentVersion &&
+              currentVersion.outputVersion !== initialVersion.outputVersion)
           ) {
             resolveOnce();
             return;
@@ -508,6 +509,7 @@ async function executeReadProcessOutputCore(
           const jitter = delay * 0.25 * (Math.random() - 0.5);
           const nextDelay = Math.min(delay + jitter, maxDelay, Math.max(0, deadline - Date.now()));
           timer = setTimeout(poll, nextDelay);
+          timer.unref?.();
           delay = Math.min(delay * 1.5, maxDelay);
         };
 
@@ -535,8 +537,9 @@ async function executeReadProcessOutputCore(
   );
   
   if (!result) {
+    const evictionNotice = terminalManager.getEvictedCompletionNotice(pid);
     return {
-      content: [{ type: "text", text: `No session found for PID ${pid}` }],
+      content: [{ type: "text", text: evictionNotice ?? `No session found for PID ${pid}` }],
       isError: true,
     };
   }
@@ -608,6 +611,10 @@ async function executeReadProcessOutputCore(
   if (result.evictedLines && result.evictedLines > 0) {
     const capMB = Math.round(MAX_BUFFERED_OUTPUT_CHARS / 1024 / 1024);
     statusMessage += `\n[WARNING: output exceeded the ${capMB}MB buffer cap; the ${result.evictedLines} earliest lines were evicted and cannot be read. Line numbers and totals refer to the retained buffer only]`;
+  }
+
+  if (result.outputError) {
+    statusMessage += `\n[WARNING: ${result.outputError}]`;
   }
 
   // Add process state info
@@ -726,7 +733,7 @@ export async function interactWithProcess(args: unknown): Promise<ServerResult> 
     // This handles REPLs where output is appended to the prompt line
     const outputSnapshot = terminalManager.captureOutputSnapshot(pid);
 
-    const success = terminalManager.sendInputToProcess(pid, input);
+    const success = await terminalManager.sendInputToProcess(pid, input, timeout_ms);
 
     if (!success) {
       return {
@@ -851,6 +858,7 @@ export async function interactWithProcess(args: unknown): Promise<ServerResult> 
           const jitter = delay * 0.25 * (Math.random() - 0.5);
           const nextDelay = Math.min(delay + jitter, maxDelay);
           timer = setTimeout(poll, nextDelay);
+          timer.unref?.();
           delay = Math.min(delay * 1.5, maxDelay);
         };
 

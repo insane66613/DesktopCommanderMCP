@@ -33,7 +33,9 @@ const CONNECT_TIMEOUT_MS = 4000;
 const REQUEST_TIMEOUT_MS = 5000;
 const MCP_INFO_ROUNDS = 5;
 const NPM_TIMEOUT_MS = 5000;
-const PROCESS_LIST_TIMEOUT_MS = 10000;
+// Windows CIM enumeration may take more than ten seconds even when healthy.
+// Keep support diagnostics bounded without misreporting running MCP processes.
+const PROCESS_LIST_TIMEOUT_MS = 30000;
 /** The npm package, and the MCPB bundle (named from manifest.json). */
 const PACKAGE_NAMES = new Set(['@wonderwhy-er/desktop-commander', 'desktop-commander']);
 /** `desktop-commander <these>` is not the MCP server. */
