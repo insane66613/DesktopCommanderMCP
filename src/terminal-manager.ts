@@ -113,6 +113,17 @@ export interface WindowLaunchControls {
 }
 
 /**
+ * A detached Windows pwsh with pipe-backed stdio immediately exits on the
+ * managed host, including -NoExit. Keep its stdio attached for all visible
+ * pwsh launches so both the console and its lifecycle remain controllable.
+ * The host may not surface a separate OS window; this is a managed session.
+ */
+export function shouldDetachVisibleShell(shell: string, platform: string = process.platform): boolean {
+  const shellName = path.basename(shell).toLowerCase();
+  return !(platform === 'win32' && (shellName === 'pwsh' || shellName === 'pwsh.exe'));
+}
+
+/**
  * A visible, persistent or titled console is supported only by Windows pwsh 7.
  * Reject impossible combinations instead of silently ignoring caller controls.
  */
@@ -358,13 +369,12 @@ export class TerminalManager {
         windowsHide: true  // Prevent visible console windows on Windows
       };
 
-      // For a visible Windows console, show a separate window and keep the
-      // managed process tracked; pwsh -NoExit controls the optional lifetime.
+      // Windows pwsh with redirected pipes exits immediately if detached.
+      // Preserve the managed session lifecycle; actual window presentation is
+      // host-dependent rather than guaranteed by windowsHide=false.
       if (opts?.visible) {
         spawnOptions.windowsHide = false;
-        // DETACHED_PROCESS lets the child live independently; combined with a
-        // visible window this gives the native diagnostic/installer UX.
-        spawnOptions.detached = true;
+        spawnOptions.detached = shouldDetachVisibleShell(shellToUse);
       }
 
       if (opts?.excludeSelf) {

@@ -1096,7 +1096,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         Process running (use read_process_output)
 
                         VISIBLE WINDOWS ON WINDOWS:
-                        Use visible: true to start an externally visible diagnostic console/window.
+                        Use visible: true to request an interactive diagnostic console.
+                        On Windows, PowerShell 7 uses managed attached stdio rather than
+                        detached mode (which can exit before the command executes).
+                        The actual appearance of a separate OS window is host-dependent,
+                        not guaranteed. The process remains accessible through session tools.
                         When keep_open=true, PowerShell 7 uses -NoExit to retain the interactive
                         session after the command finishes; close it with exit or force_terminate.
                         window_title sets the PowerShell 7 console title from a separate environment
