@@ -60,7 +60,7 @@ try {
   try {
     for (const mode of ['completion', 'prompt', 'timeout']) {
       const child = Object.assign(new EventEmitter(), {
-        pid: fakePid, stdout: new EventEmitter(), stderr: new EventEmitter(),
+        pid: fakePid, stdout: new EventEmitter(), stderr: new EventEmitter(), stdin: new EventEmitter(),
       });
       let spawned;
       const spawnReady = new Promise(resolve => { spawned = resolve; });
@@ -81,16 +81,20 @@ try {
       }
       child.emit('exit', 7);
       await Promise.resolve();
-      assert.deepEqual(terminalManager.getProcessStatus(fakePid), { isComplete: true, exitCode: 7 },
+      assert.deepEqual(terminalManager.getProcessStatus(fakePid), { isComplete: true, exitCode: 7, outputClosed: false },
         'exit completes the PID while remaining stdio continues draining');
       assert.equal(terminalManager.readOutputPaginated(fakePid, -1, 1).isComplete, true);
       assert.equal(terminalManager.getSession(fakePid), undefined);
       if (mode === 'completion') assert.equal(settled, false, 'completion wait must include stream drain');
       child.stdout.emit('data', Buffer.from('\nfinal-stdout\n'));
       child.stderr.emit('data', Buffer.from('final-stderr\n'));
+      // Broken child pipes must not surface as uncaught MCP-host exceptions.
+      child.stdout.emit('error', new Error('synthetic late stdout EPIPE'));
+      child.stderr.emit('error', new Error('synthetic late stderr error'));
+      child.stdin.emit('error', new Error('synthetic late stdin EPIPE'));
       child.emit('close', 7);
       const result = await pending;
-      assert.deepEqual(terminalManager.getProcessStatus(fakePid), { isComplete: true, exitCode: 7 });
+      assert.deepEqual(terminalManager.getProcessStatus(fakePid), { isComplete: true, exitCode: 7, outputClosed: true });
       const retained = terminalManager.readOutputPaginated(fakePid, -5, 5);
       assert.equal(retained.isComplete, true);
       assert.equal(retained.exitCode, 7);
