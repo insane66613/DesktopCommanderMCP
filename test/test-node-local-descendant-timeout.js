@@ -59,6 +59,13 @@ export default async function runTests() {
     assert(!success.isError && success.content[0].text.trim() === 'node-local-ok',
       'normal node:local script must still work');
     console.log('PASS normal node:local output remains available');
+    // Node clamps timer delays beyond 2^31-1 to 1 ms unless explicitly chunked.
+    const longTimeout = await interactWithProcess({
+      pid: sessionPid, input: "console.log('node-local-long-timeout-ok')", timeout_ms: 3_000_000_000,
+    });
+    assert(!longTimeout.isError && longTimeout.content[0].text.trim() === 'node-local-long-timeout-ok',
+      'large timeout must not expire before a fast script completes');
+    console.log('PASS large node:local timeout does not overflow');
     return true;
   } finally {
     kill(rootPid);

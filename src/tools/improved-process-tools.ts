@@ -116,7 +116,11 @@ async function executeNodeCode(code: string, timeout_ms: number = 30000): Promis
 
       // spawn(timeout) kills only the immediate child. Its descendants may
       // survive and retain stdout/stderr, preventing the close event forever.
-      const timer = setTimeout(async () => {
+      // Node overflows a timer longer than 2^31-1 ms down to 1 ms.
+      // Track the actual deadline and schedule safe chunks instead.
+      const deadline = Date.now() + timeout_ms;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const expire = async () => {
         timedOut = true;
         const ended = await terminateProcessTree(proc);
         if (ended) {
@@ -125,7 +129,17 @@ async function executeNodeCode(code: string, timeout_ms: number = 30000): Promis
         proc.stdout.destroy();
         proc.stderr.destroy();
         resolve({ stdout, stderr, exitCode: 1, timedOut: true, treeSurvived: !ended });
-      }, timeout_ms);
+      };
+      const schedule = () => {
+        if (timedOut) return;
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          void expire();
+          return;
+        }
+        timer = setTimeout(schedule, Math.min(remaining, 0x7fffffff));
+      };
+      schedule();
 
       proc.stdout.on('data', (data) => {
         stdout += data.toString();
