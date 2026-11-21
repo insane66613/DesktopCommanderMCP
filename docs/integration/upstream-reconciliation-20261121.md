@@ -93,3 +93,36 @@ newlines, multibyte UTF-8, delimiter at 64 KiB boundary, no delimiters,
 aborted reads, immediate Windows rename after read, file replacement,
 and legacy fractional offsets. Consulted Context7 for Node 24
 `FileHandle.read`, stream start offsets, and descriptor closure.
+
+## Managed process-tree termination backport (2026-11-21)
+
+Functional defect: `kill_process` used Node `process.kill(pid)` and the
+`force_terminate` path signaled only the managed shell PID, potentially
+leaving child processes or development servers running. Adapted the
+upstream `src/utils/process-tree.ts` implementation (including Windows
+`taskkill.exe /PID <pid> /T /F`, and bounded POSIX tree discovery/termination),
+after checking the actual Windows Node 24 signal behavior in Context7.
+The helper invokes commands without a shell, limits command duration,
+and waits for the managed root's exit; failures are not represented as
+verified tree termination.
+
+`terminalManager.forceTerminateAndWait` is the awaited client-facing
+operation; `forceTerminate(pid)` remains a backward-compatible
+initiation API for existing internal callers. `kill_process` delegates
+to the awaited tree path only for a currently tracked `start_process`
+session. External/unmanaged PIDs retain PID-only termination to avoid
+expanding a caller's destructive scope. Runtime PID and its direct
+supervisor are refused. The independent `node:local` timeout handler
+was not changed. A root already exited before tree discovery cannot
+guarantee discovery of a reparented descendant; neither source nor
+runtime must claim otherwise.
+
+`test/test-managed-process-tree.js` starts a disposable PowerShell 7
+shell, Node intermediate parent, and Node leaf with three independently
+recorded and distinct PIDs. It verifies both API routes end all three,
+an unmanaged process's child is intentionally left running, and the
+runtime/supervisor are protected; the test itself cleans its resources.
+Focused tests also cover `test-kill-process.js`,
+`test-process-pagination.js` and `test-process-inherited-stdio.js`.
+Windows tests passed 4/4 modules, 0 failures, before full-suite gate.
+No GitHub Actions or automated GitHub reviews are release requirements.

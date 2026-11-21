@@ -9,6 +9,7 @@ import {capture} from "./utils/capture.js";
 import { analyzeProcessState } from './utils/process-detection.js';
 import { commandManager } from './command-manager.js';
 import { getCommandEnvironment } from './utils/command-environment.js';
+import { terminateProcessTree } from './utils/process-tree.js';
 
 export const WINDOWS_POWERSHELL_7_PATH = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe';
 const WINDOWS_POWERSHELL_5_DISABLED_MESSAGE = 'Error: Windows PowerShell 5.1 is disabled. Use PowerShell 7 (pwsh.exe).';
@@ -1086,27 +1087,29 @@ export class TerminalManager {
     return `${v.pid}:${v.generation}:${v.lifecycleVersion}:${v.outputVersion}:${v.lastReadIndex}:${v.lastReadCharacter}`;
   }
 
-  forceTerminate(pid: number): boolean {
+  /** Await termination of a managed shell and the processes it started. */
+  async forceTerminateAndWait(pid: number): Promise<'ended' | 'failed' | 'not_found'> {
     const session = this.sessions.get(pid);
-    if (!session) {
-      return false;
-    }
+    if (!session) return 'not_found';
     session.lifecycleVersion++;
-
     try {
-        session.process.kill('SIGINT');
-        setTimeout(() => {
-          if (this.sessions.get(pid) === session) {
-            session.process.kill('SIGKILL');
-          }
-        }, 1000);
-        return true;
-      } catch (error) {
-        // Convert error to string, handling both Error objects and other types
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        capture('server_request_error', {error: errorMessage, message: `Failed to terminate process ${pid}:`});
-        return false;
+      return (await terminateProcessTree(session.process)) ? 'ended' : 'failed';
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      capture('server_request_error', { error: message, message: `Failed to terminate process tree ${pid}` });
+      return 'failed';
+    }
+  }
+
+  /** Backward-compatible initiation API used by internal session cleanup. */
+  forceTerminate(pid: number): boolean {
+    if (!this.sessions.has(pid)) return false;
+    void this.forceTerminateAndWait(pid).then((result) => {
+      if (result === 'failed') {
+        capture('server_request_error', { error: 'Process tree termination failed', message: `PID ${pid}` });
       }
+    });
+    return true;
   }
 
   listActiveSessions(): ActiveSession[] {
