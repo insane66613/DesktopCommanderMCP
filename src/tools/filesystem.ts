@@ -880,36 +880,54 @@ export async function searchFiles(rootPath: string, pattern: string): Promise<st
 
         const sessionId = result.sessionId;
 
-        // Poll for results until complete
-        let allResults: string[] = [];
-        let isComplete = result.isComplete;
-        let startTime = Date.now();
+        // SearchManager reads by offset. The compatibility wrapper must not
+        // re-read offset 0 on every poll: that duplicated the first page and
+        // silently omitted files after its default 100-result window.
+        const allResults: string[] = [];
+        let nextOffset = 0;
+        const startTime = Date.now();
+        const pageSize = 1000;
+        let idlePollMs = 20;
 
-        // Add initial results
         for (const searchResult of result.results) {
+            if (searchResult.file === '__LAST_READ_MARKER__') continue;
+            nextOffset++;
             if (searchResult.type === 'file') {
                 allResults.push(searchResult.file);
             }
         }
 
-        while (!isComplete) {
-            await new Promise(resolve => setTimeout(resolve, 100)); // Wait 100ms
+        // First read immediately. For a short search this avoids the old
+        // unconditional 100ms delay. Drain full pages without sleeping;
+        // back off only when an unfinished search has no more results yet.
+        let needsRead = !result.isComplete;
+        while (needsRead) {
+            const page = searchManager.readSearchResults(sessionId, nextOffset, pageSize);
+            nextOffset += page.returnedCount;
 
-            const results = searchManager.readSearchResults(sessionId);
-            isComplete = results.isComplete;
-
-            // Add new file paths to results
-            for (const searchResult of results.results) {
-                if (searchResult.file !== '__LAST_READ_MARKER__' && searchResult.type === 'file') {
+            for (const searchResult of page.results) {
+                if (searchResult.type === 'file') {
                     allResults.push(searchResult.file);
                 }
             }
 
-            // Safety check to prevent infinite loops (30 second timeout)
+            // A full page may have additional buffered results even when
+            // the ripgrep process completed; read that tail before stopping.
+            needsRead = !page.isComplete || page.returnedCount === pageSize;
+            if (!needsRead) break;
+
+            // Preserve the existing bounded compatibility timeout.
             if (Date.now() - startTime > 30000) {
                 searchManager.terminateSearch(sessionId);
                 break;
             }
+
+            if (page.returnedCount === pageSize) {
+                idlePollMs = 20;
+                continue;
+            }
+            await new Promise(resolve => setTimeout(resolve, idlePollMs));
+            idlePollMs = page.returnedCount > 0 ? 20 : Math.min(100, idlePollMs * 2);
         }
 
         // Log only the count of found files, not their paths
