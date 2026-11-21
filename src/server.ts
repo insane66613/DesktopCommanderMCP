@@ -1096,11 +1096,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         Process running (use read_process_output)
 
                         VISIBLE WINDOWS ON WINDOWS:
-                        Use visible: true when the user needs to see an external diagnostic console/window.
-                        Optional fields: keep_open, window_title.
-                        Important: visible child-window output is user-visible, but may not be capturable with read_process_output.
-                        Prefer these fields over hand-built cmd.exe start commands; cmd start treats the first quoted string as the window title.
-                        In PowerShell, use Start-Process semantics instead of assuming cmd's start syntax.
+                        Use visible: true to start an externally visible diagnostic console/window.
+                        When keep_open=true, PowerShell 7 uses -NoExit to retain the interactive
+                        session after the command finishes; close it with exit or force_terminate.
+                        window_title sets the PowerShell 7 console title from a separate environment
+                        variable, not interpolated command text (max 128 characters, no control chars).
+                        Both controls require visible=true, Windows and shell=pwsh.exe; other
+                        combinations return an explicit error rather than silently ignoring them.
+                        Important: visible child-window output may not be fully captured by
+                        read_process_output; a retained session consumes a managed process slot.
+                        Do not use cmd.exe title/start as a workaround for PowerShell 7.
 
                         SHELL-SAFE SOURCE EXECUTION:
                         Inline interpreter source is rejected before shell launch for python/python3/py -c and node -e/--eval/-p/--print.

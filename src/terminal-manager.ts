@@ -106,11 +106,42 @@ interface ShellSpawnConfig {
   windowsVerbatim?: boolean;
 }
 
+export interface WindowLaunchControls {
+  visible?: boolean;
+  keepOpen?: boolean;
+  windowTitle?: string;
+}
+
 /**
- * Get the appropriate spawn configuration for a given shell
- * This handles login shell flags for different shell types
+ * A visible, persistent or titled console is supported only by Windows pwsh 7.
+ * Reject impossible combinations instead of silently ignoring caller controls.
  */
-function getShellSpawnArgs(shellPath: string, command: string): ShellSpawnConfig {
+export function validateWindowLaunchControls(
+  options: WindowLaunchControls | undefined,
+  shell: string | boolean | undefined,
+  platform: string = process.platform,
+): string | null {
+  if (!options?.keepOpen && options?.windowTitle === undefined) return null;
+  if (!options.visible) return 'keep_open and window_title require visible=true.';
+  if (platform !== 'win32') return 'keep_open and window_title are currently supported only on Windows.';
+  if (typeof shell !== 'string' || !['pwsh', 'pwsh.exe'].includes(path.basename(shell).toLowerCase())) {
+    return 'keep_open and window_title require the PowerShell 7 shell (pwsh.exe).';
+  }
+  if (options.windowTitle !== undefined && (
+    !options.windowTitle.trim() || options.windowTitle.length > 128 ||
+    /[\u0000-\u001f\u007f]/.test(options.windowTitle)
+  )) {
+    return 'window_title must be 1 to 128 characters without control characters.';
+  }
+  return null;
+}
+
+/** Get shell arguments, preserving the plain-command path for existing calls. */
+export function getShellSpawnArgs(
+  shellPath: string,
+  command: string,
+  options?: WindowLaunchControls,
+): ShellSpawnConfig {
   const shellName = path.basename(shellPath).toLowerCase();
   
   // Unix shells with login flag support
@@ -124,10 +155,16 @@ function getShellSpawnArgs(shellPath: string, command: string): ShellSpawnConfig
   
   // Automation must not execute interactive profiles or add their output to tool results.
   if (shellName === 'pwsh' || shellName === 'pwsh.exe') {
-    return { 
-      executable: shellPath, 
-      args: ['-NoLogo', '-NoProfile', '-Command', command],
-      useShellOption: false 
+    // The title is passed separately via DC_WINDOW_TITLE. Never embed the
+    // user-supplied title in a PowerShell command string (command injection).
+    const titledCommand = options?.visible && options.windowTitle !== undefined
+      ? 'try { $Host.UI.RawUI.WindowTitle = $env:DC_WINDOW_TITLE } catch { throw "Failed to set window title: $($_.Exception.Message)" }; ' + command
+      : command;
+    const keepOpen = options?.visible && options.keepOpen === true;
+    return {
+      executable: shellPath,
+      args: ['-NoLogo', '-NoProfile', ...(keepOpen ? ['-NoExit'] : []), '-Command', titledCommand],
+      useShellOption: false,
     };
   }
   
@@ -245,7 +282,7 @@ export class TerminalManager {
     timeoutMs: number = DEFAULT_COMMAND_TIMEOUT,
     shell?: string,
     collectTiming: boolean = false,
-    opts?: { visible?: boolean; excludeSelf?: boolean },
+    opts?: WindowLaunchControls & { excludeSelf?: boolean },
   ): Promise<CommandExecutionResult> {
     // Get the shell from config if not specified. On Windows, never delegate
     // an unresolved default to Node's `shell: true` path (cmd.exe): establish
@@ -291,6 +328,11 @@ export class TerminalManager {
       return powershell5DisabledResult();
     }
 
+    const windowError = validateWindowLaunchControls(opts, shellToUse);
+    if (windowError) {
+      return { pid: -1, output: `Error: ${windowError}`, isBlocked: false };
+    }
+
     // For REPL interactions, we need to ensure stdin, stdout, and stderr are properly configured
     // Note: No special stdio options needed here, Node.js handles pipes by default
 
@@ -307,7 +349,7 @@ export class TerminalManager {
     
     if (typeof shellToUse === 'string') {
       // Use shell-specific configuration with login flags where appropriate
-      spawnConfig = getShellSpawnArgs(shellToUse, enhancedCommand);
+      spawnConfig = getShellSpawnArgs(shellToUse, enhancedCommand, opts);
       spawnOptions = {
         env: {
           ...getCommandEnvironment(),
@@ -316,9 +358,8 @@ export class TerminalManager {
         windowsHide: true  // Prevent visible console windows on Windows
       };
 
-      // ponytail: when the caller explicitly wants a visible window, drop
-      // windowsHide so the OS surfaces the console. Also apply shell-specific
-      // keep_open / window_title semantics if the platform supports them.
+      // For a visible Windows console, show a separate window and keep the
+      // managed process tracked; pwsh -NoExit controls the optional lifetime.
       if (opts?.visible) {
         spawnOptions.windowsHide = false;
         // DETACHED_PROCESS lets the child live independently; combined with a
@@ -328,6 +369,9 @@ export class TerminalManager {
 
       if (opts?.excludeSelf) {
         spawnOptions.env.DC_EXCLUDE_SELF = '1';
+      }
+      if (opts?.visible && opts.windowTitle !== undefined) {
+        spawnOptions.env.DC_WINDOW_TITLE = opts.windowTitle;
       }
 
       // Add shell option if needed (for unknown shells)
