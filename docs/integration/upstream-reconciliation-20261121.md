@@ -262,3 +262,93 @@ The final full-suite receipt is tracked in
   still uses released `34ecb0da`; source merge alone is not a deployed
   performance update. A subsequent supervised rollout must respect the
   Portal's reviewed manifest pin policy.
+
+## Upstream functional backport batch: literal file searches and oversized timers (2026-11-21)
+
+**Verified upstream head:** `9a101b17e44577f0baefa4c7120f087881c5cc56`
+(release v0.3.4, published Nov 18). Source baseline for this batch:
+`b0a541bbb2b3eff51055323f52f6629824029f08` (already
+independently deployed and live-smoke verified).
+
+**Ported behavior from upstream:**
+
+- Upstream `b15aa64c`: for file searches,
+  `literalSearch=true` now interprets metacharacters `* ? [ ] { }`
+  as literal characters in names instead of accidentally using glob
+  syntax. The fork passes a ripgrep `--glob` or `--iglob` pattern;
+  this change escapes glob metacharacters and retains exact filename
+  handling (and the existing 1,500-ms default exact-name timeout).
+  Existing non-literal/glob semantics remain unchanged.
+- Upstream `6874b0de`: Node's `setTimeout` treats delays greater than
+  2,147,483,647 ms as 1 ms. The fork previously passed huge explicit
+  `timeout_ms` values directly to Node; now they are bounded to the
+  largest supported timer duration, preventing premature cancellation.
+  The user's explicit finite timeout is not persisted or modified.
+  Node.js 24 official timer documentation was consulted through Context7.
+
+**Reproduced before modifying source:**
+`test/test-search-files-literal-upstream.js` failed when the requested
+literal `report[1].txt` returned `report1.txt` and omitted the two
+files actually containing brackets. The timeout regression captured an
+unbounded scheduled delay of 2,147,483,648 ms (which Node would coerce
+to 1 ms). Both tests passed after the changes in the isolated compiled
+candidate, including literal substring `rt[1]`, literal braces
+`{a}`, normal `report[1].txt` glob behavior, brace alternation,
+and large explicit timeouts 2,147,483,648 and 3,000,000,000 ms.
+The first literal fixture was corrected to avoid a Windows-invalid
+asterisk in a filename before evaluating source behavior.
+
+**Bounded scope:** only `src/search-manager.ts` plus two executable
+search regression modules, and this reconciliation entry. Do not
+blindly cherry-pick the upstream's larger `SearchManager` session
+completion and outcome rewrite or enable optional MQTT transport.
+No npm dependency/version change; no GitHub Actions or automated code
+review. The existing full compiled `dist` release and rollback remain
+protected by the Portal's reviewed source-manifest trust catalog.
+
+**Deferred, individually audited upstream candidates:**
+
+- `f7ab60e0` invalid globs: distinguish ripgrep syntax failures from
+  empty file searches. The upstream patch depends on `filePattern`
+  matcher behavior (`d87b6f23`) absent from this fork; implement
+  with its own regression and user-facing outcome review rather than
+  copying assumptions.
+- `d87b6f23`, `fab89d94`: filePattern/Office-source glob parity,
+  including inclusion/exclusion alternatives. Requires multi-source,
+  Windows path, and search cancellation tests before integration.
+- `977deef4`: prevent node:local calls hanging when a detached process
+  outside the tracked process tree retains output pipes. Safety and
+  timeout semantics require separate process-tree and detached-child
+  acceptance; not combined with a file-search feature patch.
+- `fec69812`: validate remote auth backend before restoring persisted
+  sessions. Security-sensitive; reconcile with fork's private auth
+  gating, session binding and redirect protections before adoption.
+- `19aad35a`: MQTT remains disabled; activation requires distinct
+  transport privacy, enrollment, logout, and opt-in rollout gates.
+
+**Verification:** TypeScript build and focused literal/large-timeout
+tests passed in reused clean isolated scratch worktree. Full suite
+receipt: `X:\MCP\scratch\deskcommand-upstream-literal-timeout-full-20261121.log`.
+A Git merge must not be conflated with a verified live deployment;
+the independent supervisor's full artifact checks, successful MCP
+semantic verification, approved Portal catalog pin, and rollback
+remain release requirements.
+
+### Final full-suite validation for the literal/timeout backport
+
+- Isolated `npm run build` passed with no TypeScript errors (Node.js
+  v24.15.0 on Windows).
+- `node test/run-all-tests.js` completed **161/161 test modules
+  passed, zero failed**, with five existing environment-specific skips:
+  unavailable `/bin/sh` and `/bin/bash`, nonstandard system Chrome path,
+  POSIX-only process groups on Windows, and the symlink reporting
+  condition. Evidence log:
+  `X:\MCP\scratch\deskcommand-upstream-literal-timeout-full-20261121.log`.
+- The two new executable regression modules passed in the final suite:
+  literal bracket/brace filename matching and ordinary glob behavior;
+  explicit timeout values of 2,147,483,648 and 3,000,000,000 ms safely
+  scheduled as 2,147,483,647 ms.
+- Source release and deployment remain distinct. Before promotion
+  independently verify the merged candidate tree, stage all compiled
+  files and known-good rollback, obtain a reviewed Portal manifest pin,
+  and require a successful independent supervisor and live MCP probes.

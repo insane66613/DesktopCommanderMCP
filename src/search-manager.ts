@@ -19,6 +19,14 @@ export interface SearchResult {
 // Upstream #779: retain error output once and bound session memory.
 const MAX_KEPT_ERROR_CHARS = 64 * 1024;
 
+// Node coerces setTimeout delays above 2^31 - 1 to 1ms. Cap oversized
+// caller timeouts rather than accidentally cancelling a search instantly.
+const LONGEST_TIMER_MS = 2 ** 31 - 1;
+
+// Ripgrep file-name filters use glob syntax. Treat wildcard and bracket
+// characters as themselves when the caller explicitly requests literalSearch.
+const literalGlob = (text: string): string => text.replace(/[*?[\]{}]/g, '[$&]');
+
 /**
  * Bound a single ripgrep JSON line below V8's hard string limit. A line beyond
  * this limit is discarded until its newline so a pathological/minified file
@@ -139,7 +147,7 @@ export interface SearchSessionOptions {
 
     // Set up timeout if specified and auto-terminate
     // For exact filename searches, use a shorter default timeout
-    const timeoutMs = options.timeout ?? (this.isExactFilename(options.pattern) ? 1500 : undefined);
+    const timeoutMs = options.timeout ?? (this.isExactFilename(options.pattern, options.literalSearch) ? 1500 : undefined);
     
     let killTimer: NodeJS.Timeout | null = null;
     if (timeoutMs) {
@@ -147,7 +155,7 @@ export interface SearchSessionOptions {
         if (!session.isComplete && !session.process.killed) {
           session.process.kill('SIGTERM');
         }
-      }, timeoutMs);
+      }, Math.min(timeoutMs, LONGEST_TIMER_MS));
     }
 
     // Clear timer on process completion
@@ -741,9 +749,9 @@ export interface SearchSessionOptions {
    * Detect if pattern looks like an exact filename
    * (has file extension and no glob wildcards)
    */
-  private isExactFilename(pattern: string): boolean {
+  private isExactFilename(pattern: string, literal = false): boolean {
     return /\.[a-zA-Z0-9]+$/.test(pattern) &&
-           !this.isGlobPattern(pattern);
+           (literal || !this.isGlobPattern(pattern));
   }
 
   /**
@@ -849,15 +857,18 @@ export interface SearchSessionOptions {
       // For file search: determine how to treat the pattern
       const globFlag = options.ignoreCase !== false ? '--iglob' : '--glob';
       
-      if (this.isExactFilename(options.pattern)) {
-        // Exact filename: use appropriate glob flag with the exact pattern
-        args.push(globFlag, options.pattern);
-      } else if (this.isGlobPattern(options.pattern)) {
-        // Already a glob pattern: use appropriate glob flag as-is
+      // A literal file pattern must escape glob metacharacters before
+      // passing through rg's --glob / --iglob filename filters.
+      const name = options.literalSearch ? literalGlob(options.pattern) : options.pattern;
+      if (this.isExactFilename(options.pattern, options.literalSearch)) {
+        // Exact filename, possibly containing glob syntax characters.
+        args.push(globFlag, name);
+      } else if (!options.literalSearch && this.isGlobPattern(options.pattern)) {
+        // Preserve glob semantics unless literalSearch was requested.
         args.push(globFlag, options.pattern);
       } else {
-        // Substring/fuzzy search: wrap with wildcards
-        args.push(globFlag, `*${options.pattern}*`);
+        // Substring search: literal glob metacharacters are escaped above.
+        args.push(globFlag, `*${name}*`);
       }
       // Add the root path for file mode
       args.push(options.rootPath);
