@@ -77,7 +77,7 @@ export function setThreadpoolSize(size: string, envReachesThreadpool: boolean = 
   if (copy.error) {
     // Windows Node 22 cannot resize this process's already-booted CRT pool.
     // Preserve availability but make the degraded startup detectable.
-    console.error('[Desktop Commander] Threadpool child launch failed; continuing with platform default:', copy.error.code ?? 'UNKNOWN');
+    console.error('[Desktop Commander] Threadpool child launch failed; continuing with platform default:', (copy.error as NodeJS.ErrnoException).code ?? 'UNKNOWN');
     return;
   }
   // process.exit(), not exitProcess(): this process must stop here, without
