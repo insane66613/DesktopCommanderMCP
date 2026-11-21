@@ -79,9 +79,13 @@ export async function pdf2md(pdfBuffer: Uint8Array, pageNumbers: number[] | Page
     const { parse, makeTransformations, transform } = loadPdf2md();
 
     const result = await parse(pdfBuffer);
-    const { fonts, pages, pdfDocument } = result;
+    // Capture ownership before reading other parse-result fields: their getters
+    // may throw, and the document must still be closed by the finally block.
+    const pdfDocument = result.pdfDocument;
 
     try {
+        const { fonts, pages } = result;
+
         // Calculate which pages to process
         const filterPageNumbers = Array.isArray(pageNumbers) ?
             pageNumbers :

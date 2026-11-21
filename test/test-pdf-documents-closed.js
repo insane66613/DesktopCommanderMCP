@@ -56,6 +56,23 @@ async function testParseFailureStillClosesDocument() {
     );
     assert.equal(cacheCleaned, 1, 'error path must release page caches');
     assert.equal(taskDestroyed, 1, 'error path must destroy its loading task');
+
+    // A parse-result getter may fail while destructuring. The document's
+    // ownership must already be known before those other fields are read.
+    let accessorDestroyed = 0;
+    pdf2mdModule.parse = async () => ({
+      fonts: { map: new Map() },
+      get pages() { throw new Error('injected pages getter failure'); },
+      pdfDocument: {
+        async cleanup() {},
+        loadingTask: { async destroy() { accessorDestroyed++; } },
+      },
+    });
+    await assert.rejects(
+      pdf2md(Uint8Array.of(0), [1]),
+      /injected pages getter failure/,
+    );
+    assert.equal(accessorDestroyed, 1, 'parse-result property errors must close the document');
   } finally {
     pdf2mdModule.parse = original;
   }
