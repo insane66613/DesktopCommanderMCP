@@ -1,8 +1,11 @@
+# SC-GOV-CI-COST: use local tests for routine branch work.
+# One hosted pipeline per merge request; manual web pipelines require explicit action.
+# Never spend runner minutes on automatic branch, tag, or post-merge pushes.
 workflow:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: '$CI_COMMIT_BRANCH'
-    - if: '$CI_COMMIT_TAG'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - when: never
 
 stages:
   - validate
