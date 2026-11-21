@@ -1,6 +1,6 @@
 import { createRequire } from 'module';
 
-import { generatePageNumbers } from '../utils.js';
+import { closePdfDocument, generatePageNumbers } from '../utils.js';
 import { extractImagesFromPdf, ImageInfo } from '../extract-images.js';
 const require = createRequire(import.meta.url);
 
@@ -79,41 +79,45 @@ export async function pdf2md(pdfBuffer: Uint8Array, pageNumbers: number[] | Page
     const { parse, makeTransformations, transform } = loadPdf2md();
 
     const result = await parse(pdfBuffer);
-    const { fonts, pages, pdfDocument } = result;
-
-    // Calculate which pages to process
-    const filterPageNumbers = Array.isArray(pageNumbers) ?
-        pageNumbers :
-        generatePageNumbers(pageNumbers.offset, pageNumbers.length, pages.length);
-
-    // Filter and transform pages
-    const pagesToProcess = filterPageNumbers.length === 0 ?
-        pages :
-        pages.filter((_: any, index: number) => filterPageNumbers.includes(index + 1));
-
-    const pageNumberMap = filterPageNumbers.length === 0 ?
-        pages.map((_: any, index: number) => index + 1) :
-        filterPageNumbers.filter(pageNum => pageNum >= 1 && pageNum <= pages.length);
-
-    const transformations = makeTransformations(fonts.map);
-    const parseResult = transform(pagesToProcess, transformations);
-
-    // Extract images
-    const imagesByPage = await extractImagesFromPdf(pdfBuffer, pageNumberMap, { format: 'webp', quality: 85 });
-
-    // Create pages without images for now
-    const processedPages: PdfPageItem[] = parseResult.pages.map((page: any, index: number) => {
-        const pageNumber = pageNumberMap[index];
-        return {
-            pageNumber,
-            text: page.items.join('\n') + '\n',
-            images: imagesByPage[pageNumber] || [],
-        };
-    });
-
-    const metadata = extractMetadata(result);
+    // Capture ownership before reading other parse-result fields: their getters
+    // may throw, and the document must still be closed by the finally block.
+    const pdfDocument = result.pdfDocument;
 
     try {
+        const { fonts, pages } = result;
+
+        // Calculate which pages to process
+        const filterPageNumbers = Array.isArray(pageNumbers) ?
+            pageNumbers :
+            generatePageNumbers(pageNumbers.offset, pageNumbers.length, pages.length);
+
+        // Filter and transform pages
+        const pagesToProcess = filterPageNumbers.length === 0 ?
+            pages :
+            pages.filter((_: any, index: number) => filterPageNumbers.includes(index + 1));
+
+        const pageNumberMap = filterPageNumbers.length === 0 ?
+            pages.map((_: any, index: number) => index + 1) :
+            filterPageNumbers.filter(pageNum => pageNum >= 1 && pageNum <= pages.length);
+
+        const transformations = makeTransformations(fonts.map);
+        const parseResult = transform(pagesToProcess, transformations);
+
+        // Extract images
+        const imagesByPage = await extractImagesFromPdf(pdfBuffer, pageNumberMap, { format: 'webp', quality: 85 });
+
+        // Create pages without images for now
+        const processedPages: PdfPageItem[] = parseResult.pages.map((page: any, index: number) => {
+            const pageNumber = pageNumberMap[index];
+            return {
+                pageNumber,
+                text: page.items.join('\n') + '\n',
+                images: imagesByPage[pageNumber] || [],
+            };
+        });
+
+        const metadata = extractMetadata(result);
+
         return { pages: processedPages, metadata };
     } finally {
         if (pdfDocument) {
@@ -122,11 +126,7 @@ export async function pdf2md(pdfBuffer: Uint8Array, pageNumbers: number[] | Page
                     await pdfDocument.cleanup(false);
                 }
             } catch (e) { }
-            try {
-                if (typeof pdfDocument.destroy === 'function') {
-                    await pdfDocument.destroy();
-                }
-            } catch (e) { }
+            await closePdfDocument(pdfDocument);
         }
     }
 }
