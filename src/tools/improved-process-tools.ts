@@ -9,6 +9,7 @@ import { analyzeProcessState, cleanProcessOutput, formatProcessStateMessage, Pro
 import * as os from 'os';
 import { configManager } from '../config-manager.js';
 import { spawn } from 'child_process';
+import { getCommandEnvironment } from '../utils/command-environment.js';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -103,6 +104,7 @@ async function executeNodeCode(code: string, timeout_ms: number = 30000): Promis
       const proc = spawn(process.execPath, [tempFile], {
         cwd: mcpRoot,
         timeout: timeout_ms,
+        env: getCommandEnvironment(),
         windowsHide: true  // Prevent visible console windows on Windows
       });
 
