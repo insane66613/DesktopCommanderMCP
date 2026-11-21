@@ -65,3 +65,31 @@ The fork's original baseline for this batch is `55526f65`.
   `fec69812` or introduce the new Supabase3 endpoint without verifying
   its ownership and deployment requirement.
 - No GitHub Actions or automated GitHub code review were requested.
+
+## Performance follow-up: accurate deep-offset reads, no persistent cache
+
+The preceding file lifecycle backport restored correctness at a cost: reading
+line 5000 from a synthetic 15.2 MB variable-length text file scanned thousands
+of strings using the readline iterator (~10-11 ms median on Node v24.15.0,
+Windows). An approximate byte seek was faster but returned the wrong records.
+
+This follow-up scans 64 KiB buffers using Node's `FileHandle.read` and V8's
+native regexp engine over a Latin-1 byte-preserving view, counting every
+`\r\n`, `\r`, or `\n` delimiter, including a CRLF pair split at a
+buffer edge. It seeks only to an *exact* byte position, then uses the existing
+readline/stream close helper for the requested result. The file handle is
+closed in `finally`; no persistent offset index, retained content, watcher,
+or stale file cache is introduced. UTF-16, shallow offsets, negative offsets,
+and non-integer legacy offsets retain their earlier paths.
+
+Five-run same-process synthetic benchmark, 15,238,844 bytes, offset 5000:
+baseline exact readline 10.14 ms median; initial native-regexp candidate
+5.26 ms median, both correct. This is a synthetic case, not production
+throughput or a guarantee for every filesystem. A slower initial
+`Buffer.indexOf` variant (~20 ms) and JS byte loop (~15 ms) were rejected.
+
+Regression `test/test-deep-offset-byte-scan.js` covers mixed CRLF/LF/CR
+newlines, multibyte UTF-8, delimiter at 64 KiB boundary, no delimiters,
+aborted reads, immediate Windows rename after read, file replacement,
+and legacy fractional offsets. Consulted Context7 for Node 24
+`FileHandle.read`, stream start offsets, and descriptor closure.
