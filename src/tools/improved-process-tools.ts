@@ -989,14 +989,18 @@ export async function forceTerminate(args: unknown): Promise<ServerResult> {
     };
   }
 
-  const success = terminalManager.forceTerminate(pid);
+  const outcome = await terminalManager.forceTerminateAndWait(pid);
+  const failed = outcome === 'failed';
   return {
     content: [{
       type: "text",
-      text: success
-        ? `Successfully initiated termination of session ${pid}`
-        : `No active session found for PID ${pid}`
+      text: outcome === 'ended'
+        ? `Successfully terminated session ${pid} and its process tree`
+        : failed
+          ? `Error: Could not confirm full process-tree termination for session ${pid}`
+          : `No active session found for PID ${pid}`
     }],
+    ...(failed ? { isError: true } : {}),
   };
 }
 

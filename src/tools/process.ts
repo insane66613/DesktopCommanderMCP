@@ -3,6 +3,8 @@ import { promisify } from 'util';
 import os from 'os';
 import { ProcessInfo, ServerResult } from '../types.js';
 import { KillProcessArgsSchema } from './schemas.js';
+import { terminalManager } from '../terminal-manager.js';
+import { terminatePid } from '../utils/process-tree.js';
 
 const execAsync = promisify(exec);
 
@@ -97,14 +99,34 @@ export async function killProcess(args: unknown): Promise<ServerResult> {
     };
   }
 
-  try {
-    process.kill(parsed.data.pid);
+  const pid = parsed.data.pid;
+  if (pid === process.pid || pid === process.ppid) {
     return {
-      content: [{ type: "text", text: `Successfully terminated process ${parsed.data.pid}` }],
+      content: [{ type: 'text', text: `Error: Refusing to terminate DeskCommand's runtime or direct supervisor PID ${pid}` }],
+      isError: true,
     };
+  }
+
+  try {
+    // A PID returned by start_process is a managed shell. Its descendants
+    // must be stopped too; killing only its PID strands dev servers and jobs.
+    if (terminalManager.getSession(pid)) {
+      const outcome = await terminalManager.forceTerminateAndWait(pid);
+      if (outcome !== 'ended') {
+        return {
+          content: [{ type: 'text', text: `Error: Could not confirm termination of managed process tree ${pid} (${outcome})` }],
+          isError: true,
+        };
+      }
+    } else {
+      // Preserve PID-only scope for unrelated external processes. Never
+      // kill the external process's descendants without explicit ownership.
+      await terminatePid(pid);
+    }
+    return { content: [{ type: 'text', text: `Successfully terminated process ${pid}` }] };
   } catch (error) {
     return {
-      content: [{ type: "text", text: `Error: Failed to kill process: ${error instanceof Error ? error.message : String(error)}` }],
+      content: [{ type: 'text', text: `Error: Failed to kill process: ${error instanceof Error ? error.message : String(error)}` }],
       isError: true,
     };
   }
