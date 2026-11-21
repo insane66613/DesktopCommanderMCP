@@ -97,6 +97,16 @@ Grouped index of the tools an agent reaches for most often. Not exhaustive — t
 - **Search:** `start_search`, `get_more_search_results`, `list_searches`, `stop_search`
 - **Diagnostics / config:** `get_recent_tool_calls`, `get_config`
 
+## Context7 preflight before version-sensitive code edits (SC-GOV-CONTEXT7-001)
+
+When using Desktop Commander for code updates involving a third-party library, framework, SDK, API, integration, or dependency upgrade, the *calling agent* must complete this preflight before `edit_block`, `write_file`, or a code-writing shell command:
+
+1. Inspect the target repository's actual manifest and lockfile, relevant source, Git status, and version constraints.
+2. Invoke the separate Context7 MCP `resolve_library_id` for the library (unless a verified library ID was already supplied); then invoke `query_docs` for the specific implementation question. Prefer documentation corresponding to the installed version and cross-check installed source or authoritative upstream docs.
+3. Make the smallest compatible change, then run appropriate local checks, tests and linting. Record library ID, version, documentation topic/link, changed paths, tests and results in the existing Notion task or PR receipt.
+
+For purely internal changes with no external API implications, record `Context7 not applicable`. If Context7 is unavailable or coverage/version mismatches, consult official upstream documentation and installed source; record the reason for fallback. If a risky API behavior cannot be verified, stop instead of guessing. Never submit credentials, sensitive information or proprietary source code to documentation lookups. Context7 is a separate agent-side MCP integration, not a built-in Desktop Commander feature or a substitute for source, tests, authorization, or runtime verification.
+
 ## Conventions
 
 **Prefer absolute paths.** Relative paths may fail depending on the working directory, and tilde paths (`~/...`) may not expand in all contexts. Absolute paths are the most reliable; pass them whenever you can.
