@@ -6,3 +6,7 @@ alwaysApply: true
 For local filesystem, terminal, process, search, and workspace operations, prefer Desktop Commander MCP, especially for persistent shells, long-running processes, file reads, structured documents, large local data files, SSH workflows, and process inspection.
 
 You can check the `desktop-commander-overview` SKILL for Desktop Commander MCP tool guidance.
+
+## Context7 documentation preflight (SC-GOV-CONTEXT7-001)
+When using Desktop Commander to edit code that depends on an external library, framework, SDK, API, integration, dependency upgrade, or version-sensitive behavior, first inspect the repository's actual dependencies/lockfile. Before the edit, use the separate Context7 MCP tools to resolve the correct library ID and query narrowly scoped current, version-matched documentation; cross-check against installed source and official upstream material. Never include secrets, credentials, proprietary source, or matter-sensitive data in documentation queries.
+For code-only changes without third-party API implications, record "Context7 not applicable". If Context7 is unavailable or lacks the needed version, consult official vendor documentation and installed source, and record the fallback reason; block risky changes if essential behavior remains unresolved. Run applicable tests and capture library, version, documentation, change scope, and results in the existing task receipt. Context7 is a companion agent-side service, not a native Desktop Commander command or authorization grant.
