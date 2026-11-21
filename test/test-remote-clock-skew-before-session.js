@@ -61,7 +61,10 @@ function startServer() {
 
         if (req.url === '/api/mcp-info') {
             res.end(JSON.stringify({
-                supabaseUrl: 'https://example.supabase.co',
+                // Use the same loopback origin as the MCP stand-in. The
+                // earlier example.supabase.co placeholder is deliberately
+                // rejected by the upstream backend-trust allowlist.
+                supabaseUrl: `http://127.0.0.1:${server.address().port}`,
                 supabasePublishableKey: 'test-anon-key'
             }));
             return;

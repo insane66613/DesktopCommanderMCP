@@ -28,6 +28,11 @@ const restartBackoffMs = (attempt: number) =>
     // Cap AFTER jitter, so the cap is the wait this comment claims it is.
     Math.min(RESTART_BACKOFF_CAP_MS, 250 * 2 ** Math.min(attempt, 5) * (0.5 + Math.random()));
 
+// Upstream 9a620b63: the hosted server allows 30 minutes of execution plus
+// its next 30-second status sweep. SDK cancellation is advisory to the remote
+// executor; it does not prove a timed-out side-effecting command was stopped.
+const TOOL_CALL_TIMEOUT_MS = 30 * 60_000 + 30_000;
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -318,7 +323,7 @@ export class DesktopCommanderIntegration {
                 name: toolName,
                 arguments: args,
                 _meta: { remote: true, ...metadata || {} }
-            } as any);
+            } as any, undefined, { timeout: TOOL_CALL_TIMEOUT_MS });
             console.debug('[DEBUG] Tool call successful:', toolName);
             return result;
         } catch (error) {
