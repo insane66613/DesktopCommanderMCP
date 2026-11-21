@@ -22,6 +22,13 @@ export const LAUNCHER_PID_VARIABLE = 'DESKTOP_COMMANDER_THREADPOOL_LAUNCHER_PID'
 /** How often the copy checks that the process that started it still runs */
 const LAUNCHER_CHECK_MS = 1000;
 
+/** Accept the launcher marker only from the actual direct parent process. */
+export function validateLauncherPidMarker(marker: string | undefined, parentPid: number = process.ppid): number | null {
+  if (!marker || !/^[1-9][0-9]*$/.test(marker)) return null;
+  const pid = Number(marker);
+  return Number.isSafeInteger(pid) && pid === parentPid ? pid : null;
+}
+
 /** Whether libuv sees a UV_THREADPOOL_SIZE set in process.env: everywhere but on Windows with a libuv before 1.52 */
 export function processEnvReachesThreadpool(platform: string = process.platform, uvVersion: string = process.versions.uv): boolean {
   if (platform !== 'win32') return true;
@@ -45,12 +52,16 @@ export function processEnvReachesThreadpool(platform: string = process.platform,
  *   started it is gone.
  */
 export function setThreadpoolSize(size: string, envReachesThreadpool: boolean = processEnvReachesThreadpool()): void {
-  const launcherPid = process.env[LAUNCHER_PID_VARIABLE];
-  if (launcherPid) {
-    // The commands and servers the copy starts are not copies
+  const marker = process.env[LAUNCHER_PID_VARIABLE];
+  if (marker) {
+    // The commands and servers the copy starts are not copies.
     delete process.env[LAUNCHER_PID_VARIABLE];
-    exitWithLauncher(Number(launcherPid));
-    return;
+    const launcherPid = validateLauncherPidMarker(marker);
+    if (launcherPid !== null) {
+      exitWithLauncher(launcherPid);
+      return;
+    }
+    console.error('[Desktop Commander] Ignored invalid threadpool launcher identity');
   }
   if (process.env.UV_THREADPOOL_SIZE === size) return;
   process.env.UV_THREADPOOL_SIZE = size;
@@ -63,7 +74,12 @@ export function setThreadpoolSize(size: string, envReachesThreadpool: boolean = 
     stdio: 'inherit',
     env: { ...process.env, [LAUNCHER_PID_VARIABLE]: String(process.pid) },
   });
-  if (copy.error) return;
+  if (copy.error) {
+    // Windows Node 22 cannot resize this process's already-booted CRT pool.
+    // Preserve availability but make the degraded startup detectable.
+    console.error('[Desktop Commander] Threadpool child launch failed; continuing with platform default:', copy.error.code ?? 'UNKNOWN');
+    return;
+  }
   // process.exit(), not exitProcess(): this process must stop here, without
   // running the rest of its code; the copy has run it
   process.exit(copy.status ?? 1);

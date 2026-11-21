@@ -105,6 +105,20 @@ async function testSizeAlreadySet(script) {
   console.log('✓ a size that was in the environment when Node started needs no copy');
 }
 
+async function testInvalidLauncherMarkerDoesNotBecomeSupervisor(script) {
+  for (const marker of ['abc', '0', '123456789']) {
+    const child = await runNode([script, 'exit', '0'], { env: scriptEnv({
+      UV_THREADPOOL_SIZE: '7', [LAUNCHER_PID_VARIABLE]: marker,
+    }) });
+    assert.strictEqual(child.status, 0, child.stderr);
+    const [only] = printed(child.stdout);
+    assert.strictEqual(only.parentPid, process.pid, 'invalid marker never creates a launcher copy');
+    assert.strictEqual(only.launcherVariable, false, 'invalid marker removed from children');
+    assert.match(child.stderr, /invalid threadpool launcher identity/i);
+  }
+  console.log('✓ malformed or unrelated markers cannot impersonate a launcher');
+}
+
 async function testNoCopyUnderADebugger(script) {
   const child = await runNode(['--inspect=127.0.0.1:0', script, 'exit', '0'], { env: scriptEnv() });
   const [only] = printed(child.stdout);
@@ -138,6 +152,7 @@ export default async function runTests() {
     const script = writeScript(dir);
     await testCopyRunsTheRest(script);
     await testSizeAlreadySet(script);
+    await testInvalidLauncherMarkerDoesNotBecomeSupervisor(script);
     await testNoCopyUnderADebugger(script);
     await testCopyEndsWithLauncher(script);
   } finally {
