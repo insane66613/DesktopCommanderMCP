@@ -9,6 +9,7 @@ import { analyzeProcessState, cleanProcessOutput, formatProcessStateMessage, Pro
 import * as os from 'os';
 import { configManager } from '../config-manager.js';
 import { spawn } from 'child_process';
+import { terminateProcessTree } from '../utils/process-tree.js';
 import { getCommandEnvironment } from '../utils/command-environment.js';
 import fs from 'fs/promises';
 import path from 'path';
@@ -22,6 +23,8 @@ const mcpRoot = path.resolve(__dirname, '..', '..');
 // Track virtual Node sessions (PIDs that are actually Node fallback sessions)
 const virtualNodeSessions = new Map<number, { timeout_ms: number }>();
 let virtualPidCounter = -1000; // Use negative PIDs for virtual sessions
+// Allow recently terminated descendants to close inherited stdout/stderr pipes.
+const NODE_LOCAL_PIPES_CLOSE_WAIT_MS = 1000;
 
 const DEFAULT_PROCESS_START_OUTPUT_LINE_LIMIT = 25;
 
@@ -100,16 +103,29 @@ async function executeNodeCode(code: string, timeout_ms: number = 30000): Promis
   try {
     await fs.writeFile(tempFile, code, 'utf8');
 
-    const result = await new Promise<{ stdout: string; stderr: string; exitCode: number }>((resolve) => {
+    const result = await new Promise<{ stdout: string; stderr: string; exitCode: number; timedOut?: boolean; treeSurvived?: boolean }>((resolve) => {
       const proc = spawn(process.execPath, [tempFile], {
         cwd: mcpRoot,
-        timeout: timeout_ms,
         env: getCommandEnvironment(),
         windowsHide: true  // Prevent visible console windows on Windows
       });
 
       let stdout = '';
       let stderr = '';
+      let timedOut = false;
+
+      // spawn(timeout) kills only the immediate child. Its descendants may
+      // survive and retain stdout/stderr, preventing the close event forever.
+      const timer = setTimeout(async () => {
+        timedOut = true;
+        const ended = await terminateProcessTree(proc);
+        if (ended) {
+          await new Promise<void>((done) => setTimeout(done, NODE_LOCAL_PIPES_CLOSE_WAIT_MS));
+        }
+        proc.stdout.destroy();
+        proc.stderr.destroy();
+        resolve({ stdout, stderr, exitCode: 1, timedOut: true, treeSurvived: !ended });
+      }, timeout_ms);
 
       proc.stdout.on('data', (data) => {
         stdout += data.toString();
@@ -120,16 +136,30 @@ async function executeNodeCode(code: string, timeout_ms: number = 30000): Promis
       });
 
       proc.on('close', (exitCode) => {
+        if (timedOut) return; // Await descendant cleanup before resolving.
+        clearTimeout(timer);
         resolve({ stdout, stderr, exitCode: exitCode ?? 1 });
       });
 
       proc.on('error', (err) => {
+        if (timedOut) return;
+        clearTimeout(timer);
         resolve({ stdout, stderr: stderr + '\n' + err.message, exitCode: 1 });
       });
     });
 
     // Clean up temp file
     await fs.unlink(tempFile).catch(() => {});
+
+    if (result.timedOut) {
+      return {
+        content: [{
+          type: "text",
+          text: `Execution timed out after ${timeout_ms}ms${result.treeSurvived ? '; some descendants may still be running' : ''}`
+        }],
+        isError: true
+      };
+    }
 
     if (result.exitCode !== 0) {
       return {

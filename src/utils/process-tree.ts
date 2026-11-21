@@ -25,9 +25,10 @@ import { logger } from './logger.js';
  * Limit: a process whose parent exited before a walk has been reparented (to
  * init or a subreaper) and can no longer be found through its parent.
  *
- * This fork uses terminateProcessTree for force_terminate and kill_process
- * when the target PID belongs to an active start_process session. The
- * independent node:local timeout lifecycle remains unchanged in this patch.
+ * This fork uses terminateProcessTree for force_terminate, kill_process
+ * when the target PID belongs to an active start_process session, and
+ * node:local script timeouts. A child that exits before the tree walk can
+ * leave descendants untracked; timeout results report this uncertainty.
  * kill_process on any other PID ends just that PID via terminatePid, without
  * implicitly extending authority to that process's descendants.
  */
