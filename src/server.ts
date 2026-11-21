@@ -25,6 +25,10 @@ const PATH_GUIDANCE = `IMPORTANT: ${getPathGuidance(SYSTEM_INFO)} Relative paths
 
 const CMD_PREFIX_DESCRIPTION = `This command can be referenced as "DC: ..." or "use Desktop Commander to ..." in your instructions.`;
 
+// Agent guidance only: Context7 is a separate MCP and cannot be called by this server.
+// The consuming agent must perform the lookup before version-sensitive code edits.
+const CONTEXT7_CODE_EDIT_PREFLIGHT = `CODE EDIT PREFLIGHT (SC-GOV-CONTEXT7-001): Before changing code that uses a third-party library, framework, SDK, API, or dependency, inspect installed manifest/lockfile versions; use the separate Context7 MCP to resolve the library ID and query relevant version-aware documentation. Cross-check the repository and official upstream docs, never send secrets or proprietary source in queries, and record documentation plus tests in the existing task. For local-only edits record "Context7 not applicable"; if Context7 is unavailable or unsuitable, use official upstream/source evidence and record the fallback. Stop risky unverified API changes. This is agent-side guidance, not an MCP-enforced gate.`;
+
 import {
     StartProcessArgsSchema,
     ReadProcessOutputArgsSchema,
@@ -495,6 +499,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 name: "write_file",
                 description: `
                         Write or append to file contents.
+                        ${CONTEXT7_CODE_EDIT_PREFLIGHT}
 
                         IMPORTANT: DO NOT use this tool to create PDF files. Use 'write_pdf' for all PDF creation tasks.
                         DO NOT use this tool to edit DOCX files. Use 'edit_block' with old_string/new_string instead.
@@ -994,6 +999,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 name: "edit_block",
                 description: `
                         Apply surgical edits to files.
+                        ${CONTEXT7_CODE_EDIT_PREFLIGHT}
 
                         BEST PRACTICE: Make multiple small, focused edits rather than one large edit.
                         Each edit_block call should change only what needs to be changed - include just enough
@@ -1060,6 +1066,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 name: "start_process",
                 description: `
                         Start a terminal process on the authorized device with intelligent state detection.
+                        ${CONTEXT7_CODE_EDIT_PREFLIGHT}
                         
                         Suitable for shell commands, interactive REPL sessions, data-processing scripts,
                         programmatic file analysis, and other long-running terminal work.
@@ -1171,6 +1178,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 name: "interact_with_process",
                 description: `
                         Send input to an existing terminal or REPL process and return newly available output.
+                        ${CONTEXT7_CODE_EDIT_PREFLIGHT}
                         
                         Useful for interactive shells, Python/Node/R/Julia REPLs, database consoles,
                         and long-running commands started with start_process().
