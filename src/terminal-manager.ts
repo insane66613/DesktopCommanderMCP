@@ -64,6 +64,7 @@ export interface VersionedTerminalSession extends TerminalSession {
   generation: number;
   outputVersion: number;
   lifecycleVersion: number;
+  outputError?: string;
 }
 
 interface CompletedSession {
@@ -81,6 +82,7 @@ interface CompletedSession {
   lifecycleVersion: number;
   bufferedChars: number;
   outputClosed: boolean;
+  outputError?: string;
 }
 
 /**
@@ -94,6 +96,8 @@ interface CompletedSession {
 export const MAX_BUFFERED_OUTPUT_CHARS = 50 * 1024 * 1024;  // per session; oldest lines evicted first
 const MAX_LINE_CHARS = 1024 * 1024;                  // force-split longer lines so eviction can work
 const MAX_WAIT_OUTPUT_CHARS = 2 * 1024 * 1024;       // start_process wait buffer (prompt/state detection)
+const MAX_COMPLETED_SESSIONS = 100;
+const MAX_EVICTED_SESSION_MARKERS = 100;
 
 // Result type for paginated output reading
 export interface PaginatedOutputResult {
@@ -106,6 +110,7 @@ export interface PaginatedOutputResult {
   exitCode?: number | null;    // Exit code if completed
   runtimeMs?: number;          // Runtime in milliseconds (for completed processes)
   evictedLines?: number;       // Lines dropped by the buffer cap; when > 0, line numbers are relative to the retained buffer
+  outputError?: string;       // Sanitized stdout/stderr failure diagnostic
   nextOffset: number;
   nextCharacterOffset: number;
   sizeLimited: boolean;
@@ -190,6 +195,34 @@ export class TerminalManager {
   private nextGeneration = 1;
   private sessions: Map<number, VersionedTerminalSession> = new Map();
   private completedSessions: Map<number, CompletedSession> = new Map();
+  private evictedCompletedSessions: Map<number, string> = new Map();
+
+  getEvictedCompletionNotice(pid: number): string | null {
+    return this.evictedCompletedSessions.get(pid) ?? null;
+  }
+
+  private pruneCompletedSessions(): void {
+    while (this.completedSessions.size > MAX_COMPLETED_SESSIONS) {
+      const oldestClosed = [...this.completedSessions].find(([, entry]) => entry.outputClosed);
+      const oldest = oldestClosed ?? this.completedSessions.entries().next().value;
+      if (!oldest) break;
+      const [pid, entry] = oldest;
+      this.completedSessions.delete(pid);
+      if (!entry.outputClosed) {
+        // Never let an inherited pipe keep an unbounded completed-output buffer.
+        // The child may continue, but its output is no longer retained or replayed.
+        entry.outputLines.length = 0;
+        entry.bufferedChars = 0;
+        this.evictedCompletedSessions.set(pid,
+          `Completed PID ${pid} was evicted at the retention limit while inherited output pipes remained open. Remaining output was discarded; do not treat this as complete output.`);
+        while (this.evictedCompletedSessions.size > MAX_EVICTED_SESSION_MARKERS) {
+          const earliest = this.evictedCompletedSessions.keys().next().value;
+          if (earliest === undefined) break;
+          this.evictedCompletedSessions.delete(earliest);
+        }
+      }
+    }
+  }
   
   /**
    * Send input to a running process
@@ -197,27 +230,39 @@ export class TerminalManager {
    * @param input Text to send to the process
    * @returns Whether input was successfully sent
    */
-  async sendInputToProcess(pid: number, input: string): Promise<boolean> {
+  async sendInputToProcess(pid: number, input: string, timeoutMs: number = 15000): Promise<boolean> {
     const session = this.sessions.get(pid);
     const stdin = session?.process.stdin;
     if (!stdin || stdin.destroyed || stdin.writableEnded || !stdin.writable) {
       return false;
     }
     const inputWithNewline = input.endsWith('\n') ? input : input + '\n';
-    return new Promise<boolean>((resolve) => {
+    return new Promise<boolean>((resolve, reject) => {
       let settled = false;
-      const finish = (success: boolean) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (outcome: 'confirmed' | 'rejected' | 'indeterminate') => {
         if (settled) return;
         settled = true;
+        if (timer) clearTimeout(timer);
         stdin.off('error', onError);
-        resolve(success);
+        stdin.off('close', onClose);
+        stdin.off('finish', onClose);
+        if (outcome === 'indeterminate') {
+          reject(new Error('Input write outcome indeterminate after submission; input may have been delivered. Do not retry automatically.'));
+        } else {
+          resolve(outcome === 'confirmed');
+        }
       };
-      const onError = (_error: Error) => finish(false);
+      const onError = (_error: Error) => finish('indeterminate');
+      const onClose = () => finish('indeterminate');
       stdin.once('error', onError);
+      stdin.once('close', onClose);
+      stdin.once('finish', onClose);
+      timer = setTimeout(() => finish('indeterminate'), Math.max(1, Math.min(timeoutMs, 15000)));
       try {
-        stdin.write(inputWithNewline, (error?: Error | null) => finish(!error));
+        stdin.write(inputWithNewline, (error?: Error | null) => finish(error ? 'indeterminate' : 'confirmed'));
       } catch {
-        finish(false);
+        finish('rejected');
       }
     });
   }
@@ -380,6 +425,7 @@ export class TerminalManager {
     // so a later runtime error (EPIPE on a closed stdin, ...) can't crash us either.
     let forwardProcessError: ((err: Error) => void) | null = null;
     let pendingProcessError: Error | null = null;
+    let outputStreamError: string | undefined;
     childProcess.on('error', (err: Error) => {
       if (forwardProcessError) {
         forwardProcessError(err);
@@ -397,6 +443,16 @@ export class TerminalManager {
     ] as const) {
       stream?.on('error', (err: Error) => {
         console.error(`Child ${name} stream error for PID ${childProcess.pid ?? 'unknown'}: ${err.message}`);
+        if (name !== 'stdin' && childProcess.pid) {
+          const errorCode = 'code' in err && typeof err.code === 'string' && /^[A-Z_0-9]+$/.test(err.code)
+            ? err.code : 'UNKNOWN';
+          outputStreamError = `${name} stream failed (code ${errorCode}); process output may be incomplete.`;
+          const current = this.sessions.get(childProcess.pid) ?? this.completedSessions.get(childProcess.pid);
+          if (current) {
+            current.outputError = outputStreamError;
+            current.lifecycleVersion++;
+          }
+        }
       });
     }
 
@@ -423,10 +479,12 @@ export class TerminalManager {
       generation: this.nextGeneration++,
       outputVersion: 0,
       lifecycleVersion: 0,
+      outputError: outputStreamError,
     };
 
     this.sessions.set(childProcess.pid, session);
     this.completedSessions.delete(session.pid);
+    this.evictedCompletedSessions.delete(session.pid);
 
     // Timing telemetry
     const startTime = Date.now();
@@ -490,6 +548,8 @@ export class TerminalManager {
       }
 
       childProcess.stdout.on('data', (data: any) => {
+        // PID reuse or completed-session eviction must not retain late output.
+        if (completedSession && this.completedSessions.get(session.pid) !== completedSession) return;
         const text = data.toString();
         const now = Date.now();
 
@@ -536,6 +596,7 @@ export class TerminalManager {
       });
 
       childProcess.stderr.on('data', (data: any) => {
+        if (completedSession && this.completedSessions.get(session.pid) !== completedSession) return;
         const text = data.toString();
         const now = Date.now();
 
@@ -611,16 +672,16 @@ export class TerminalManager {
             lifecycleVersion: session.lifecycleVersion,
             bufferedChars: session.bufferedChars,
             outputClosed: false,
+            outputError: session.outputError,
           };
           this.completedSessions.set(session.pid, completedSession);
 
-          // Never evict a session whose inherited pipes can still deliver output.
-          // Clean up drained sessions first; pending sessions survive until close.
-          while (this.completedSessions.size > 100) {
-            const oldestClosed = [...this.completedSessions].find(([, entry]) => entry.outputClosed)?.[0];
-            if (oldestClosed === undefined) break;
-            this.completedSessions.delete(oldestClosed);
-          }
+          // Bound total completed retention even when inherited pipes never close.
+          this.pruneCompletedSessions();
+          // The completed record owns the copied output now. Do not keep a second
+          // 50 MiB buffer alive through child-event closures awaiting pipe close.
+          session.outputLines.length = 0;
+          session.bufferedChars = 0;
 
           this.sessions.delete(session.pid);
         }
@@ -646,11 +707,7 @@ export class TerminalManager {
         if (completedSession && !completedSession.outputClosed) {
           completedSession.outputClosed = true;
           completedSession.lifecycleVersion++;
-          while (this.completedSessions.size > 100) {
-            const oldestClosed = [...this.completedSessions].find(([, entry]) => entry.outputClosed)?.[0];
-            if (oldestClosed === undefined) break;
-            this.completedSessions.delete(oldestClosed);
-          }
+          this.pruneCompletedSessions();
         }
         resolveExit();
       });
@@ -769,6 +826,7 @@ export class TerminalManager {
         effectiveBudget
       );
       result.evictedLines = session.evictedLines;
+      result.outputError = session.outputError;
       return result;
     }
 
@@ -791,6 +849,7 @@ export class TerminalManager {
         completedSession.outputClosed !== false
       );
       result.evictedLines = completedSession.evictedLines;
+      result.outputError = completedSession.outputError;
       return result;
     }
 

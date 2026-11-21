@@ -537,8 +537,9 @@ async function executeReadProcessOutputCore(
   );
   
   if (!result) {
+    const evictionNotice = terminalManager.getEvictedCompletionNotice(pid);
     return {
-      content: [{ type: "text", text: `No session found for PID ${pid}` }],
+      content: [{ type: "text", text: evictionNotice ?? `No session found for PID ${pid}` }],
       isError: true,
     };
   }
@@ -610,6 +611,10 @@ async function executeReadProcessOutputCore(
   if (result.evictedLines && result.evictedLines > 0) {
     const capMB = Math.round(MAX_BUFFERED_OUTPUT_CHARS / 1024 / 1024);
     statusMessage += `\n[WARNING: output exceeded the ${capMB}MB buffer cap; the ${result.evictedLines} earliest lines were evicted and cannot be read. Line numbers and totals refer to the retained buffer only]`;
+  }
+
+  if (result.outputError) {
+    statusMessage += `\n[WARNING: ${result.outputError}]`;
   }
 
   // Add process state info
@@ -728,7 +733,7 @@ export async function interactWithProcess(args: unknown): Promise<ServerResult> 
     // This handles REPLs where output is appended to the prompt line
     const outputSnapshot = terminalManager.captureOutputSnapshot(pid);
 
-    const success = await terminalManager.sendInputToProcess(pid, input);
+    const success = await terminalManager.sendInputToProcess(pid, input, timeout_ms);
 
     if (!success) {
       return {

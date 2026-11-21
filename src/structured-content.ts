@@ -146,9 +146,22 @@ export function enrichStructuredContent(toolName: string, result: ServerResult):
     const existing = result.structuredContent && typeof result.structuredContent === 'object'
       ? normalizeFilePreview(result.structuredContent as Record<string, unknown>) : {};
     const text = textFromContent(result.content);
+    const image = result.content?.find((item) => item.type === 'image' && typeof item.data === 'string');
+    const imageData = image?.type === 'image' ? image.data : undefined;
+    // Structured-only adapters require a usable image fallback, but duplicating
+    // an unbounded base64 payload could exceed the 32 KiB MCP response budget.
+    const hasExistingImage = typeof existing.imageData === 'string' && existing.imageData.length > 0;
+    const canInlineImage = typeof imageData === 'string' && !hasExistingImage && imageData.length <= 8192;
+    const omittedImage = image && !hasExistingImage && !canInlineImage;
+    const imageNotice = omittedImage
+      ? '[Image is present in native MCP content[] but exceeds the structured preview budget. Use an image-capable MCP client to view it.]'
+      : '';
+    const visibleText = [text, imageNotice].filter(Boolean).join('\n');
     return { ...result, structuredContent: {
       ...existing,
-      ...(text ? { text } : {}),
+      ...(image ? { fileType: existing.fileType ?? 'image', mimeType: existing.mimeType ?? image.mimeType } : {}),
+      ...(canInlineImage ? { imageData } : {}),
+      ...(visibleText ? { text: visibleText } : {}),
       success: !Boolean(result.isError),
     } };
   }

@@ -37,8 +37,17 @@ if (!isTestHome()) {
         assert.equal(result.content, content, 'original bodies stay intact');
         assert.equal(result.structuredContent?.success, !isError);
         if (content[0]?.type === 'text') assert.equal(result.structuredContent?.text, content[0].text);
+        if (content[0]?.type === 'image') {
+          assert.equal(result.structuredContent?.imageData, 'AA==', 'small image has structured fallback');
+          assert.equal(result.structuredContent?.mimeType, 'image/png');
+        }
       }
     }
+    const largeImage = enrichStructuredContent(name, {
+      content: [{ type: 'image', data: 'A'.repeat(40000), mimeType: 'image/png' }],
+    });
+    assert.equal(largeImage.structuredContent?.imageData, undefined, 'large image is not duplicated');
+    assert.match(largeImage.structuredContent?.text, /native MCP content.*structured preview budget/i);
     const ui = enrichStructuredContent(name, { content: [], structuredContent: {
       filePath: 'X:\\example.txt', fileName: 'example.txt', fileType: 'text', content: 'widget body',
     } });
