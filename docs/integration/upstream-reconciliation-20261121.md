@@ -38,3 +38,30 @@
 - The full upstream v0.3.4 tree is **not** integrated; package metadata stays v0.2.52 intentionally.
 - Cross-module validation: 25 test modules passed, 0 failed, 3 individual platform-only checks skipped (/bin/sh, /bin/bash, macOS/Linux process groups on Windows). Log: `X:\\MCP\\scratch\\deskcommand-reconcile-validation-20261121.log`.
 - Re-run the separate process-tree and MQTT suites before any future adoption of their upstream implementations.
+
+## Second backport batch: file lifecycle and search bounds (2026-11-21)
+
+The current fetched upstream still ends at `9a101b17` (v0.3.4).
+The fork's original baseline for this batch is `55526f65`.
+
+- Upstream `d29e3090`, `src/utils/files/text.ts`: ensure the underlying
+  `fs.ReadStream` is destroyed and fully closed before a partial
+  `read_file` or `read_multiple_files` response returns. Preserve the
+  fork's optimized native-file-descriptor reverse-tail reader.
+- Local reconciliation: the fork's estimated byte seek for large positive
+  line offsets returned incorrect lines when record lengths varied.
+  Replace it with exact, bounded-memory streaming; remove the unused
+  approximate-seek helper and thresholds. Tradeoff: large deep-offset reads
+  now require a linear scan rather than an approximate seek. Do not claim
+  a speedup on that path without benchmarking.
+- Upstream `d4a3c7d3`, `src/tools/schemas.ts`: constrain search limits,
+  context lines, timeouts, and pagination to whole numbers. Add Zod 3
+  safe-number validation. Preserve negative *integer* offsets for
+  documented tail behavior, with page length at least one.
+- Keep the fork's current `test/test-remote-channel-reconnect.js` version:
+  the upstream commit touched that unrelated fixture and conflicted.
+- Source audit: remote authentication's endpoint allowlist, session binding,
+  and redirect rejection were already present. Do not duplicate
+  `fec69812` or introduce the new Supabase3 endpoint without verifying
+  its ownership and deployment requirement.
+- No GitHub Actions or automated GitHub code review were requested.
