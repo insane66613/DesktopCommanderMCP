@@ -86,7 +86,11 @@ async function runTests() {
   }
 
   await test('a logout while the device starts sticks: its first save does not write device.json back', async ({ standIn, env, home, start }) => {
-    writeDeviceConfig(home, { deviceId: standIn.deviceId, session: standIn.login() });
+    writeDeviceConfig(home, {
+      deviceId: standIn.deviceId,
+      authContext: { serverOrigin: standIn.url, supabaseUrl: standIn.url },
+      session: standIn.login(),
+    });
     const hold = standIn.holdDeviceLookups();
     const device = start();
     assert.ok(await within(hold.reached.then(() => true), START_DEADLINE_MS, false),
@@ -123,11 +127,13 @@ async function runTests() {
       `once the save was done, remote --logout should have removed device.json (exit ${code}):\n${tail(output)}`);
   });
 
-  await test('a logout that lands while the device reads the session to save is not undone', async ({ env, home }) => {
+  await test('a logout that lands while the device reads the session to save is not undone', async ({ env, home, standIn }) => {
     const configPath = deviceConfigPath(home);
-    writeDeviceConfig(home, { deviceId: 'device-1', session: { access_token: 'a0', refresh_token: 'r0' } });
+    const authContext = { serverOrigin: standIn.url, supabaseUrl: standIn.url };
+    writeDeviceConfig(home, { deviceId: 'device-1', authContext, session: { access_token: 'a0', refresh_token: 'r0' } });
     const device = new MCPDevice();
     device.configPath = configPath;
+    device.trustedAuthContext = authContext;
     await device.loadPersistedConfig();
     const rc = device.remoteChannel;
     rc.getSession = async () => ({ data: { session: { access_token: 'a1', refresh_token: 'r1' } } });
@@ -148,11 +154,13 @@ async function runTests() {
       + `was still there, exit ${logout?.code}), and the save wrote device.json back: the logout did not stick`);
   });
 
-  await test('a login after the logout is not written over by the device that was logged out', async ({ env, home }) => {
+  await test('a login after the logout is not written over by the device that was logged out', async ({ env, home, standIn }) => {
     const configPath = deviceConfigPath(home);
-    writeDeviceConfig(home, { deviceId: 'device-1', session: { access_token: 'a0', refresh_token: 'r0' } });
+    const authContext = { serverOrigin: standIn.url, supabaseUrl: standIn.url };
+    writeDeviceConfig(home, { deviceId: 'device-1', authContext, session: { access_token: 'a0', refresh_token: 'r0' } });
     const device = new MCPDevice();
     device.configPath = configPath;
+    device.trustedAuthContext = authContext;
     await device.loadPersistedConfig();
     const rc = device.remoteChannel;
     rc.getSession = async () => ({ data: { session: { access_token: 'a1', refresh_token: 'r1' } } });
@@ -161,7 +169,7 @@ async function runTests() {
     const logout = await runLogout(env);
     assert.ok(!fs.existsSync(configPath), `setup: remote --logout did not remove device.json (exit ${logout.code}):\n${tail(logout.output)}`);
     // A new `remote` logs in and saves its own device (the old device still runs)
-    const newLogin = { deviceId: 'device-2', session: { access_token: 'b0', refresh_token: 'rb0' } };
+    const newLogin = { deviceId: 'device-2', authContext, session: { access_token: 'b0', refresh_token: 'rb0' } };
     writeDeviceConfig(home, newLogin);
 
     // The old device's next save: a token rotation, or its shutdown

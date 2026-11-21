@@ -11,6 +11,13 @@ import lockfile from 'proper-lockfile';
 import { captureRemote } from '../utils/capture.js';
 import { writeFileAtomic } from '../utils/atomic-write.js';
 import { exitProcess } from '../utils/exit-process.js';
+import {
+    DEFAULT_REMOTE_SERVER_URL,
+    savedSessionMatchesContext,
+    validateRemoteAuthContext,
+    validateRemoteServerUrl,
+    type RemoteAuthContext,
+} from './remote-utils.js';
 
 export interface MCPDeviceOptions {
     persistSession?: boolean;
@@ -77,6 +84,7 @@ export class MCPDevice {
     private isShuttingDown: boolean;
     private configPath: string;
     private persistSession: boolean;
+    private trustedAuthContext: RemoteAuthContext | null = null;
     private desktop: DesktopCommanderIntegration;
     /**
      * Serialises config writes. Rotations are 45 minutes apart in normal
@@ -97,7 +105,9 @@ export class MCPDevice {
     private seenCallIds: Set<string> = new Set();
 
     constructor(options: MCPDeviceOptions = {}) {
-        this.baseServerUrl = process.env.MCP_SERVER_URL || 'https://mcp.desktopcommander.app';
+        this.baseServerUrl = validateRemoteServerUrl(
+            process.env.MCP_SERVER_URL || DEFAULT_REMOTE_SERVER_URL,
+        ).origin;
         this.remoteChannel = new RemoteChannel();
         this.deviceId = undefined;
         this.isShuttingDown = false;
@@ -364,6 +374,16 @@ export class MCPDevice {
             this.deviceId = config?.deviceId;
             console.debug('[DEBUG] Loaded device ID:', this.deviceId);
 
+            // A saved access/refresh token is scoped to the backend that issued
+            // it. Never call auth.setSession() on another provider with it.
+            if (config.session && this.persistSession &&
+                (!this.trustedAuthContext ||
+                    !savedSessionMatchesContext(config.authContext, this.trustedAuthContext))) {
+                console.warn('⚠️ Saved Remote MCP session belongs to another or unknown backend; re-authorization required');
+                this.deviceId = undefined;
+                return null;
+            }
+
             // A session without its device id is not a login: restoring it
             // skips the revoked-device check below, and registration then fails
             // with "Device not found: undefined" on every start. Authorize again.
@@ -442,6 +462,10 @@ export class MCPDevice {
      * outlive it - shutdown() - can await it.
      */
     async savePersistedConfig(rotated?: AuthSession): Promise<void> {
+        if (!this.trustedAuthContext) {
+            console.error('Refusing to persist a session before validating the remote backend');
+            return;
+        }
         this.configWriteChain = this.configWriteChain.then(() => this.writePersistedConfig(rotated));
         return this.configWriteChain;
     }
@@ -465,6 +489,7 @@ export class MCPDevice {
 
             const config = {
                 deviceId: this.deviceId,
+                authContext: this.trustedAuthContext,
                 // Only save session if --persist-session flag is set
                 session: (session && this.persistSession) ? {
                     access_token: session.access_token,
@@ -512,25 +537,30 @@ export class MCPDevice {
     }
 
     async fetchSupabaseConfig() {
-        // No auth header needed for this public endpoint
-        console.debug('[DEBUG] Fetching Supabase config from:', `${this.baseServerUrl}/api/mcp-info`);
-        const response = await fetch(`${this.baseServerUrl}/api/mcp-info`);
-        // First request of the run, and it already states the server's time.
-        // auth-js judges the session handed to setSession() against this
-        // device's Date.now() with no skew tolerance, so the clock has to be
-        // right BEFORE that call - clockAwareFetch only corrects it afterwards.
+        const backend = validateRemoteServerUrl(this.baseServerUrl);
+        // The provider is untrusted until its origin has been validated. Never
+        // restore a saved session from a previously trusted configuration.
+        this.trustedAuthContext = null;
+        const endpoint = new URL('/api/mcp-info', backend);
+        console.debug('[DEBUG] Fetching Supabase config from:', endpoint.href);
+        const response = await fetch(endpoint, {
+            redirect: 'error',
+            signal: AbortSignal.timeout(30_000),
+        });
+        // Correct skew before auth-js evaluates the expiry of restored tokens.
         observeServerDate(response.headers.get('date'));
 
         if (!response.ok) {
-            console.debug('[DEBUG] Supabase config fetch failed, status:', response.status, response.statusText);
             throw new Error(`Failed to fetch Supabase config: ${response.statusText}`);
         }
 
         const config = await response.json();
-        console.debug('[DEBUG] Supabase config received, URL:', config.supabaseUrl?.substring(0, 30) + '...');
+        const authContext = validateRemoteAuthContext(backend.origin, config?.supabaseUrl);
+        this.trustedAuthContext = authContext;
+        console.debug('[DEBUG] Supabase config received for validated origin:', authContext.supabaseUrl);
         return {
-            supabaseUrl: config.supabaseUrl,
-            anonKey: config.supabasePublishableKey
+            supabaseUrl: authContext.supabaseUrl,
+            anonKey: config.supabasePublishableKey,
         };
     }
 

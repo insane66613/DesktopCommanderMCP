@@ -73,6 +73,12 @@ Session persistence is enabled by default. To require browser authorization on e
 npx @wonderwhy-er/desktop-commander@latest remote --no-persist-session
 ```
 
+### Backend identity and saved sessions
+
+The Remote Device validates both the MCP server origin and the Supabase project origin **before** restoring a persisted token. Saved sessions now record those exact origins in `authContext`; tokens and old device IDs are not reused with a different or untrusted backend. A legacy session without `authContext` is accepted only for the original hosted MCP server and its original Supabase project. Otherwise the saved file is retained, but a new browser authorization is required. Requests for server configuration and device authorization refuse HTTP redirects.
+
+The configured MCP server must be an authorized `desktopcommander.app` endpoint or a supported local development host. For hosted authentication, only the verified `supabase1` and `supabase2` project origins are permitted. Upstream v0.3.4 references a third origin using the literal placeholder `https://example.supabase.co`; this fork deliberately does **not** trust that unverified destination. An isolated local test server may use its own Supabase stand-in only on the **same loopback origin**, including the port. This exception does not allow cross-origin remote authentication.
+
 ## Stop, logout, revoke, or disconnect
 
 These actions affect different parts of the Remote MCP connection:
