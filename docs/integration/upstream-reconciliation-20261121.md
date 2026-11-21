@@ -126,3 +126,139 @@ Focused tests also cover `test-kill-process.js`,
 `test-process-pagination.js` and `test-process-inherited-stdio.js`.
 Windows tests passed 4/4 modules, 0 failures, before full-suite gate.
 No GitHub Actions or automated GitHub reviews are release requirements.
+
+## Performance and functionality reconciliation: file-search result paging (2026-11-21)
+
+Fetched the actual upstream `wonderwhy-er/DesktopCommanderMCP` main and
+verified commit `9a101b17e44577f0baefa4c7120f087881c5cc56`, release v0.3.4
+dated 2026-11-18. Our fork source baseline for this batch:
+`34ecb0da2871df7fbbbb52e3e887d46355819d3e`. Git divergence at this
+read: 819 upstream-only versus 179 fork-only commits. Do not automatically
+merge divergent search, process, custom model-output or Portal adapters.
+
+**Upstream behavior:** v0.3.4's `searchFiles` uses
+`SearchManager.waitForCompletion(sessionId)`, then returns each file path
+once, with a 30-second cancellation timer. That mechanism depends on a
+different upstream session completion/Office-source lifecycle
+(`session.completed`, `stopSources`, outcome transitions) absent from
+the fork, so cherry-picking only the wrapper would not type-check or
+preserve search sessions correctly. Full upstream lifecycle adoption is
+deferred pending separate tests. The earlier fork compatibility path,
+however, called `readSearchResults(sessionId)` with the default offset 0
+and default page length 100 on every poll. This could duplicate initial
+results and omit every file beyond the first 100, even though the
+underlying manager had collected them.
+
+**Bounded local backport:** preserve the fork's search-manager API and
+30-second limit, but track a precise result cursor, request 1000 results
+per page, drain even a completed full page, and read the first available
+page immediately instead of waiting 100 ms unconditionally. With no
+results yet, use a 20 ms initial sleep and bounded backoff to 100 ms.
+Do not introduce a new orchestrator, persistent index/cache, or runtime
+process restart. This is an adaptation of upstream's exactly-once result
+contract, **not** a claim that the upstream event-driven refactor was
+integrated. Context7 consulted Node.js 24 ESM, async timer/test APIs.
+
+**Controlled wrapper benchmark (mock session, 265 file matches; five
+iterations):** deployed baseline returned 117 paths, only 100 unique,
+and omitted the last match; median 123.93 ms. Isolated patched build
+returned all 265 once; median 0.28 ms. These times measure the wrapper
+with deterministic mocked output, not real ripgrep/NTFS throughput.
+Independent real fixture: 265 unique files in 224.69 ms on the
+candidate in a single observed run. The fixture automatically removes
+its temporary files.
+
+**Regression:** `test/test-search-files-pagination.js` covers 265
+results, initial returns, delayed zero-row reads, and a completed search
+with more than 1000 results (1,234 rows), proving the final page is
+drained. `test/test-search-files-real.js` covers the actual file-search
+manager/ripgrep/fallback on 265 temporary files. Previous completed
+search lifecycle/UTF-8/literal-search regression modules remain in
+the validation gate. Changes are staged solely in the reused
+`X:\MCP\scratch\deskcommand-upstream-timeout-redaction-20261121`
+worktree, not in the live `X:\Code\DesktopCommanderMCP\dist`.
+
+**Deferred upstream changes:** MQTT feature flag and release CI
+changes are outside performance/functionality scope and not needed.
+Upstream's event-driven search completion is a candidate for a future
+bounded lifecycle integration, but not without tests for Office sources,
+session cancellation, timeout, failure outcomes and final-result
+preservation. Upstream's 2026-11 process-startup refactors similarly
+require separate acceptance and must not bypass fork-specific process
+admission or Portal runtime contracts.
+
+## User-facing search-session pagination: performance and upstream parity
+
+Additional call graph verification is essential: `searchFiles()` in
+`src/tools/filesystem.ts` is a **legacy compatibility export**, with no
+internal callers in the current MCP server. The actively used
+`start_search` and `get_more_search_results` MCP tools dispatch through
+`src/handlers/search-handlers.ts` directly to
+`SearchManager.startSearch` and `SearchManager.readSearchResults`.
+Do **not** present the compatibility-wrapper benchmark above as a
+production MCP search speedup.
+
+**Direct MCP path fix:** the fork's `readSearchResults` previously
+allocated and filtered an entire session's stored result list on
+*every paginated read*, then returned only the requested slice. Search
+sessions with tens of thousands of matches incurred O(total results)
+work even for a 20-item page. Audit of this repository found no code
+that creates the old `__LAST_READ_MARKER__` sentinel; the filter was a
+legacy no-op for actual produced search results. Use
+`session.results` directly for indexed slicing instead of generating
+a new full array. This is a local performance improvement beyond the
+upstream v0.3.4 implementation, which also filters every page.
+
+**Functionality parity from upstream:** fix negative/tail offsets so
+they refresh `session.lastReadTime` just like positive-offset reads.
+The fork previously refreshed only positive reads, allowing tail-only
+consumers to be evicted while they were still reading. Upstream
+`4976a3e1` refreshes the timestamp on all reads. Move the update
+ahead of both branches, without changing user-facing paging text,
+completion status, errors or the fork's session state API.
+
+**Controlled in-process benchmark:** 50,000 synthetic stored results;
+200 paginated calls requesting 20 results near the end of the session.
+The deployed baseline `SearchManager` median was 0.6858 ms per call
+and did **not** refresh tail-only read activity. The combined isolated
+candidate median was 0.0007 ms per call; the candidate did refresh
+tail-read activity. These are deterministic in-memory unit timings,
+not per-request MCP transport latency or production throughput.
+`test/test-search-session-pagination-performance.js` also verifies
+that actual `handleGetMoreSearchResults` outputs the expected final
+three paths for the same in-memory session and that the session is
+removed from the test process in a `finally` block.
+
+The legacy wrapper retains an exact cursor and bounded backoff to
+preserve compatibility; active MCP tools benefit directly from the
+`SearchManager` change. The new real-search fixture uses its own
+`import.meta.url` directory for temporary files because the all-tests
+runner executes with `cwd=test`. An initial full run of 158 modules
+passed 157 but failed this fixture path setup; the error was not a
+search assertion. The fixture was corrected before final validation.
+The final full-suite receipt is tracked in
+`X:\MCP\scratch\deskcommand-search-full-final-20261121.log`.
+
+### Final validation receipt (same tested candidate, before merge)
+
+- `npm run build` TypeScript/compiled dist: passed in the reused isolated
+  worktree; live `X:\Code\DesktopCommanderMCP\dist` was not rebuilt.
+- Full `node test/run-all-tests.js` **159/159 modules passed, zero failed**,
+  with five documented environment/platform skips: unavailable Windows
+  `/bin/sh` and `/bin/bash`, nonstandard Chrome Program Files layout,
+  unavailable POSIX process groups, and a symlink-reporting condition.
+  Log: `X:\MCP\scratch\deskcommand-search-full-final-20261121.log`.
+- The first full attempt had 157/158 passes with one test-fixture setup
+  failure caused by the runner's `cwd=test`. Correcting the fixture to use
+  `import.meta.url` yielded the 159/159 clean final run; no production
+  behavior was changed to mask that test error.
+- Twelve existing/added focused search module tests passed; the new tests
+  cover 265 unique filesystem matches, 1,234-result pagination, and
+  in-memory direct MCP search result/tail behavior with 50,000 matches.
+- Latest upstream main independently verified `9a101b17`, v0.3.4.
+  No wholesale rebase, version bump, MQTT activation, GitHub Actions
+  request, or automatic upstream code review is part of this change.
+- **Production status at validation:** the healthy managed MCP runtime
+  still uses released `34ecb0da`; source merge alone is not a deployed
+  performance update. A subsequent supervised rollout must respect the
+  Portal's reviewed manifest pin policy.

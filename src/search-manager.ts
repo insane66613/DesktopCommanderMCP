@@ -273,9 +273,15 @@ export interface SearchSessionOptions {
       throw new Error(`Search session ${sessionId} not found`);
     }
 
-    // Get all results (excluding internal markers)
-    const allResults = session.results.filter(r => r.file !== '__LAST_READ_MARKER__');
-    
+    // Session results contain only real search hits. The old per-page filter
+    // copied every hit on every read, even when returning only 20 results.
+    // Use indexed slicing directly for constant-work pagination and tails.
+    const allResults = session.results;
+
+    // Tail reads are reads too: keep their session alive for pagination.
+    // Upstream's 2026-10 search lifecycle fix also refreshes this timestamp.
+    session.lastReadTime = Date.now();
+
     // Handle negative offsets (tail behavior) - like file reading
     if (offset < 0) {
       const tailCount = Math.abs(offset);
@@ -298,8 +304,6 @@ export interface SearchSessionOptions {
     // Handle positive offsets (range behavior) - like file reading
     const slicedResults = allResults.slice(offset, offset + length);
     const hasMoreResults = offset + length < allResults.length || !session.isComplete;
-
-    session.lastReadTime = Date.now();
 
     return {
       results: slicedResults,
