@@ -16,7 +16,7 @@
 import fs from "fs/promises";
 import path from "path";
 import { createReadStream } from 'fs';
-import { createInterface } from 'readline';
+import { createInterface, Interface } from 'readline';
 import {
     FileHandler,
     ReadOptions,
@@ -34,8 +34,6 @@ const FILE_SIZE_LIMITS = {
 
 const READ_PERFORMANCE_THRESHOLDS = {
     SMALL_READ_THRESHOLD: 100,    // For very small reads
-    DEEP_OFFSET_THRESHOLD: 1000,  // For byte estimation
-    SAMPLE_SIZE: 10000,           // Sample size for estimation
     CHUNK_SIZE: 8192,             // 8KB chunks for reverse reading
 } as const;
 
@@ -267,18 +265,14 @@ export class TextFileHandler implements FileHandler {
                 return await this.readFromEndWithReadline(filePath, requestedLines, mimeType, includeStatusMessage, totalLines, signal);
             }
         }
-        // For positive offsets
-        else {
-            if (fileSize < FILE_SIZE_LIMITS.LARGE_FILE_THRESHOLD || offset === 0) {
-                return await this.readFromStartWithReadline(filePath, offset, length, mimeType, includeStatusMessage, totalLines, signal);
-            } else {
-                if (offset > READ_PERFORMANCE_THRESHOLDS.DEEP_OFFSET_THRESHOLD) {
-                    return await this.readFromEstimatedPosition(filePath, offset, length, mimeType, includeStatusMessage, totalLines, signal);
-                } else {
-                    return await this.readFromStartWithReadline(filePath, offset, length, mimeType, includeStatusMessage, totalLines, signal);
-                }
-            }
-        }
+        // Exact line offsets require counting actual line boundaries. The old
+        // average-byte-size seek returned wrong lines when line lengths varied.
+        // A bounded streaming scan uses constant memory and closes its file
+        // descriptor before returning, even for multi-megabyte files.
+        return await this.readFromStartWithReadline(
+            filePath, offset, length, mimeType, includeStatusMessage,
+            totalLines, signal
+        );
     }
 
     /**
@@ -337,6 +331,39 @@ export class TextFileHandler implements FileHandler {
     }
 
     /**
+     * Run `readLines` on a readline over `filePath`, then close the file before
+     * returning, whether the read finished, stopped early or failed. rl.close()
+     * alone closes the line reader, not the file stream under it, so a read
+     * that stopped early kept the file open until the process exited.
+     */
+    private async withLineReader(
+        filePath: string,
+        options: { signal?: AbortSignal; encoding?: BufferEncoding; start?: number },
+        readLines: (rl: Interface) => Promise<void>
+    ): Promise<void> {
+        const input = createReadStream(filePath, options);
+        // events.once(input, 'close') rejects when an earlier 'error' fires,
+        // which would let an interrupted read return before the descriptor is
+        // actually closed. Observe 'close' directly, even on read errors.
+        const closed = new Promise<void>((resolve) => input.once('close', resolve));
+        const absorbDuringCleanup = () => {};
+        input.on('error', absorbDuringCleanup);
+        const rl = createInterface({
+            input,
+            crlfDelay: Infinity
+        });
+
+        try {
+            await readLines(rl);
+        } finally {
+            rl.close();
+            input.destroy();
+            await closed;
+            input.off('error', absorbDuringCleanup);
+        }
+    }
+
+    /**
      * Read from end using readline with circular buffer
      */
     private async readFromEndWithReadline(
@@ -349,22 +376,17 @@ export class TextFileHandler implements FileHandler {
         encoding?: BufferEncoding,
         start?: number
     ): Promise<FileResult> {
-        const rl = createInterface({
-            input: createReadStream(filePath, { signal, encoding, start }),
-            crlfDelay: Infinity
-        });
-
         const buffer: string[] = new Array(requestedLines);
         let bufferIndex = 0;
         let totalLines = 0;
 
-        for await (const line of rl) {
-            buffer[bufferIndex] = line;
-            bufferIndex = (bufferIndex + 1) % requestedLines;
-            totalLines++;
-        }
-
-        rl.close();
+        await this.withLineReader(filePath, { signal, encoding, start }, async (rl) => {
+            for await (const line of rl) {
+                buffer[bufferIndex] = line;
+                bufferIndex = (bufferIndex + 1) % requestedLines;
+                totalLines++;
+            }
+        });
 
         let result: string[];
         if (totalLines >= requestedLines) {
@@ -397,23 +419,18 @@ export class TextFileHandler implements FileHandler {
         encoding?: BufferEncoding,
         start?: number
     ): Promise<FileResult> {
-        const rl = createInterface({
-            input: createReadStream(filePath, { signal, encoding, start }),
-            crlfDelay: Infinity
-        });
-
         const result: string[] = [];
         let lineNumber = 0;
 
-        for await (const line of rl) {
-            if (lineNumber >= offset && result.length < length) {
-                result.push(line);
+        await this.withLineReader(filePath, { signal, encoding, start }, async (rl) => {
+            for await (const line of rl) {
+                if (lineNumber >= offset && result.length < length) {
+                    result.push(line);
+                }
+                if (result.length >= length) break;
+                lineNumber++;
             }
-            if (result.length >= length) break;
-            lineNumber++;
-        }
-
-        rl.close();
+        });
 
         if (includeStatusMessage) {
             const statusMessage = this.generateEnhancedStatusMessage(result.length, offset, fileTotalLines, false);
@@ -425,79 +442,4 @@ export class TextFileHandler implements FileHandler {
         }
     }
 
-    /**
-     * Read from estimated byte position for very large files
-     */
-    private async readFromEstimatedPosition(
-        filePath: string,
-        offset: number,
-        length: number,
-        mimeType: string,
-        includeStatusMessage: boolean = true,
-        fileTotalLines?: number,
-        signal?: AbortSignal
-    ): Promise<FileResult> {
-        // First, do a quick scan to estimate lines per byte
-        const rl = createInterface({
-            input: createReadStream(filePath, { signal }),
-            crlfDelay: Infinity
-        });
-
-        let sampleLines = 0;
-        let bytesRead = 0;
-
-        for await (const line of rl) {
-            bytesRead += Buffer.byteLength(line, 'utf-8') + 1;
-            sampleLines++;
-            if (bytesRead >= READ_PERFORMANCE_THRESHOLDS.SAMPLE_SIZE) break;
-        }
-
-        rl.close();
-
-        if (sampleLines === 0) {
-            return await this.readFromStartWithReadline(filePath, offset, length, mimeType, includeStatusMessage, fileTotalLines, signal);
-        }
-
-        // Estimate position
-        const avgLineLength = bytesRead / sampleLines;
-        const estimatedBytePosition = Math.floor(offset * avgLineLength);
-
-        const fd = await fs.open(filePath, 'r');
-        try {
-            const stats = await fd.stat();
-            const startPosition = Math.min(estimatedBytePosition, stats.size);
-
-            const stream = createReadStream(filePath, { start: startPosition, signal });
-            const rl2 = createInterface({
-                input: stream,
-                crlfDelay: Infinity
-            });
-
-            const result: string[] = [];
-            let firstLineSkipped = false;
-
-            for await (const line of rl2) {
-                if (!firstLineSkipped && startPosition > 0) {
-                    firstLineSkipped = true;
-                    continue;
-                }
-
-                if (result.length < length) {
-                    result.push(line);
-                } else {
-                    break;
-                }
-            }
-
-            rl2.close();
-
-            const content = includeStatusMessage
-                ? `${this.generateEnhancedStatusMessage(result.length, offset, fileTotalLines, false)}\n\n${result.join('\n')}`
-                : result.join('\n');
-
-            return { content, mimeType, metadata: {} };
-        } finally {
-            await fd.close();
-        }
-    }
 }
