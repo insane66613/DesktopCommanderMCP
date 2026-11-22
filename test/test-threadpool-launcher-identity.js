@@ -150,10 +150,12 @@ test('an unrelated inherited launcher marker still configures the Windows pool',
 test('the child consumes only its exact trailing marker and removes inherited launcher identity', () => {
     const marker = `${LAUNCHER_ARGUMENT}101`;
     const observed = bootstrap({ pid: 102, parentPid: 101,
-        env: { DESKTOP_COMMANDER_THREADPOOL_LAUNCHER_PID: '101' },
+        env: { DESKTOP_COMMANDER_THREADPOOL_LAUNCHER_PID: '101',
+            DESKTOP_COMMANDER_THREADPOOL_LAUNCHER_CHANNEL: 'lifetime-fixture' },
         args: ['remote', '--report', marker, marker] });
     assert.deepEqual(observed.process.argv.slice(2), ['remote', '--report', marker]);
     assert.equal(observed.process.env.DESKTOP_COMMANDER_THREADPOOL_LAUNCHER_PID, undefined);
+    assert.equal(observed.process.env.DESKTOP_COMMANDER_THREADPOOL_LAUNCHER_CHANNEL, undefined);
     assert.equal(observed.monitored, true);
 });
 
@@ -190,4 +192,25 @@ test('an inherited endpoint without a launcher PID does not identify a copy', ()
     const observed = bootstrap({ env: { DESKTOP_COMMANDER_THREADPOOL_LAUNCHER_CHANNEL: 'lifetime-fixture' } });
     assert.notEqual(observed.invocation, null);
     assert.equal(observed.monitored, false);
+});
+
+test('unavailable launcher lifetime endpoint never starts an untracked copy', () => {
+    const observed = bootstrap({ binds: false });
+    assert.equal(observed.invocation, null);
+    assert.equal(observed.process.env.UV_THREADPOOL_SIZE, '16');
+    assert.equal(observed.monitored, false);
+});
+
+test('malformed inherited marker with a channel is never accepted as a serving copy', () => {
+    for (const marker of ['0', 'abc', '999999999999999999999']) {
+        const observed = bootstrap({
+            env: {
+                DESKTOP_COMMANDER_THREADPOOL_LAUNCHER_PID: marker,
+                DESKTOP_COMMANDER_THREADPOOL_LAUNCHER_CHANNEL: 'untrusted-endpoint',
+            },
+            args: [`${LAUNCHER_ARGUMENT}${marker}`],
+        });
+        assert.equal(observed.monitored, false, `invalid launcher marker ${marker} must not be monitored`);
+        assert.notEqual(observed.invocation, null, 'untrusted marker must not suppress configured pool');
+    }
 });
