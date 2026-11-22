@@ -72,7 +72,10 @@ class CommandManager {
             commandString = commandString.trim();
 
             // Define command separators - these are the operators that can chain commands
-            const separators = [';', '&&', '||', '|', '&'];
+            // Newlines also execute separate shell statements. Keep CRLF
+            // ahead of its single-byte forms to consume it once, while quote
+            // and here-string handling below remains authoritative.
+            const separators = ['\r\n', '\n', '\r', ';', '&&', '||', '|', '&'];
 
             // This will store our extracted commands
             const commands: string[] = [];
@@ -87,7 +90,10 @@ class CommandManager {
                 const char = commandString[i];
 
                 // Handle escape characters
-                if (char === '\\' && !escaped) {
+                // A backslash does not continue a PowerShell/Windows line.
+                // Never let it conceal an executable on the following line.
+                const nextIsNewline = commandString[i + 1] === '\r' || commandString[i + 1] === '\n';
+                if (char === '\\' && !escaped && !(process.platform === 'win32' && nextIsNewline)) {
                     escaped = true;
                     currentCmd += char;
                     continue;
