@@ -52,7 +52,7 @@ export const StartProcessArgsSchema = z.object({
 });
 
 export const ReadProcessOutputArgsSchema = z.object({
-  pid: z.number(),
+  pid: z.number().int().min(1, 'Number must be greater than 0').max(2147483647),
   timeout_ms: z.number().optional(),
   offset: z.number().int().optional(),   // Line offset: 0=from last read, positive=absolute, negative=tail
   length: z.number().int().min(1).optional(),   // Max lines to return (default from config.fileReadLineLimit)
@@ -63,7 +63,7 @@ export const ReadProcessOutputArgsSchema = z.object({
 });
 
 export const ForceTerminateArgsSchema = z.object({
-  pid: z.number(),
+  pid: z.number().int().min(1, 'Number must be greater than 0').max(2147483647),
 });
 
 export const ListSessionsArgsSchema = z.object({});
@@ -219,7 +219,7 @@ export const EditBlockArgsSchema = z.object({
 
 // Send input to process schema
 export const InteractWithProcessArgsSchema = z.object({
-  pid: z.number(),
+  pid: z.number().int().min(1, 'Number must be greater than 0').max(2147483647),
   input: z.string(),
   timeout_ms: z.number().optional(),
   wait_for_prompt: z.boolean().optional(),
