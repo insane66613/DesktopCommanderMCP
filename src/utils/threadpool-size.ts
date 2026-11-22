@@ -19,6 +19,9 @@ import { exitProcess } from './exit-process.js';
 /** In the copy that setThreadpoolSize() starts: the process ID of the process that started it */
 export const LAUNCHER_PID_VARIABLE = 'DESKTOP_COMMANDER_THREADPOOL_LAUNCHER_PID';
 
+/** A trailing command-line marker allows diagnostics to distinguish the bootstrap copy from a nested server. */
+export const LAUNCHER_PID_ARGUMENT = '--desktop-commander-threadpool-launcher-pid=';
+
 /** How often the copy checks that the process that started it still runs */
 const LAUNCHER_CHECK_MS = 1000;
 
@@ -58,6 +61,8 @@ export function setThreadpoolSize(size: string, envReachesThreadpool: boolean = 
     delete process.env[LAUNCHER_PID_VARIABLE];
     const launcherPid = validateLauncherPidMarker(marker);
     if (launcherPid !== null) {
+      // Only a verified direct child consumes the appended argument; preserve user-supplied options.
+      if (process.argv.at(-1) === `${LAUNCHER_PID_ARGUMENT}${launcherPid}`) process.argv.pop();
       exitWithLauncher(launcherPid);
       return;
     }
@@ -70,7 +75,8 @@ export function setThreadpoolSize(size: string, envReachesThreadpool: boolean = 
   const debugging = [...process.execArgv, process.env.NODE_OPTIONS ?? ''].some((option) => option.includes('--inspect'));
   if (envReachesThreadpool || debugging) return;
 
-  const copy = spawnSync(process.execPath, [...process.execArgv, ...process.argv.slice(1)], {
+  const copyArgs = [...process.execArgv, ...process.argv.slice(1), `${LAUNCHER_PID_ARGUMENT}${process.pid}`];
+  const copy = spawnSync(process.execPath, copyArgs, {
     stdio: 'inherit',
     env: { ...process.env, [LAUNCHER_PID_VARIABLE]: String(process.pid) },
   });

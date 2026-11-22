@@ -9,6 +9,7 @@ import tls from 'tls';
 import { fileURLToPath } from 'url';
 import PizZip from 'pizzip';
 import { VERSION } from '../../version.js';
+import { LAUNCHER_PID_ARGUMENT } from '../../utils/threadpool-size.js';
 import { deviceLogNames, getDeviceLogDir, cleanLine } from './device-log.js';
 import { redact } from './redact.js';
 import { savedUserId, uploadReport } from './upload.js';
@@ -348,7 +349,7 @@ function checkRealtime(supabaseUrl: string, key: string): Promise<{ openedMs?: n
 
 // --- Desktop Commander MCP running now ----------------------------------------------------
 
-interface ProcessInfo { pid: number; startedAt: number; command: string }
+interface ProcessInfo { pid: number; parentPid: number; startedAt: number; command: string }
 
 /** "[[dd-]hh:]mm:ss" from ps, in seconds. */
 function elapsedSeconds(etime: string): number {
@@ -367,22 +368,22 @@ function listProcesses(): Promise<ProcessInfo[]> {
     return new Promise((resolve, reject) => {
         if (process.platform === 'win32') {
             const script = '[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-CimInstance Win32_Process | ForEach-Object { ' +
-                '"$($_.ProcessId)`t$(if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString(\'o\') })`t$($_.CommandLine)" }';
+                '"$($_.ProcessId)`t$($_.ParentProcessId)`t$(if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString(\'o\') })`t$($_.CommandLine)" }';
             execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], options, (error, stdout) => {
                 if (error) return reject(error);
                 resolve(String(stdout).split(/\r?\n/).map((line) => {
-                    const [pid, created, ...command] = line.split('\t');
-                    return { pid: Number(pid), startedAt: Date.parse(created), command: command.join('\t') };
+                    const [pid, parentPid, created, ...command] = line.split('\t');
+                    return { pid: Number(pid), parentPid: Number(parentPid), startedAt: Date.parse(created), command: command.join('\t') };
                 }).filter((p) => p.pid > 0 && p.command));
             });
             return;
         }
-        execFile('ps', ['-A', '-ww', '-o', 'pid=,etime=,command='], options, (error, stdout) => {
+        execFile('ps', ['-A', '-ww', '-o', 'pid=,ppid=,etime=,command='], options, (error, stdout) => {
             if (error) return reject(error);
             const now = Date.now();
             resolve(String(stdout).split('\n').flatMap((line) => {
-                const match = line.match(/^\s*(\d+)\s+(\S+)\s+(.*)$/);
-                return match ? [{ pid: Number(match[1]), startedAt: now - elapsedSeconds(match[2]) * 1000, command: match[3] }] : [];
+                const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/);
+                return match ? [{ pid: Number(match[1]), parentPid: Number(match[2]), startedAt: now - elapsedSeconds(match[3]) * 1000, command: match[4] }] : [];
             }));
         });
     });
@@ -413,7 +414,9 @@ function isDesktopCommanderEntry(file: string, packageNames: Map<string, string 
  * dist/index.js (started by an MCP client, npx, or `remote`'s local MCP), not
  * followed by `remote` / `setup` / `remove`, and not this report. A shell
  * wrapping it names only a bin, which doesn't resolve, so it isn't counted
- * twice. Only the count and the earliest start leave this function.
+ * twice. A verified, marked Windows Node 22 threadpool copy counts with its
+ * launcher; independent nested servers remain separate. A legacy unmarked copy
+ * cannot be distinguished from an independent server. Only aggregate facts leave.
  */
 async function desktopCommanderMcp(): Promise<DiagnosticsReport['desktopCommanderMcp']> {
     let processes: ProcessInfo[];
@@ -423,17 +426,28 @@ async function desktopCommanderMcp(): Promise<DiagnosticsReport['desktopCommande
         return { running: null, since: null, error: `could not list processes (${errorText(error)})` };
     }
     const packageNames = new Map<string, string | null>();
-    const servers = processes.filter(({ pid, command }) => {
-        if (pid === process.pid) return false;
+    const servers = processes.flatMap(({ pid, parentPid, startedAt, command }) => {
+        if (pid === process.pid) return [];
         const tokens = (command.match(/"[^"]*"|\S+/g) ?? []).map((token) => token.replace(/^"|"$/g, ''));
-        // The first token is the executable; the entry is any later one
+        // The first token is the executable; the entry is any later one.
         const at = tokens.findIndex((token, i) => i > 0 && /(\.js|desktop-commander(\.cmd)?)$/i.test(token) &&
             isDesktopCommanderEntry(token, packageNames));
-        return at > 0 && !NOT_THE_SERVER.has(tokens[at + 1] ?? '');
+        if (at < 0 || NOT_THE_SERVER.has(tokens[at + 1] ?? '')) return [];
+        const launcherPid = tokens.at(-1) === `${LAUNCHER_PID_ARGUMENT}${parentPid}` ? parentPid : null;
+        return [{ pid, parentPid, startedAt, launcherPid }];
     });
-    const starts = servers.map((p) => p.startedAt).filter((t) => !Number.isNaN(t));
+    const serversByPid = new Map(servers.map((server) => [server.pid, server]));
+    const counted = servers.filter((server) => {
+        const launcher = server.launcherPid === null ? undefined : serversByPid.get(server.launcherPid);
+        if (!launcher) return true;
+        // A process with a later start cannot be this child's launcher; its PID was reused.
+        return Number.isFinite(launcher.startedAt) && Number.isFinite(server.startedAt) &&
+            launcher.startedAt > server.startedAt;
+    });
+    // A recognized child can carry the only reliable startup timestamp.
+    const starts = servers.map((server) => server.startedAt).filter(Number.isFinite);
     return {
-        running: servers.length,
+        running: counted.length,
         since: starts.length ? new Date(Math.min(...starts)).toISOString() : null,
     };
 }
