@@ -254,8 +254,11 @@ export class TerminalManager {
    * @param input Text to send to the process
    * @returns Whether input was successfully sent
    */
-  async sendInputToProcess(pid: number, input: string, timeoutMs: number = 15000): Promise<boolean> {
+  async sendInputToProcess(pid: number, input: string, timeoutMs: number = 15000, expectedGeneration?: number): Promise<boolean> {
     const session = this.sessions.get(pid);
+    // Bind the input write to the same session identity as the captured output
+    // cursor. The check and stdin.write occur synchronously without an await.
+    if (expectedGeneration !== undefined && session?.generation !== expectedGeneration) return false;
     const stdin = session?.process.stdin;
     if (!stdin || stdin.destroyed || stdin.writableEnded || !stdin.writable) {
       return false;

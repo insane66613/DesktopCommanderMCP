@@ -66,7 +66,9 @@ async function main() {
   // session has already moved to completedSessions (no snapshot available);
   // a since-start snapshot exercises the same read path.
   const snapshot = terminalManager.captureOutputSnapshot(result.pid)
-    ?? { totalChars: 0, lineCount: 0 };
+    ?? { totalChars: 0, lineCount: 0, generation: terminalManager.getSessionStateVersion(result.pid)?.generation };
+  assert.ok(Number.isSafeInteger(snapshot.generation),
+    'completed-before-snapshot must preserve its session generation');
 
   // Watch the flood stream in, sampling event-loop lag. Poll completion via
   // readOutputPaginated (covers active and completed sessions) instead of an

@@ -1,5 +1,7 @@
 /** Preserve absolute cursors without joining the entire session buffer on polls. */
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import { interactWithProcess } from '../dist/tools/improved-process-tools.js';
 import { terminalManager } from '../dist/terminal-manager.js';
 import { analyzeProcessState } from '../dist/utils/process-detection.js';
 import { runIfMain } from './helpers/run-if-main.js';
@@ -61,7 +63,34 @@ export default async function runTests() {
     assert.equal(terminalManager.getOutputSinceSnapshot(pid, first), null);
     const replacementCursor = terminalManager.captureOutputSnapshot(pid);
     assert.equal(replacementCursor.generation, 2);
+    const delivered = [];
+    const stdin = new EventEmitter();
+    stdin.writable = true;
+    stdin.destroyed = false;
+    stdin.writableEnded = false;
+    stdin.write = (value, callback) => { delivered.push(value); callback(); return true; };
+    replacement.process = { pid, stdin };
+    assert.equal(await terminalManager.sendInputToProcess(pid, 'sensitive', 300, first.generation), false);
+    assert.equal(delivered.length, 0, 'stale generation cannot receive private input');
+    assert.equal(await terminalManager.sendInputToProcess(pid, 'valid', 300, 2), true);
+    assert.deepEqual(delivered, ['valid\n'], 'matching generation still accepts input');
+
     terminalManager.sessions.set(pid, session);
+    const originalCapture = terminalManager.captureOutputSnapshot;
+    try {
+      terminalManager.captureOutputSnapshot = function(id) {
+        const captured = originalCapture.call(this, id);
+        terminalManager.sessions.set(id, replacement); // PID reused between snapshot and send.
+        return captured;
+      };
+      const before = delivered.length;
+      const response = await interactWithProcess({ pid, input: 'intercepted secret', timeout_ms: 300 });
+      assert.equal(response.isError, true, 'interaction must reject replaced PID');
+      assert.equal(delivered.length, before, 'interact_with_process must not write to the replacement');
+    } finally {
+      terminalManager.captureOutputSnapshot = originalCapture;
+      terminalManager.sessions.set(pid, session);
+    }
 
     const huge = 'B'.repeat(6 * 1024 * 1024);
     lines.length = 0;

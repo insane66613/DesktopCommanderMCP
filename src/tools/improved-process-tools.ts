@@ -805,7 +805,7 @@ export async function interactWithProcess(args: unknown): Promise<ServerResult> 
     const outputSnapshot = terminalManager.captureOutputSnapshot(pid);
 
     // Never send to an untracked PID after a failed snapshot admission.
-    const success = outputSnapshot !== null && await terminalManager.sendInputToProcess(pid, input, timeout_ms);
+    const success = outputSnapshot !== null && await terminalManager.sendInputToProcess(pid, input, timeout_ms, outputSnapshot.generation);
 
     if (!success) {
       return {
