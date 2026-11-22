@@ -198,7 +198,11 @@ export class MCPDevice {
             await this.desktop.initialize();
             this.desktop.onDisconnect((reason) => void this.handleLocalMcpLoss(reason));
 
-            console.log(`⏳ Connecting to Remote MCP ${this.baseServerUrl}`);
+            console.log('⏳ Connecting to Remote MCP');
+            // Node.js console.debug also writes to stdout. Keep endpoint details opt-in.
+            if (process.env.DEBUG_MODE === 'true') {
+                console.debug(`   - Server URL: ${this.baseServerUrl}`);
+            }
             const { supabaseUrl, anonKey } = await this.fetchSupabaseConfig();
             console.log(`   - 🔌 Connected to Remote MCP`);
 
