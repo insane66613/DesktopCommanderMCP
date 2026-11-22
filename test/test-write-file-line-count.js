@@ -24,7 +24,7 @@ export default async function runTests() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dc-write-count-'));
   const failures = [];
   const check = (condition, message) => {
-    console.log(`${condition ? 'Γ£à' : 'Γ¥î'} ${message}`);
+    console.log(`${condition ? 'PASS' : 'FAIL'} ${message}`);
     if (!condition) failures.push(message);
   };
   const write = async (name, content) => {
