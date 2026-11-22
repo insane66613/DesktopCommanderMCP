@@ -92,7 +92,7 @@ async function main() {
   assert.ok(completedTail, 'should be able to read output after completion');
   assert.ok(completedTail.evictedLines > 0, 'paginated reads should report evicted line count');
   const joinedLength = completedTail.totalLines <= 0 ? 0
-    : terminalManager.getOutputSinceSnapshot(result.pid, { totalChars: 0, lineCount: 0 })?.length ?? 0;
+    : terminalManager.getOutputSinceSnapshot(result.pid, { totalChars: 0, lineCount: 0, generation: snapshot.generation })?.length ?? 0;
   assert.ok(
     joinedLength <= BUFFER_CAP_CHARS + BUFFER_CAP_SLACK,
     `retained output ${joinedLength} chars should be within the ${BUFFER_CAP_CHARS} cap (+slack)`

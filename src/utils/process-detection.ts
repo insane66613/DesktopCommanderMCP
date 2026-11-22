@@ -51,8 +51,13 @@ const COMPLETION_INDICATORS = [
 /**
  * Analyze process output to determine current state
  */
+export const STATE_DETECTION_TAIL_CHARS = 4096;
+
 export function analyzeProcessState(output: string, pid?: number): ProcessState {
-  if (!output || output.trim().length === 0) {
+  // Prompt and completion indicators must describe the recent output only.
+  // Scanning multi-megabyte buffers every poll creates quadratic CPU work.
+  const tail = output.slice(-STATE_DETECTION_TAIL_CHARS);
+  if (!tail || tail.trim().length === 0) {
     return {
       isWaitingForInput: false,
       isFinished: false,
@@ -61,7 +66,7 @@ export function analyzeProcessState(output: string, pid?: number): ProcessState 
     };
   }
 
-  const lines = output.split('\n');
+  const lines = tail.split('\n');
   const lastLine = lines[lines.length - 1] || '';
   const lastFewLines = lines.slice(-3).join('\n');
 
@@ -83,7 +88,7 @@ export function analyzeProcessState(output: string, pid?: number): ProcessState 
 
   // Check for completion indicators
   const hasCompletionIndicator = COMPLETION_INDICATORS.some(pattern => 
-    pattern.test(output)
+    pattern.test(tail)
   );
 
   if (hasCompletionIndicator) {

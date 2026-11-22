@@ -695,9 +695,10 @@ async function executeReadProcessOutputCore(
       : '';
     processStateMessage = `\nProcess completed with exit code ${result.exitCode}${runtimeStr}`;
   } else if (session) {
-    // Analyze state for running processes
-    const fullOutput = session.outputLines.join('\n');
-    const processState = analyzeProcessState(fullOutput, pid);
+    // Only the tail is relevant to prompt detection. Avoid materializing
+    // the entire retained session buffer during a read-only status poll.
+    const recentOutput = session.outputLines.slice(-5).map((line: string) => line.slice(-4096)).join('\n').slice(-4096);
+    const processState = analyzeProcessState(recentOutput, pid);
     if (processState.isWaitingForInput) {
       processStateMessage = `\n🔄 ${formatProcessStateMessage(processState, pid)}`;
     }
@@ -803,7 +804,8 @@ export async function interactWithProcess(args: unknown): Promise<ServerResult> 
     // This handles REPLs where output is appended to the prompt line
     const outputSnapshot = terminalManager.captureOutputSnapshot(pid);
 
-    const success = await terminalManager.sendInputToProcess(pid, input, timeout_ms);
+    // Never send to an untracked PID after a failed snapshot admission.
+    const success = outputSnapshot !== null && await terminalManager.sendInputToProcess(pid, input, timeout_ms);
 
     if (!success) {
       return {
@@ -857,7 +859,7 @@ export async function interactWithProcess(args: unknown): Promise<ServerResult> 
         let delay = 30;
         const maxDelay = 500;
         const deadline = Date.now() + timeout_ms;
-        let lastOutputLength = 0;
+        let readCursor = outputSnapshot;
         let timer: ReturnType<typeof setTimeout> | null = null;
 
         const resolveOnce = () => {
@@ -870,12 +872,12 @@ export async function interactWithProcess(args: unknown): Promise<ServerResult> 
         const poll = () => {
           if (resolved) return;
 
-          // Use snapshot-based reading to handle REPL prompt line appending
-          const newOutput = outputSnapshot 
-            ? terminalManager.getOutputSinceSnapshot(pid, outputSnapshot)
-            : terminalManager.getNewOutput(pid);
-            
-          if (newOutput && newOutput.length > lastOutputLength) {
+          // Advance an absolute cursor on every poll. Returning only new bytes
+          // avoids reconstructing the entire 50 MiB buffer for each interaction.
+          const read = readCursor ? terminalManager.readOutputSince(pid, readCursor) : null;
+          if (read) readCursor = read.next;
+          const newOutput = read?.output ?? '';
+          if (newOutput.length > 0) {
             const now = Date.now();
             if (!firstOutputTime) firstOutputTime = now;
             lastOutputTime = now;
@@ -885,13 +887,15 @@ export async function interactWithProcess(args: unknown): Promise<ServerResult> 
                 timestamp: now,
                 deltaMs: now - startTime,
                 source: 'periodic_poll',
-                length: newOutput.length - lastOutputLength,
-                snippet: newOutput.slice(lastOutputLength, lastOutputLength + 50).replace(/\n/g, '\\n')
+                length: newOutput.length,
+                snippet: newOutput.slice(0, 50).replace(/\n/g, '\\n')
               });
             }
 
-            output = newOutput;
-            lastOutputLength = newOutput.length;
+            output += newOutput;
+            if (output.length > MAX_BUFFERED_OUTPUT_CHARS) {
+              output = output.slice(-MAX_BUFFERED_OUTPUT_CHARS);
+            }
 
             // Analyze current state
             processState = analyzeProcessState(output, pid);
