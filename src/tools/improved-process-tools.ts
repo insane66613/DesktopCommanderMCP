@@ -786,6 +786,12 @@ export async function interactWithProcess(args: unknown): Promise<ServerResult> 
     const effectiveTimeout = timeout_ms ?? session.timeout_ms;
     return executeNodeCode(input, effectiveTimeout);
   }
+  if (pid < 0) {
+    return {
+      content: [{ type: 'text', text: `Unknown virtual Node.js session ${pid}` }],
+      isError: true,
+    };
+  }
 
   // Timing telemetry
   const startTime = Date.now();
@@ -1061,6 +1067,13 @@ export async function forceTerminate(args: unknown): Promise<ServerResult> {
     };
   }
 
+  // Never pass an unknown negative virtual-session ID to an OS kill path.
+  if (pid < 0) {
+    return {
+      content: [{ type: 'text', text: `Unknown virtual Node.js session ${pid}` }],
+      isError: true,
+    };
+  }
   const outcome = await terminalManager.forceTerminateAndWait(pid);
   const failed = outcome === 'failed';
   return {

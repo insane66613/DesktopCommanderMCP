@@ -17,7 +17,9 @@ async function testInteractiveBlockedCommandValidation() {
     const originalSnapshot = terminalManager.captureOutputSnapshot;
     const inputs = [];
     terminalManager.sendInputToProcess = (_processId, input) => { inputs.push(input); return true; };
-    terminalManager.captureOutputSnapshot = () => null;
+    // An allowed interaction requires a managed output snapshot. A null
+    // snapshot now correctly fails closed instead of writing to an unknown PID.
+    terminalManager.captureOutputSnapshot = () => ({ totalChars: 0, lineCount: 0, generation: 1 });
     try {
         const result = await interactWithProcess({
             pid: 12345,
@@ -30,6 +32,10 @@ async function testInteractiveBlockedCommandValidation() {
         const benign = await interactWithProcess({ pid: 12345, input: 'hello', wait_for_prompt: false });
         assert.notStrictEqual(benign.isError, true, 'Benign input should continue working');
         assert.deepStrictEqual(inputs, ['hello']);
+        terminalManager.captureOutputSnapshot = () => null;
+        const missingSession = await interactWithProcess({ pid: 12345, input: 'hello', wait_for_prompt: false });
+        assert.strictEqual(missingSession.isError, true, 'Missing process snapshot must reject input');
+        assert.deepStrictEqual(inputs, ['hello'], 'Missing snapshot must never reach stdin');
     } finally {
         terminalManager.sendInputToProcess = originalSend;
         terminalManager.captureOutputSnapshot = originalSnapshot;
