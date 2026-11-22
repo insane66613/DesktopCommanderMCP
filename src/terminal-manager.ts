@@ -215,6 +215,9 @@ export function getShellSpawnArgs(
 export class TerminalManager {
   private nextGeneration = 1;
   private sessions: Map<number, VersionedTerminalSession> = new Map();
+  // Coalesce only concurrent tree termination; failed attempts must be retryable.
+  // Key by the session object, not PID, to avoid PID-reuse collisions.
+  private terminationInFlight = new WeakMap<VersionedTerminalSession, Promise<'ended' | 'failed'>>();
   private completedSessions: Map<number, CompletedSession> = new Map();
   private evictedCompletedSessions: Map<number, string> = new Map();
 
@@ -1046,12 +1049,10 @@ export class TerminalManager {
   captureOutputSnapshot(pid: number): { totalChars: number; lineCount: number } | null {
     const session = this.sessions.get(pid);
     if (session) {
-      const fullOutput = session.outputLines.join('\n');
       return {
-        // Absolute since process start (includes evicted output), so the
-        // offset stays valid even if the cap evicts lines between
-        // snapshot and read.
-        totalChars: session.evictedChars + fullOutput.length,
+        // The buffer already accounts for embedded line separators.
+        // No 50 MiB join is needed just to capture a cursor.
+        totalChars: session.evictedChars + session.bufferedChars,
         lineCount: session.evictedLines + session.outputLines.length
       };
     }
@@ -1064,19 +1065,25 @@ export class TerminalManager {
    * Also checks completed sessions in case process finished between snapshot and poll.
    */
   getOutputSinceSnapshot(pid: number, snapshot: { totalChars: number; lineCount: number }): string | null {
-    // Check active session first
-    const session = this.sessions.get(pid);
-    if (session) {
-      return TerminalManager.outputSinceSnapshot(session.outputLines, session.evictedChars, snapshot.totalChars);
-    }
+    return this.readOutputSince(pid, snapshot)?.output ?? null;
+  }
 
-    // Fallback to completed sessions - process may have finished between snapshot and poll
-    const completedSession = this.completedSessions.get(pid);
-    if (completedSession) {
-      return TerminalManager.outputSinceSnapshot(completedSession.outputLines, completedSession.evictedChars, snapshot.totalChars);
-    }
-
-    return null;
+  /** Read only bytes appended after a cursor and return its exact next cursor.
+   * A completed-session transfer preserves the absolute char offset. */
+  readOutputSince(pid: number, cursor: { totalChars: number; lineCount: number }): {
+    output: string; next: { totalChars: number; lineCount: number };
+  } | null {
+    const session = this.sessions.get(pid) ?? this.completedSessions.get(pid);
+    if (!session) return null;
+    return {
+      output: TerminalManager.outputSinceSnapshot(
+        session.outputLines, session.evictedChars, session.bufferedChars, cursor.totalChars
+      ),
+      next: {
+        totalChars: session.evictedChars + session.bufferedChars,
+        lineCount: session.evictedLines + session.outputLines.length
+      }
+    };
   }
 
   /**
@@ -1084,13 +1091,25 @@ export class TerminalManager {
    * If eviction dropped part of the unseen output, returns what the buffer
    * still holds — the oldest unseen chars are lost to the cap.
    */
-  private static outputSinceSnapshot(outputLines: string[], evictedChars: number, snapshotTotalChars: number): string {
-    const fullOutput = outputLines.join('\n');
-    const newChars = evictedChars + fullOutput.length - snapshotTotalChars;
-    if (newChars <= 0) {
-      return ''; // No new output
+  private static outputSinceSnapshot(outputLines: string[], evictedChars: number, bufferedChars: number, snapshotTotalChars: number): string {
+    // Most polls arrive with no output. The exact counter avoids rebuilding
+    // the entire retained buffer on every poll and preserves absolute cursors.
+    let remaining = Math.min(bufferedChars, evictedChars + bufferedChars - snapshotTotalChars);
+    if (remaining <= 0) return '';
+    const fragments: string[] = [];
+    // Copy only the suffix newer than the snapshot, walking from the tail.
+    // Separators between retained lines count as one character.
+    for (let i = outputLines.length - 1; i >= 0 && remaining > 0; i--) {
+      const line = outputLines[i];
+      const take = Math.min(remaining, line.length);
+      if (take > 0) fragments.push(line.slice(line.length - take));
+      remaining -= take;
+      if (remaining > 0 && i > 0) {
+        fragments.push('\n');
+        remaining--;
+      }
     }
-    return fullOutput.substring(Math.max(0, fullOutput.length - newChars));
+    return fragments.reverse().join('');
   }
 
   /**
@@ -1145,13 +1164,24 @@ export class TerminalManager {
   async forceTerminateAndWait(pid: number): Promise<'ended' | 'failed' | 'not_found'> {
     const session = this.sessions.get(pid);
     if (!session) return 'not_found';
+    const ongoing = this.terminationInFlight.get(session);
+    if (ongoing) return ongoing;
     session.lifecycleVersion++;
+    const attempt = (async (): Promise<'ended' | 'failed'> => {
+      try {
+        return (await terminateProcessTree(session.process)) ? 'ended' : 'failed';
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        capture('server_request_error', { error: message, message: `Failed to terminate process tree ${pid}` });
+        return 'failed';
+      }
+    })();
+    this.terminationInFlight.set(session, attempt);
     try {
-      return (await terminateProcessTree(session.process)) ? 'ended' : 'failed';
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      capture('server_request_error', { error: message, message: `Failed to terminate process tree ${pid}` });
-      return 'failed';
+      return await attempt;
+    } finally {
+      // Never cache a failed result, and permit later retries if a tree survived.
+      if (this.terminationInFlight.get(session) === attempt) this.terminationInFlight.delete(session);
     }
   }
 
