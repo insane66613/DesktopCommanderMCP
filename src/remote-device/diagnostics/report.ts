@@ -367,9 +367,10 @@ function listProcesses(): Promise<ProcessInfo[]> {
     const options = { timeout: PROCESS_LIST_TIMEOUT_MS, windowsHide: true, maxBuffer: 32 * 1024 * 1024 };
     return new Promise((resolve, reject) => {
         if (process.platform === 'win32') {
-            const script = '[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-CimInstance Win32_Process | ForEach-Object { ' +
+            // Query only the fields needed for counting and use PowerShell 7; never launch legacy Windows PowerShell 5.1.
+            const script = '[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate,CommandLine | ForEach-Object { ' +
                 '"$($_.ProcessId)`t$($_.ParentProcessId)`t$(if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString(\'o\') })`t$($_.CommandLine)" }';
-            execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], options, (error, stdout) => {
+            execFile('pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command', script], options, (error, stdout) => {
                 if (error) return reject(error);
                 resolve(String(stdout).split(/\r?\n/).map((line) => {
                     const [pid, parentPid, created, ...command] = line.split('\t');
