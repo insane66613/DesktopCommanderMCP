@@ -51,8 +51,10 @@ export interface SearchSession {
   results: SearchResult[];
   isComplete: boolean;
   isError: boolean;
+  processError?: boolean;  // An actual ChildProcess failure survives a later close with partial results.
   error?: string;
   startTime: number;
+  endTime?: number;  // Freeze elapsed time at the first terminal process event.
   lastReadTime: number;
   options: SearchSessionOptions;
   buffer: string;  // Current ripgrep output line being assembled
@@ -250,7 +252,7 @@ export interface SearchSessionOptions {
       isError: session.isError,
       results: [...session.results],
       totalResults: session.totalMatches,
-      runtime: Date.now() - session.startTime
+      runtime: (session.endTime ?? Date.now()) - session.startTime
     };
   }
 
@@ -303,7 +305,7 @@ export interface SearchSessionOptions {
         isError: session.isError && !!session.error?.trim(), // Only error if we have actual errors
         error: session.error?.trim() || undefined,
         hasMoreResults: false, // Tail always returns what's available
-        runtime: Date.now() - session.startTime,
+        runtime: (session.endTime ?? Date.now()) - session.startTime,
         wasIncomplete: session.wasIncomplete,
         skippedLines: this.skippedLinesOf(session)
       };
@@ -322,7 +324,7 @@ export interface SearchSessionOptions {
       isError: session.isError && !!session.error?.trim(), // Only error if we have actual errors
       error: session.error?.trim() || undefined,
       hasMoreResults,
-      runtime: Date.now() - session.startTime,
+      runtime: (session.endTime ?? Date.now()) - session.startTime,
       wasIncomplete: session.wasIncomplete,
       skippedLines: this.skippedLinesOf(session)
     };
@@ -389,7 +391,7 @@ export interface SearchSessionOptions {
       pattern: session.options.pattern,
       isComplete: session.isComplete,
       isError: session.isError,
-      runtime: Date.now() - session.startTime,
+      runtime: (session.endTime ?? Date.now()) - session.startTime,
       totalResults: session.totalMatches + session.totalContextLines
     }));
   }
@@ -932,6 +934,7 @@ export interface SearchSessionOptions {
       this.processOutput(session, '', true);
 
       session.isComplete = true;
+      session.endTime ??= Date.now();
 
       // Track if search was incomplete due to access issues
       // Ripgrep exit code 2 means "some files couldn't be searched"
@@ -952,7 +955,7 @@ export interface SearchSessionOptions {
       }
 
       // If we have results, don't mark as error even if there were permission issues
-      if (session.totalMatches > 0) {
+      if (session.totalMatches > 0 && !session.processError) {
         session.isError = false;
       }
 
@@ -961,7 +964,7 @@ export interface SearchSessionOptions {
         exitCode: code,
         totalResults: session.totalMatches + session.totalContextLines,
         totalMatches: session.totalMatches,
-        runtime: Date.now() - session.startTime,
+        runtime: (session.endTime ?? Date.now()) - session.startTime,
         wasIncomplete: session.wasIncomplete || false  // NEW: Track incomplete searches
       });
 
@@ -969,7 +972,9 @@ export interface SearchSessionOptions {
     });
 
     process.on('error', (error: Error) => {
+      session.processError = true;
       session.isComplete = true;
+      session.endTime ??= Date.now();
       session.isError = true;
       session.error = `Process error: ${error.message}`;
 
