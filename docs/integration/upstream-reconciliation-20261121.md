@@ -425,3 +425,11 @@ remain release requirements.
 - Local Node v24 build and 16 scoped test modules passed, 0 failed; one platform-inapplicable macOS/Linux-only check was skipped on Windows. Covers process trees, start/finish, stdout/stderr inheritance, read pagination, 32 KiB response limits, 28/26-tool conditional MCP discovery and safety admission identities.
 - AiGentAI ChatGPT/Copilot reviews were requested once per provider, but each reported an unknown-outcome timeout. Neither counts as a completed independent review and neither was resubmitted.
 - The full repository-wide suite, Linux/macOS behavior, quantitative production CPU measurements and live release acceptance are not verified. No GitHub Actions, deploy, restart or production bridge ownership change.
+
+### PR27 independent Copilot P1 finding, repaired before merge
+
+- Copilot completed an actual-source review of PR #27 initial HEAD `3ed7345531afa22e31a96a4f8266255dee20d8cd`; it reported P1 PID reuse because an output cursor tracked only PID + bytes, unlike the session-keyed termination WeakMap. P2 requested stronger real-process transition tests. No P0 finding.
+- The output snapshot and every subsequent incremental read cursor now carry the session's immutable `generation`; `readOutputSince` rejects a mismatched generation even if the OS has reused the same PID. The public snapshot lookup also uses this identity check; the old internal integration fixture's explicit cursor was upgraded to include its captured generation.
+- Added an adversarial fixture: capture generation 1 under PID X, replace it with generation 2 containing unrelated output, assert that both incremental and compatibility reads from generation 1 return null and do not expose the new process's bytes.
+- Node v24 build, the new cursor regression, the real kill/retry regression and a post-fix **16 / 16** targeted suite passed; 0 failed, with one macOS/Linux-only platform check skipped.
+- Independently ran `test/integration/terminal-output-buffer-leak.js`: real 576 MiB streamed; 49 MiB retained under the 50 MiB cap; maximum measured event-loop stall **31 ms**, exit code 0. This is isolated test evidence, not a claim of production CPU performance.

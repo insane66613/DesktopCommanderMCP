@@ -1046,14 +1046,15 @@ export class TerminalManager {
    * Capture a snapshot of current output state for interaction tracking.
    * Used by interactWithProcess to know what output existed before sending input.
    */
-  captureOutputSnapshot(pid: number): { totalChars: number; lineCount: number } | null {
+  captureOutputSnapshot(pid: number): { totalChars: number; lineCount: number; generation: number } | null {
     const session = this.sessions.get(pid);
     if (session) {
       return {
         // The buffer already accounts for embedded line separators.
         // No 50 MiB join is needed just to capture a cursor.
         totalChars: session.evictedChars + session.bufferedChars,
-        lineCount: session.evictedLines + session.outputLines.length
+        lineCount: session.evictedLines + session.outputLines.length,
+        generation: session.generation
       };
     }
     return null;
@@ -1064,24 +1065,26 @@ export class TerminalManager {
    * This handles the case where output is appended to the last line (REPL prompts).
    * Also checks completed sessions in case process finished between snapshot and poll.
    */
-  getOutputSinceSnapshot(pid: number, snapshot: { totalChars: number; lineCount: number }): string | null {
+  getOutputSinceSnapshot(pid: number, snapshot: { totalChars: number; lineCount: number; generation: number }): string | null {
     return this.readOutputSince(pid, snapshot)?.output ?? null;
   }
 
   /** Read only bytes appended after a cursor and return its exact next cursor.
    * A completed-session transfer preserves the absolute char offset. */
-  readOutputSince(pid: number, cursor: { totalChars: number; lineCount: number }): {
-    output: string; next: { totalChars: number; lineCount: number };
+  readOutputSince(pid: number, cursor: { totalChars: number; lineCount: number; generation: number }): {
+    output: string; next: { totalChars: number; lineCount: number; generation: number };
   } | null {
     const session = this.sessions.get(pid) ?? this.completedSessions.get(pid);
-    if (!session) return null;
+    // PID reuse must never let an old interaction read a replacement process.
+    if (!session || session.generation !== cursor.generation) return null;
     return {
       output: TerminalManager.outputSinceSnapshot(
         session.outputLines, session.evictedChars, session.bufferedChars, cursor.totalChars
       ),
       next: {
         totalChars: session.evictedChars + session.bufferedChars,
-        lineCount: session.evictedLines + session.outputLines.length
+        lineCount: session.evictedLines + session.outputLines.length,
+        generation: session.generation
       }
     };
   }

@@ -16,7 +16,7 @@ export default async function runTests() {
   terminalManager.sessions.set(pid, session);
   try {
     const first = terminalManager.captureOutputSnapshot(pid);
-    assert.deepEqual(first, { totalChars: 10, lineCount: 2 });
+    assert.deepEqual(first, { totalChars: 10, lineCount: 2, generation: 1 });
     assert.equal(terminalManager.getOutputSinceSnapshot(pid, first), '');
     let cursor = first;
     for (let i = 0; i < 1200; i++) {
@@ -47,9 +47,22 @@ export default async function runTests() {
     const afterEviction = terminalManager.readOutputSince(pid, cursor);
     assert.equal(afterEviction.output, 'next');
     assert.equal(afterEviction.next.totalChars, 20);
-    const oldCursor = { totalChars: 0, lineCount: 0 };
+    const oldCursor = { totalChars: 0, lineCount: 0, generation: 1 };
     assert.equal(terminalManager.readOutputSince(pid, oldCursor).output, 'beta!\ntailnext',
       'late cursor receives the retained suffix after eviction');
+    // A recycled PID must never allow the old generation to observe new output.
+    const replacement = {
+      ...session, generation: 2, outputLines: ['replacement process secret'],
+      bufferedChars: 26, evictedChars: 0, evictedLines: 0,
+    };
+    terminalManager.sessions.set(pid, replacement);
+    assert.equal(terminalManager.readOutputSince(pid, oldCursor), null,
+      'a cursor from generation 1 must reject generation 2 under the same PID');
+    assert.equal(terminalManager.getOutputSinceSnapshot(pid, first), null);
+    const replacementCursor = terminalManager.captureOutputSnapshot(pid);
+    assert.equal(replacementCursor.generation, 2);
+    terminalManager.sessions.set(pid, session);
+
     const huge = 'B'.repeat(6 * 1024 * 1024);
     lines.length = 0;
     lines.push(huge);
