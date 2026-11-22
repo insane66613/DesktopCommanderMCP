@@ -393,3 +393,16 @@ remain release requirements.
 - Extended upstream `test-write-file-line-count.js` to assert helper boundary cases and `receive_file` structured lineCount. Four isolated test modules passed (write-line-count, file-output-contracts, native-file-input, negative-offset-readfile), zero failures/skips, including a successful Node v24 build.
 - AiGentAI ChatGPT/Copilot source-review requests were attempted. Copilot failed pre-submission; ChatGPT reported unknown-outcome timeout. Neither review was verified, and the unknown-outcome request was not resent.
 - No GitHub Actions run requested. No production deployment or package version change.
+
+## 2026-11-22: upstream search-outcome semantics (separate selective cohort)
+
+- Baseline fork main `098cd6af97add2903df086cc6d8a6de86abf8240`, upstream `9a101b17`. Source target `1cf3335b0161` (outcome reporting, not wholesale upstream search-manager replacement).
+- Added the six terminal outcomes `completed`, `timed_out`, `stopped`, `max_results`, `partial`, `failed`; result reads and session listings retain the prior page, cursor, memory-bounds and elapsed-time contracts. Stop and time-limit termination are explicitly tagged before signalling.
+- A configured max-results threshold that was reached is conservatively labeled `max_results`: this indicates possible truncation, not proof that further matches actually exist. A search with skipped oversized lines or ripgrep code 2 is `partial`, except invalid regex/arguments errors which are `failed`. An unexpected nonzero exit with retained matches is `partial`, preserving the available evidence.
+- Updated `start_search`, `get_more_search_results`, `list_searches` text, structured content parser and output schemas together so terminal outcomes are neither silently rewritten as generic `COMPLETED` nor omitted from machine-readable responses. Preserve result bodies when incomplete.
+- A real ChildProcess error remains `failed` even if a later close is observed, preserving PR24's error-race fix. Completed searches cannot be stopped retroactively.
+- Added `test/test-search-outcome-fork.js` (six outcomes, stopped-session idempotency, malformed regex, oversized lines, error race, all three structured search surfaces) and `test/test-search-outcome-real-rg.js` (actual clean, result-capped and invalid-regex ripgrep searches).
+- Context7 consulted for @modelcontextprotocol/sdk version 1.32.1 outputSchema + structuredContent behavior. Local Node24 build and 12 selected search tests passed with 0 failures and 0 skipped; separate real-ripgrep integration passed.
+- The AiGentAI Copilot request reached response observation but returned an unknown-outcome timeout; ChatGPT timed out at send-action-started with unknown outcome. Neither was accepted as a completed reviewer response and neither was duplicated.
+- No GitHub Actions, full suite, production restart, deployment, or unsafe cross-volume move was undertaken. Immutable production release gates remain separate.
+- Final scoped acceptance run: **16 selected modules passed; 0 failed, 0 skipped**, including the actual ripgrep outcome test, MCP stdio, 28/26-tool conditional discovery, read-only annotations, search pagination, UTF-8, timeout bounds, error races and the 32 KiB response budget. Local build passed. Full 169-module suite remains unverified.\n

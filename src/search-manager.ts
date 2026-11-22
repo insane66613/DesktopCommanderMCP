@@ -45,6 +45,8 @@ export const SHOWN_TEXT_CHARS = 100;
 const keptText = (text: string | undefined): string | undefined =>
   text === undefined ? undefined : Buffer.from(text.slice(0, SHOWN_TEXT_CHARS + 1), 'utf16le').toString('utf16le');
 
+export type SearchOutcome = 'completed' | 'timed_out' | 'stopped' | 'max_results' | 'partial' | 'failed';
+
 export interface SearchSession {
   id: string;
   process: ChildProcess;
@@ -52,6 +54,8 @@ export interface SearchSession {
   isComplete: boolean;
   isError: boolean;
   processError?: boolean;  // An actual ChildProcess failure survives a later close with partial results.
+  outcome?: SearchOutcome;  // Final search disposition, distinct from the process being closed.
+  stopReason?: 'timed_out' | 'stopped';
   error?: string;
   startTime: number;
   endTime?: number;  // Freeze elapsed time at the first terminal process event.
@@ -96,6 +100,7 @@ export interface SearchSessionOptions {
     sessionId: string;
     isComplete: boolean;
     isError: boolean;
+    outcome?: SearchOutcome;
     results: SearchResult[];
     totalResults: number;
     runtime: number;
@@ -155,7 +160,8 @@ export interface SearchSessionOptions {
     if (timeoutMs) {
       killTimer = setTimeout(() => {
         if (!session.isComplete && !session.process.killed) {
-          session.process.kill('SIGTERM');
+          session.stopReason = 'timed_out';
+          if (!session.process.kill('SIGTERM')) session.stopReason = undefined;
         }
       }, Math.min(timeoutMs, LONGEST_TIMER_MS));
     }
@@ -250,6 +256,7 @@ export interface SearchSessionOptions {
       sessionId,
       isComplete: session.isComplete,
       isError: session.isError,
+      outcome: session.outcome,
       results: [...session.results],
       totalResults: session.totalMatches,
       runtime: (session.endTime ?? Date.now()) - session.startTime
@@ -273,6 +280,7 @@ export interface SearchSessionOptions {
     isError: boolean;
     error?: string;
     hasMoreResults: boolean;      // New field
+    outcome?: SearchOutcome;
     runtime: number;
     wasIncomplete?: boolean;      // NEW: Indicates if search was incomplete due to permissions
     skippedLines: Array<{ file: string; count: number }>;
@@ -302,6 +310,7 @@ export interface SearchSessionOptions {
         totalResults: session.totalMatches + session.totalContextLines,
         totalMatches: session.totalMatches, // Actual matches only
         isComplete: session.isComplete,
+        outcome: session.outcome,
         isError: session.isError && !!session.error?.trim(), // Only error if we have actual errors
         error: session.error?.trim() || undefined,
         hasMoreResults: false, // Tail always returns what's available
@@ -321,6 +330,7 @@ export interface SearchSessionOptions {
       totalResults: session.totalMatches + session.totalContextLines,
       totalMatches: session.totalMatches, // Actual matches only
       isComplete: session.isComplete,
+      outcome: session.outcome,
       isError: session.isError && !!session.error?.trim(), // Only error if we have actual errors
       error: session.error?.trim() || undefined,
       hasMoreResults,
@@ -340,17 +350,18 @@ export interface SearchSessionOptions {
   terminateSearch(sessionId: string): boolean {
     const session = this.sessions.get(sessionId);
     
-    if (!session) {
+    if (!session || session.isComplete || session.process.killed) {
       return false;
     }
 
-    if (!session.process.killed) {
-      session.process.kill('SIGTERM');
+    // Mark before signalling: a test process may emit close synchronously.
+    session.stopReason = 'stopped';
+    if (!session.process.kill('SIGTERM')) {
+      session.stopReason = undefined;
+      return false;
     }
 
-    // Don't delete session immediately - let user read final results
-    // It will be cleaned up by cleanup process
-    
+    // Keep the session available for reading its final results after close.
     return true;
   }
 
@@ -382,6 +393,7 @@ export interface SearchSessionOptions {
     pattern: string;
     isComplete: boolean;
     isError: boolean;
+    outcome?: SearchOutcome;
     runtime: number;
     totalResults: number;
   }> {
@@ -391,6 +403,7 @@ export interface SearchSessionOptions {
       pattern: session.options.pattern,
       isComplete: session.isComplete,
       isError: session.isError,
+      outcome: session.outcome,
       runtime: (session.endTime ?? Date.now()) - session.startTime,
       totalResults: session.totalMatches + session.totalContextLines
     }));
@@ -883,6 +896,22 @@ export interface SearchSessionOptions {
     return args;
   }
 
+  /** Conservative completion reporting: a configured result cap that was
+   * reached is not evidence that the entire tree was searched. */
+  private outcomeOf(session: SearchSession, code: number | null): SearchOutcome {
+    if (session.processError) return 'failed';
+    if (session.stopReason) return session.stopReason;
+    const diagnostic = session.error ?? '';
+    if (code === 2 && /regex parse error|invalid regex|unrecognized flag|invalid value|error parsing/i.test(diagnostic)) {
+      return 'failed';
+    }
+    if (session.wasIncomplete || code === 2 || session.skippedLines.size > 0) return 'partial';
+    if (code !== 0 && code !== 1) return session.totalMatches > 0 ? 'partial' : 'failed';
+    const limit = session.options.maxResults;
+    if (limit && limit > 0 && session.totalMatches >= limit) return 'max_results';
+    return 'completed';
+  }
+
   private setupProcessHandlers(session: SearchSession): void {
     const { process } = session;
 
@@ -942,21 +971,12 @@ export interface SearchSessionOptions {
         session.wasIncomplete = true;
       }
 
-      // Only treat as error if:
-      // 1. Unexpected exit code (not 0, 1, or 2) AND
-      // 2. We have meaningful errors after filtering AND
-      // 3. We found no results at all
-      if (code !== 0 && code !== 1 && code !== 2) {
-        // Codes 0=success, 1=no matches, 2=some files couldn't be searched
-        if (session.error?.trim() && session.totalMatches === 0) {
-          session.isError = true;
-          session.error = session.error || `ripgrep exited with code ${code}`;
-        }
-      }
-
-      // If we have results, don't mark as error even if there were permission issues
-      if (session.totalMatches > 0 && !session.processError) {
-        session.isError = false;
+      // One terminal outcome, even when ripgrep returned some partial results.
+      // An actual process error must never be cleared by a later close.
+      session.outcome = this.outcomeOf(session, code);
+      session.isError = session.outcome === 'failed';
+      if (session.isError && !session.error?.trim()) {
+        session.error = `ripgrep exited with code ${code}`;
       }
 
       capture('search_session_completed', {
@@ -965,6 +985,7 @@ export interface SearchSessionOptions {
         totalResults: session.totalMatches + session.totalContextLines,
         totalMatches: session.totalMatches,
         runtime: (session.endTime ?? Date.now()) - session.startTime,
+        outcome: session.outcome,
         wasIncomplete: session.wasIncomplete || false  // NEW: Track incomplete searches
       });
 
@@ -973,6 +994,7 @@ export interface SearchSessionOptions {
 
     process.on('error', (error: Error) => {
       session.processError = true;
+      session.outcome = 'failed';
       session.isComplete = true;
       session.endTime ??= Date.now();
       session.isError = true;

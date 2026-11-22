@@ -7,6 +7,23 @@ import {
 import { ServerResult } from '../types.js';
 import { capture } from '../utils/capture.js';
 
+/** Source-of-truth search outcome is carried by the manager, not inferred
+ * from result count or the presence of the word "completed" in a message. */
+function searchStatus(complete: boolean, outcome?: string, activeLabel: string = 'IN_PROGRESS'): string {
+  return complete ? (outcome ?? 'completed').toUpperCase() : activeLabel;
+}
+
+function searchOutcomeNotice(outcome?: string): string {
+  switch (outcome) {
+    case 'timed_out': return 'Search timed out; results may be incomplete.';
+    case 'stopped': return 'Search was stopped; results are incomplete.';
+    case 'max_results': return 'Result limit reached; additional matches may exist.';
+    case 'partial': return 'Search was partial; some files or lines were not searched.';
+    case 'failed': return 'Search failed; results are not exhaustive.';
+    default: return 'Search completed.';
+  }
+}
+
 /**
  * Handle start_search command
  */
@@ -39,7 +56,8 @@ export async function handleStartSearch(args: unknown): Promise<ServerResult> {
     let output = `Started ${searchTypeText} session: ${result.sessionId}\n`;
     output += `Pattern: "${parsed.data.pattern}"\n`;
     output += `Path: ${parsed.data.path}\n`;
-    output += `Status: ${result.isComplete ? 'COMPLETED' : 'RUNNING'}\n`;
+    output += `Status: ${searchStatus(result.isComplete, result.outcome, 'RUNNING')}\n`;
+    if (result.outcome) output += `Outcome: ${result.outcome}\n`;
     output += `Runtime: ${Math.round(result.runtime)}ms\n`;
     output += `Total results: ${result.totalResults}\n\n`;
 
@@ -60,7 +78,7 @@ export async function handleStartSearch(args: unknown): Promise<ServerResult> {
     }
 
     if (result.isComplete) {
-      output += `\n✅ Search completed.`;
+      output += `\n${searchOutcomeNotice(result.outcome)}`;
     } else {
       output += `\n🔄 Search in progress. Use get_more_search_results to get more results.`;
     }
@@ -113,7 +131,7 @@ export async function handleGetMoreSearchResults(args: unknown): Promise<ServerR
       return {
         content: [{
           type: "text",
-          text: `Search session ${parsed.data.sessionId} encountered an error: ${results.error}`
+          text: `Search session: ${parsed.data.sessionId}\nStatus: FAILED\nOutcome: failed\nError: ${results.error}`
         }],
         isError: true,
       };
@@ -121,7 +139,8 @@ export async function handleGetMoreSearchResults(args: unknown): Promise<ServerR
 
     // Format results for display
     let output = `Search session: ${parsed.data.sessionId}\n`;
-    output += `Status: ${results.isComplete ? 'COMPLETED' : 'IN PROGRESS'}\n`;
+    output += `Status: ${searchStatus(results.isComplete, results.outcome)}\n`;
+    if (results.outcome) output += `Outcome: ${results.outcome}\n`;
     output += `Runtime: ${Math.round(results.runtime / 1000)}s\n`;
     output += `Total results found: ${results.totalResults} (${results.totalMatches} matches)\n`;
     
@@ -166,7 +185,7 @@ export async function handleGetMoreSearchResults(args: unknown): Promise<ServerR
     }
 
     if (results.isComplete) {
-      output += `\n✅ Search completed.`;
+      output += `\n${searchOutcomeNotice(results.outcome)}`;
       
       // Warn users if search was incomplete due to permission issues
       if (results.wasIncomplete) {
@@ -243,14 +262,13 @@ export async function handleListSearches(): Promise<ServerResult> {
     let output = `Active Searches (${sessions.length}):\n\n`;
     
     for (const session of sessions) {
-      const status = session.isComplete 
-        ? (session.isError ? '❌ ERROR' : '✅ COMPLETED')
-        : '🔄 RUNNING';
+      const status = searchStatus(session.isComplete, session.outcome, 'RUNNING');
       
       output += `Session: ${session.id}\n`;
       output += `  Type: ${session.searchType}\n`;
       output += `  Pattern: "${session.pattern}"\n`;
       output += `  Status: ${status}\n`;
+      if (session.outcome) output += `  Outcome: ${session.outcome}\n`;
       output += `  Runtime: ${Math.round(session.runtime / 1000)}s\n`;
       output += `  Results: ${session.totalResults}\n\n`;
     }

@@ -91,6 +91,7 @@ const SEARCH_SESSION_OUTPUT_SCHEMA: JsonSchema = {
   properties: {
     sessionId: { type: ['string', 'null'] },
     status: { type: 'string' },
+    outcome: { type: ['string', 'null'] },
     pattern: { type: ['string', 'null'] },
     path: { type: ['string', 'null'] },
     totalResults: { type: ['integer', 'number', 'null'] },
@@ -108,6 +109,7 @@ const SEARCH_MORE_OUTPUT_SCHEMA: JsonSchema = {
   properties: {
     sessionId: { type: ['string', 'null'] },
     status: { type: 'string' },
+    outcome: { type: ['string', 'null'] },
     totalResults: { type: ['integer', 'number', 'null'] },
     totalMatches: { type: ['integer', 'number', 'null'] },
     returnedCount: { type: ['integer', 'number', 'null'] },
@@ -132,6 +134,7 @@ const SEARCH_LIST_OUTPUT_SCHEMA: JsonSchema = {
           id: { type: ['string', 'null'] },
           pattern: { type: ['string', 'null'] },
           status: { type: ['string', 'null'] },
+          outcome: { type: ['string', 'null'] },
           totalResults: { type: ['integer', 'number', 'null'] },
         },
         additionalProperties: true,
