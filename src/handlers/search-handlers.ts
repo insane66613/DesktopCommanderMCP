@@ -20,7 +20,7 @@ function searchOutcomeNotice(outcome?: string): string {
     case 'max_results': return 'Result limit reached; additional matches may exist.';
     case 'partial': return 'Search was partial; some files or lines were not searched.';
     case 'failed': return 'Search failed; results are not exhaustive.';
-    default: return 'Search completed.';
+    default: return '✅ Search completed.';
   }
 }
 

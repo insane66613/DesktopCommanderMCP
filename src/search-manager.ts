@@ -56,6 +56,11 @@ export interface SearchSession {
   processError?: boolean;  // An actual ChildProcess failure survives a later close with partial results.
   outcome?: SearchOutcome;  // Final search disposition, distinct from the process being closed.
   stopReason?: 'timed_out' | 'stopped';
+  ripgrepClosed?: boolean;
+  ripgrepExitCode?: number | null;
+  pendingOffice?: number;
+  officeError?: boolean;
+  timeoutTimer?: NodeJS.Timeout;
   error?: string;
   startTime: number;
   endTime?: number;  // Freeze elapsed time at the first terminal process event.
@@ -128,6 +133,13 @@ export interface SearchSessionOptions {
       throw new Error('Failed to start ripgrep process');
     }
 
+    // Reserve every active source before attaching ripgrep close listeners:
+    // a short ripgrep search can exit before Office searches finish.
+    const shouldSearchExcel = options.searchType === 'content' &&
+      this.shouldIncludeExcelSearch(options.filePattern, validPath);
+    const shouldSearchDocx = options.searchType === 'content' &&
+      this.shouldIncludeDocxSearch(options.filePattern, validPath);
+
     // Create session
     const session: SearchSession = {
       id: sessionId,
@@ -135,6 +147,7 @@ export interface SearchSessionOptions {
       results: [],
       isComplete: false,
       isError: false,
+      pendingOffice: Number(shouldSearchExcel) + Number(shouldSearchDocx),
       startTime: Date.now(),
       lastReadTime: Date.now(),
       options,
@@ -152,34 +165,32 @@ export interface SearchSessionOptions {
     // Start cleanup interval now that we have a session
     this.startCleanupIfNeeded();
 
-    // Set up timeout if specified and auto-terminate
-    // For exact filename searches, use a shorter default timeout
-    const timeoutMs = options.timeout ?? (this.isExactFilename(options.pattern, options.literalSearch) ? 1500 : undefined);
+    // Set up timeout and auto-terminate. A plain exact filename search uses
+    // the shorter fast path. Office parsers get a 3-minute default bound
+    // so they neither truncate prematurely nor run without a deadline.
+    const timeoutMs = options.timeout ??
+      ((session.pendingOffice ?? 0) > 0 ? 180000 :
+        this.isExactFilename(options.pattern, options.literalSearch) ? 1500 : undefined);
     
-    let killTimer: NodeJS.Timeout | null = null;
     if (timeoutMs) {
-      killTimer = setTimeout(() => {
-        if (!session.isComplete && !session.process.killed) {
-          session.stopReason = 'timed_out';
-          if (!session.process.kill('SIGTERM')) session.stopReason = undefined;
+      session.timeoutTimer = setTimeout(() => {
+        if (session.isComplete) return;
+        if (session.stopReason === 'stopped') {
+          this.finishSearchIfReady(session, true);
+          return;
+        }
+        session.stopReason = 'timed_out';
+        let signalled = true;
+        if (!session.ripgrepClosed && !session.process.killed) {
+          signalled = session.process.kill('SIGTERM');
+        }
+        // A slow Office search must not remain "completed" or mutate results
+        // after its deadline. Late Office promises are ignored by their guards.
+        if (!signalled || (session.pendingOffice ?? 0) > 0 || session.ripgrepClosed) {
+          this.finishSearchIfReady(session, true);
         }
       }, Math.min(timeoutMs, LONGEST_TIMER_MS));
     }
-
-    // Clear timer on process completion
-    session.process.once('close', () => {
-      if (killTimer) {
-        clearTimeout(killTimer);
-        killTimer = null;
-      }
-    });
-
-    session.process.once('error', () => {
-      if (killTimer) {
-        clearTimeout(killTimer);
-        killTimer = null;
-      }
-    });
 
     capture('search_session_started', {
       sessionId,
@@ -193,9 +204,6 @@ export interface SearchSessionOptions {
     // For content searches, only search Excel files when contextually relevant:
     // - filePattern explicitly targets Excel files (*.xlsx, *.xls, etc.)
     // - or rootPath is an Excel file itself
-    const shouldSearchExcel = options.searchType === 'content' &&
-      this.shouldIncludeExcelSearch(options.filePattern, validPath);
-
     if (shouldSearchExcel) {
       this.searchExcelFiles(
         validPath,
@@ -205,21 +213,23 @@ export interface SearchSessionOptions {
         options.filePattern,  // Pass filePattern to filter Excel files too
         options.literalSearch  // Respect literalSearch flag for Office files
       ).then(excelResults => {
-        // Add Excel results to session (merged after initial response)
+        // Ignore late results after a timeout, stop or hard failure.
+        if (session.isComplete) return;
         for (const result of excelResults) {
           session.results.push(result);
           session.totalMatches++;
         }
       }).catch((err) => {
-        // Log Excel search errors but don't fail the whole search
+        if (!session.isComplete) session.officeError = true;
         capture('excel_search_error', { error: err instanceof Error ? err.message : String(err) });
+      }).finally(() => {
+        if (session.isComplete) return;
+        session.pendingOffice = Math.max(0, (session.pendingOffice ?? 1) - 1);
+        this.finishSearchIfReady(session);
       });
     }
 
     // For content searches, also search DOCX files
-    const shouldSearchDocx = options.searchType === 'content' &&
-      this.shouldIncludeDocxSearch(options.filePattern, validPath);
-
     if (shouldSearchDocx) {
       this.searchDocxFiles(
         validPath,
@@ -229,12 +239,18 @@ export interface SearchSessionOptions {
         options.filePattern,
         options.literalSearch  // Respect literalSearch flag for Office files
       ).then(docxResults => {
+        if (session.isComplete) return;
         for (const result of docxResults) {
           session.results.push(result);
           session.totalMatches++;
         }
       }).catch((err) => {
+        if (!session.isComplete) session.officeError = true;
         capture('docx_search_error', { error: err instanceof Error ? err.message : String(err) });
+      }).finally(() => {
+        if (session.isComplete) return;
+        session.pendingOffice = Math.max(0, (session.pendingOffice ?? 1) - 1);
+        this.finishSearchIfReady(session);
       });
     }
 
@@ -350,9 +366,14 @@ export interface SearchSessionOptions {
   terminateSearch(sessionId: string): boolean {
     const session = this.sessions.get(sessionId);
     
-    if (!session || session.isComplete || session.process.killed) {
-      return false;
+    if (!session || session.isComplete || session.stopReason) return false;
+    if (session.ripgrepClosed) {
+      // Ripgrep finished; the requested Office search is still outstanding.
+      session.stopReason = 'stopped';
+      this.finishSearchIfReady(session, true);
+      return true;
     }
+    if (session.process.killed) return false;
 
     // Mark before signalling: a test process may emit close synchronously.
     session.stopReason = 'stopped';
@@ -360,15 +381,17 @@ export interface SearchSessionOptions {
       session.stopReason = undefined;
       return false;
     }
-
-    // Keep the session available for reading its final results after close.
+    // User cancellation also abandons pending Office scans. Ripgrep close
+    // cannot wait indefinitely for an uncooperative document parser.
+    if ((session.pendingOffice ?? 0) > 0) this.finishSearchIfReady(session, true);
     return true;
   }
 
   /** Stop running searches and release housekeeping resources. */
   dispose(): void {
     for (const session of this.sessions.values()) {
-      if (!session.process.killed) session.process.kill('SIGTERM');
+      if (session.timeoutTimer) clearTimeout(session.timeoutTimer);
+      if (!session.process.killed && !session.ripgrepClosed) session.process.kill('SIGTERM');
     }
     this.sessions.clear();
     if (this.cleanupTimer) {
@@ -905,11 +928,37 @@ export interface SearchSessionOptions {
     if (code === 2 && /regex parse error|invalid regex|unrecognized flag|invalid value|error parsing/i.test(diagnostic)) {
       return 'failed';
     }
-    if (session.wasIncomplete || code === 2 || session.skippedLines.size > 0) return 'partial';
+    if (session.wasIncomplete || session.officeError || code === 2 || session.skippedLines.size > 0) return 'partial';
     if (code !== 0 && code !== 1) return session.totalMatches > 0 ? 'partial' : 'failed';
     const limit = session.options.maxResults;
     if (limit && limit > 0 && session.totalMatches >= limit) return 'max_results';
     return 'completed';
+  }
+
+  /** Complete only after ripgrep AND all requested Office sources settle.
+   * Explicit stop, timeout or process error may force an incomplete result. */
+  private finishSearchIfReady(session: SearchSession, force = false): void {
+    if (session.isComplete) return;
+    if (!force && (!session.ripgrepClosed || (session.pendingOffice ?? 0) > 0)) return;
+
+    session.isComplete = true;
+    session.endTime ??= Date.now();
+    if (session.ripgrepExitCode === 2) session.wasIncomplete = true;
+    session.outcome = this.outcomeOf(session, session.ripgrepExitCode ?? null);
+    session.isError = session.outcome === 'failed';
+    if (session.isError && !session.error?.trim()) {
+      session.error = `ripgrep exited with code ${session.ripgrepExitCode ?? 'unknown'}`;
+    }
+    if (session.timeoutTimer) clearTimeout(session.timeoutTimer);
+    capture('search_session_completed', {
+      sessionId: session.id,
+      exitCode: session.ripgrepExitCode,
+      totalResults: session.totalMatches + session.totalContextLines,
+      totalMatches: session.totalMatches,
+      runtime: session.endTime - session.startTime,
+      outcome: session.outcome,
+      wasIncomplete: session.wasIncomplete || session.officeError || false
+    });
   }
 
   private setupProcessHandlers(session: SearchSession): void {
@@ -920,10 +969,11 @@ export interface SearchSessionOptions {
     process.stderr?.setEncoding('utf8');
 
     process.stdout?.on('data', (data: string) => {
-      this.processOutput(session, data);
+      if (!session.isComplete) this.processOutput(session, data);
     });
 
     process.stderr?.on('data', (data: Buffer) => {
+      if (session.isComplete) return;
       const errorText = data.toString();
 
       // Store error text for potential user display, but don't capture individual errors
@@ -958,49 +1008,23 @@ export interface SearchSessionOptions {
       }
     });
 
-    process.on('close', (code: number) => {
-      // Process the last partial line, if output did not end with a newline.
+    process.on('close', (code: number | null) => {
+      if (session.isComplete) return;
       this.processOutput(session, '', true);
-
-      session.isComplete = true;
-      session.endTime ??= Date.now();
-
-      // Track if search was incomplete due to access issues
-      // Ripgrep exit code 2 means "some files couldn't be searched"
-      if (code === 2) {
-        session.wasIncomplete = true;
-      }
-
-      // One terminal outcome, even when ripgrep returned some partial results.
-      // An actual process error must never be cleared by a later close.
-      session.outcome = this.outcomeOf(session, code);
-      session.isError = session.outcome === 'failed';
-      if (session.isError && !session.error?.trim()) {
-        session.error = `ripgrep exited with code ${code}`;
-      }
-
-      capture('search_session_completed', {
-        sessionId: session.id,
-        exitCode: code,
-        totalResults: session.totalMatches + session.totalContextLines,
-        totalMatches: session.totalMatches,
-        runtime: (session.endTime ?? Date.now()) - session.startTime,
-        outcome: session.outcome,
-        wasIncomplete: session.wasIncomplete || false  // NEW: Track incomplete searches
-      });
-
-      // Rely on cleanupSessions(maxAge) only; no per-session timer
+      session.ripgrepClosed = true;
+      session.ripgrepExitCode = code;
+      this.finishSearchIfReady(session);
     });
 
     process.on('error', (error: Error) => {
+      // An error may arrive before or even after close; keep the failure.
       session.processError = true;
       session.outcome = 'failed';
-      session.isComplete = true;
-      session.endTime ??= Date.now();
-      session.isError = true;
       session.error = `Process error: ${error.message}`;
-
-      // Rely on cleanupSessions(maxAge) only; no per-session timer
+      session.ripgrepClosed = true;
+      session.ripgrepExitCode = null;
+      session.isError = true;
+      this.finishSearchIfReady(session, true);
     });
   }
 

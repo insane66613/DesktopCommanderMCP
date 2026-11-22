@@ -7,6 +7,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import { fileURLToPath } from 'url';
 import { handleStartSearch, handleGetMoreSearchResults, handleStopSearch } from '../dist/handlers/search-handlers.js';
+import { enrichStructuredContent } from '../dist/structured-content.js';
 import { configManager } from '../dist/config-manager.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -42,12 +43,14 @@ async function searchAndWaitForCompletion(searchArgs, timeout = 10000) {
     while (Date.now() - startTime < timeout) {
       const moreResults = await handleGetMoreSearchResults({ sessionId });
       
-      if (moreResults.content[0].text.includes('✅ Search completed')) {
-        return { initialResult: result, finalResult: moreResults, sessionId };
-      }
-      
-      if (moreResults.content[0].text.includes('❌ ERROR')) {
+      // Search outcome is semantic now: a capped or partial scan has ended
+      // without claiming it searched every possible file.
+      const state = enrichStructuredContent('get_more_search_results', moreResults).structuredContent;
+      if (state?.outcome === 'failed') {
         throw new Error(`Search failed: ${moreResults.content[0].text}`);
+      }
+      if (state?.isComplete) {
+        return { initialResult: result, finalResult: moreResults, sessionId };
       }
       
       // Wait a bit before polling again
