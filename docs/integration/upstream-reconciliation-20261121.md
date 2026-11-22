@@ -363,3 +363,14 @@ remain release requirements.
 - The complete 169-module test run was deliberately terminated after an incomplete early segment. Do not claim full-suite validation.
 - AiGentAI ChatGPT and Copilot comparison requests were accepted but both timed out with unknown outcomes; no independent provider recommendation is verified and no duplicate was submitted.
 - No package-version bump, service restart, production deployment, or GitHub Actions run was performed by this backport.
+
+## 2026-11-22: media attribution and search runtime (separate backport cohort)
+
+- Baseline fork main: `026305af7987cccc8990292c0046057d5c671e28`; official upstream: `9a101b17` (v0.3.4).
+- Adapted upstream `a87cd4b1045d`: `read_multiple_files` now inserts a per-file text header ahead of image/PDF blocks and keeps the existing header for text content. No file bytes or structured schemas were changed.
+- Reused upstream's actual `test/test-read-multiple-files.js` fixture to verify two distinguishable images, a missing file, a PDF page and a text file are attributable to their paths.
+- Partially adapted `4976a3e178ff`: on ripgrep close/error, record a terminal timestamp and stop reported runtime from growing on subsequent pagination and list requests. The fork already refreshed `lastReadTime` for negative-offset tail reads; do not re-backport or claim that behavior was missing.
+- Added `test/test-search-frozen-runtime.js`, which runs ripgrep in an isolated temporary profile, verifies completed elapsed time is stable, and verifies tail reads keep a session retrievable.
+- Context7 review: Model Context Protocol TypeScript SDK v1.x permits ordered, mixed text/image content blocks. We preserved the fork's model-facing and UI-preview payload separation.
+- Node v24.15.0 local build passed; nine targeted search/file/schema/stdio/budget tests passed, zero failed/skipped. No full-suite claim, no production deployment.
+- Deferred `1cf3335b0161` unified search outcome states because they require coordinated changes to `search-manager.ts`, `search-handlers.ts`, `structured-content.ts` and output schemas, plus failure/partial/stop/timeout regressions. Do not merge an isolated text-only subset.

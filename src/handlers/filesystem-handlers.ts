@@ -293,7 +293,10 @@ export async function handleReadMultipleFiles(args: unknown): Promise<ServerResu
     // Add each file content
     for (const result of fileResults) {
         if (!result.error && result.content !== undefined) {
+            // Bind each media block to its source before the model sees the bytes.
+            const header = `\n--- ${result.path} contents: ---\n`;
             if (result.isPdf) {
+                contentItems.push({ type: "text", text: header });
                 result.payload?.pages.forEach((page, i) => {
                     page.images.forEach((image, i) => {
                         contentItems.push({
@@ -308,7 +311,8 @@ export async function handleReadMultipleFiles(args: unknown): Promise<ServerResu
                     });
                 });
             } else if (result.isImage && result.mimeType) {
-                // For image files, add an image content item
+                // The summary names all paths; a local header identifies this image.
+                contentItems.push({ type: "text", text: header });
                 contentItems.push({
                     type: "image",
                     data: result.content,
@@ -318,7 +322,7 @@ export async function handleReadMultipleFiles(args: unknown): Promise<ServerResu
                 // For text files, add a text summary
                 contentItems.push({
                     type: "text",
-                    text: `\n--- ${result.path} contents: ---\n${result.content}`
+                    text: `${header}${result.content}`
                 });
             }
         }
