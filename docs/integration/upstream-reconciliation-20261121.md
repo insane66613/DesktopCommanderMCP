@@ -352,3 +352,14 @@ remain release requirements.
   independently verify the merged candidate tree, stage all compiled
   files and known-good rollback, obtain a reviewed Portal manifest pin,
   and require a successful independent supervisor and live MCP probes.
+
+## 2026-11-22: MCP tool annotation compatibility
+
+- Official upstream remains `9a101b17` (v0.3.4); the local fork base is `737ca939`. The 580-file tree diff is not a safe wholesale merge.
+- Adapted upstream `8d6d2672`: 15 fork-specific tools with `readOnlyHint: true` now explicitly set `destructiveHint: false`. No handler behavior or write-tool permissions changed.
+- Checked Context7 MCP TypeScript SDK documentation against installed `@modelcontextprotocol/sdk ^1.32.1`: annotations are advisory; read-only and destructive hints have distinct defaults. A current docs query returned the SDK schema.
+- Added `test/test-tool-annotations-upstream.js` to assert the actual `tools/list` protocol metadata and preserve non-read-only `write_file` semantics.
+- Built successfully using Node v24.15.0 in an existing, clean, non-production worktree. Five focused test modules passed, zero failed or skipped: tool annotations, Context7 preflight, conditional tools, native file input, response budget.
+- The complete 169-module test run was deliberately terminated after an incomplete early segment. Do not claim full-suite validation.
+- AiGentAI ChatGPT and Copilot comparison requests were accepted but both timed out with unknown outcomes; no independent provider recommendation is verified and no duplicate was submitted.
+- No package-version bump, service restart, production deployment, or GitHub Actions run was performed by this backport.
