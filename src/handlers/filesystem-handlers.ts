@@ -13,6 +13,7 @@ import {
     type MultiFileResult
 } from '../tools/filesystem.js';
 import type { ReadOptions } from '../utils/files/base.js';
+import { TextFileHandler } from '../utils/files/text.js';
 
 import { ServerResult } from '../types.js';
 import { withTimeout } from '../utils/withTimeout.js';
@@ -375,9 +376,8 @@ export async function handleWriteFile(args: unknown): Promise<ServerResult> {
         const config = await configManager.getConfig();
         const MAX_LINES = config.fileWriteLineLimit ?? 50; // Default to 50 if not set
 
-        // Strictly enforce line count limit
-        const lines = parsed.content.split('\n');
-        const lineCount = lines.length;
+        // Report the same logical line count as read_file, including CR breaks.
+        const lineCount = TextFileHandler.countLines(parsed.content);
         let errorMessage = "";
         if (lineCount > MAX_LINES) {
             errorMessage = `✅ File written successfully! (${lineCount} lines)
@@ -482,7 +482,7 @@ export async function handleReceiveFile(args: unknown, signal?: AbortSignal): Pr
         const resolvedWritePath = resolveAbsolutePath(parsed.path);
         const byteCount = decodedContent.length;
         const lineCount = parsed.encoding === 'utf8'
-            ? decodedContent.toString('utf8').split('\n').length : 0;
+            ? TextFileHandler.countLines(decodedContent.toString('utf8')) : 0;
         const modeMessage = parsed.mode === 'append' ? 'appended received file to' : 'received file and wrote to';
 
         return {
