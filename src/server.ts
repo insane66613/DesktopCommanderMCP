@@ -371,6 +371,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 annotations: {
                     title: "Get Configuration",
                     readOnlyHint: true,
+                    destructiveHint: false,
                 },
             },
             {
@@ -472,6 +473,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 annotations: {
                     title: "Read File or URL",
                     readOnlyHint: true,
+                    destructiveHint: false,
                     openWorldHint: true,
                 },
             },
@@ -493,6 +495,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 annotations: {
                     title: "Read Multiple Files",
                     readOnlyHint: true,
+                    destructiveHint: false,
                 },
             },
             {
@@ -675,6 +678,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 annotations: {
                     title: "Export Project File",
                     readOnlyHint: true,
+                    destructiveHint: false,
                     openWorldHint: false,
                 },
             },
@@ -795,6 +799,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 annotations: {
                     title: "List Directory Contents",
                     readOnlyHint: true,
+                    destructiveHint: false,
                 },
             },
             {
@@ -900,6 +905,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 annotations: {
                     title: "Start Search",
                     readOnlyHint: true,
+                    destructiveHint: false,
                 },
             },
             {
@@ -930,6 +936,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 annotations: {
                     title: "Get Search Results",
                     readOnlyHint: true,
+                    destructiveHint: false,
                 },
             },
             {
@@ -966,6 +973,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 annotations: {
                     title: "List Active Searches",
                     readOnlyHint: true,
+                    destructiveHint: false,
                 },
             },
             {
@@ -990,6 +998,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 annotations: {
                     title: "Get File Information",
                     readOnlyHint: true,
+                    destructiveHint: false,
                 },
             },
             // Note: list_allowed_directories removed - use get_config to check allowedDirectories
@@ -1181,6 +1190,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 annotations: {
                     title: "Read Process Output",
                     readOnlyHint: true,
+                    destructiveHint: false,
                 },
             },
             {
@@ -1261,6 +1271,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 annotations: {
                     title: "List Terminal Sessions",
                     readOnlyHint: true,
+                    destructiveHint: false,
                 },
             },
             {
@@ -1275,6 +1286,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 annotations: {
                     title: "List Running Processes",
                     readOnlyHint: true,
+                    destructiveHint: false,
                 },
             },
             {
@@ -1305,6 +1317,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 annotations: {
                     title: "Get Usage Statistics",
                     readOnlyHint: true,
+                    destructiveHint: false,
                 },
             },
             {
@@ -1329,6 +1342,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 annotations: {
                     title: "Get Recent Tool Calls",
                     readOnlyHint: true,
+                    destructiveHint: false,
                 },
             },
             {
@@ -1402,6 +1416,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 annotations: {
                     title: "Get Prompts",
                     readOnlyHint: true,
+                    destructiveHint: false,
                 },
             }
         ];
