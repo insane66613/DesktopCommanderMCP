@@ -38,15 +38,23 @@ function processFields(text: string): Record<string, unknown> {
   };
 }
 
+function searchStatusFields(text: string, runningFallback: string): Record<string, unknown> {
+  const status = text.match(/^Status:\s*(\S+)/m)?.[1] ?? runningFallback;
+  const outcome = text.match(/^Outcome:\s*(completed|timed_out|stopped|max_results|partial|failed)\b/m)?.[1] ?? null;
+  const isComplete = Boolean(outcome) ||
+    ['COMPLETED', 'TIMED_OUT', 'STOPPED', 'MAX_RESULTS', 'PARTIAL', 'FAILED'].includes(status);
+  return { status, outcome, isComplete };
+}
+
 function searchStartFields(text: string): Record<string, unknown> {
   const sessionMatch = text.match(/session[:\s]+(\S+)/i);
   const totalMatch = text.match(/Total results(?: found)?[:\s]+(\d+)/i);
   return {
     sessionId: sessionMatch?.[1] ?? null,
-    status: text.includes('COMPLETED') ? 'COMPLETED' : 'RUNNING',
+    ...searchStatusFields(text, 'RUNNING'),
     text,
     totalResults: totalMatch ? Number.parseInt(totalMatch[1], 10) : 0,
-    isComplete: text.includes('COMPLETED'),
+
   };
 }
 
@@ -56,11 +64,11 @@ function searchMoreFields(text: string): Record<string, unknown> {
   const matchesMatch = text.match(/\((\d+)\s+matches\)/i);
   return {
     sessionId: sessionMatch?.[1] ?? null,
-    status: text.includes('COMPLETED') ? 'COMPLETED' : 'IN_PROGRESS',
+    ...searchStatusFields(text, 'IN_PROGRESS'),
     text,
     totalResults: totalMatch ? Number.parseInt(totalMatch[1], 10) : 0,
     totalMatches: matchesMatch ? Number.parseInt(matchesMatch[1], 10) : null,
-    isComplete: text.includes('COMPLETED'),
+
     hasMoreResults: text.includes('More results available'),
   };
 }
@@ -76,6 +84,7 @@ function searchListFields(text: string): Record<string, unknown> {
       id: block.match(/Session:\s+(\S+)/)?.[1] ?? null,
       pattern: block.match(/Pattern:\s+"([^"]*)"/)?.[1] ?? null,
       status: block.match(/Status:\s+(\S+)/)?.[1] ?? null,
+      outcome: block.match(/Outcome:\s+(completed|timed_out|stopped|max_results|partial|failed)/)?.[1] ?? null,
       totalResults: Number.parseInt(block.match(/Results:\s+(\d+)/)?.[1] ?? '0', 10),
     });
   }
@@ -104,10 +113,10 @@ function buildStructuredContent(
     return { ...processFields(text), success: !isError };
   }
   if (toolName === 'start_search') {
-    return { ...searchStartFields(text), success: !isError };
+    return { ...searchStartFields(text), success: !isError && !/^Outcome:\s*failed\b/m.test(text) };
   }
   if (toolName === 'get_more_search_results') {
-    return { ...searchMoreFields(text), success: !isError };
+    return { ...searchMoreFields(text), success: !isError && !/^Outcome:\s*failed\b/m.test(text) };
   }
   if (toolName === 'list_searches') {
     return { ...searchListFields(text), success: !isError };
