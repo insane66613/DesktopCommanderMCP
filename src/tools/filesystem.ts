@@ -1018,9 +1018,15 @@ export async function getFileInfo(filePath: string): Promise<Record<string, any>
         isDirectory: stats.isDirectory(),
         isFile: stats.isFile(),
         permissions: stats.mode.toString(8).slice(-3),
-        fileType: 'text' as const,
+        fileType: stats.isDirectory() ? 'directory' : 'text',
         metadata: undefined as Record<string, any> | undefined,
     };
+
+    // Do not interpret a folder using an extension-based file handler.
+    if (stats.isDirectory()) {
+        const { metadata: _unused, ...directoryInfo } = fallbackInfo;
+        return directoryInfo;
+    }
 
     // Get appropriate handler for this file type (async - includes binary detection)
     const handler = await getFileHandler(validPath);

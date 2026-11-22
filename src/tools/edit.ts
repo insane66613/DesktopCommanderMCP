@@ -168,7 +168,9 @@ export async function performSearchReplace(filePath: string, block: SearchReplac
     
     while (pos !== -1) {
         count++;
-        pos = tempContent.indexOf(normalizedSearch, pos + 1);
+        // Count only matches the replacement can actually consume.
+        // Overlapping matches are not independent split/join replacements.
+        pos = tempContent.indexOf(normalizedSearch, pos + Math.max(1, normalizedSearch.length));
     }
     
     // If exact match found and count matches expected replacements, proceed with exact replacement
