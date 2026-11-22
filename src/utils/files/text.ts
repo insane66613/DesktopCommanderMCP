@@ -354,48 +354,47 @@ export class TextFileHandler implements FileHandler {
         fileTotalLines?: number,
         signal?: AbortSignal
     ): Promise<FileResult> {
+        // Locate a byte boundary without decoding arbitrary partial UTF-8
+        // chunks or assuming LF is the only line break. Then let readline
+        // decode the retained tail exactly like ordinary read_file.
         const fd = await fs.open(filePath, 'r');
+        let start = 0;
         try {
-            const stats = await fd.stat();
-            const fileSize = stats.size;
-
-            let position = fileSize;
-            let lines: string[] = [];
-            let partialLine = '';
-
-            while (position > 0 && lines.length < n) {
+            const { size } = await fd.stat();
+            const chunk = Buffer.alloc(READ_PERFORMANCE_THRESHOLDS.CHUNK_SIZE);
+            let position = size;
+            let after = -1;  // Ignore a delimiter at EOF (no phantom last line).
+            let breaks = 0;
+            let found = false;
+            while (position > 0 && !found) {
                 if (signal?.aborted) {
-                    const err = new Error('Read aborted') as NodeJS.ErrnoException;
-                    err.code = 'ABORT_ERR';
-                    throw err;
+                    const error = new Error('Read aborted') as NodeJS.ErrnoException;
+                    error.code = 'ABORT_ERR';
+                    throw error;
                 }
-                const readSize = Math.min(READ_PERFORMANCE_THRESHOLDS.CHUNK_SIZE, position);
+                const readSize = Math.min(chunk.length, position);
                 position -= readSize;
-
-                const buffer = Buffer.alloc(readSize);
-                await fd.read(buffer, 0, readSize, position);
-
-                const chunk = buffer.toString('utf-8');
-                const text = chunk + partialLine;
-                const chunkLines = text.split('\n');
-
-                partialLine = chunkLines.shift() || '';
-                lines = chunkLines.concat(lines);
+                await fd.read(chunk, 0, readSize, position);
+                for (let i = readSize - 1; i >= 0; i--) {
+                    const byte = chunk[i];
+                    // CRLF counts once, including when split across buffers.
+                    const isBreak = after !== -1 &&
+                        (byte === 0x0a || (byte === 0x0d && after !== 0x0a));
+                    if (isBreak && ++breaks === n) {
+                        start = position + i + 1;
+                        found = true;
+                        break;
+                    }
+                    after = byte;
+                }
             }
-
-            if (position === 0 && partialLine) {
-                lines.unshift(partialLine);
-            }
-
-            const result = lines.slice(-n);
-            const content = includeStatusMessage
-                ? `${this.generateEnhancedStatusMessage(result.length, -n, fileTotalLines, true)}\n\n${result.join('\n')}`
-                : result.join('\n');
-
-            return { content, mimeType, metadata: {} };
         } finally {
             await fd.close();
         }
+        return this.readFromEndWithReadline(
+            filePath, n, mimeType, includeStatusMessage, fileTotalLines,
+            signal, undefined, start
+        );
     }
 
     /**

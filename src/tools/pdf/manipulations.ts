@@ -39,7 +39,11 @@ async function loadPdfDocumentFromBuffer(filePathOrBuffer: string | Buffer | Uin
 function deletePages(pdfDoc: PDFDocumentType, pageIndexes: number[]): PDFDocumentType {
     const pageCount = pdfDoc.getPageCount();
 
-    // Transform negative indices to absolute and filter valid ones
+    // Fail the entire edit before modifying any pages. Silently filtering an
+    // invalid index can write an unchanged PDF and falsely report success.
+    if (pageIndexes.some(index => !Number.isSafeInteger(index) || index >= pageCount || index < -pageCount)) {
+        throw new Error('Invalid page index');
+    }
     const normalizedIndexes = normalizePageIndexes(pageIndexes, pageCount).sort((a, b) => b - a);
 
     for (const pageIndex of normalizedIndexes) {

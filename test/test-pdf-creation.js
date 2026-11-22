@@ -94,11 +94,7 @@ console.log('Line 3');
         await writePdf(OUTPUT_FILE, [
             {
                 type: 'delete',
-                pageIndexes: [0]
-            },
-            {
-                type: 'delete',
-                pageIndexes: [-1] // Delete the last page.
+                pageIndexes: [0] // The initial PDF has one page; deleting -1 again would be invalid.
             },
             {
                 type: 'insert',
