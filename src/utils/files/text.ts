@@ -123,14 +123,20 @@ export class TextFileHandler implements FileHandler {
      * Made static and public for use by other modules (e.g., writeFile telemetry in filesystem.ts)
      */
     static countLines(content: string): number {
-        if (content === '') return 0;
-        // A file with N lines has N-1 newline characters.
-        // If the file ends with a trailing newline, don't count the empty string after it.
-        const lines = content.split('\n');
-        if (lines[lines.length - 1] === '') {
-            return lines.length - 1;
+        if (content.length === 0) return 0;
+        // Match splitLinesPreservingEndings without allocating one string per line.
+        // CRLF is one break; a final break does not create an extra empty line.
+        let lines = 1;
+        for (let i = 0; i < content.length; i++) {
+            if (content[i] === '\r') {
+                lines++;
+                if (content[i + 1] === '\n') i++;
+            } else if (content[i] === '\n') {
+                lines++;
+            }
         }
-        return lines.length;
+        const last = content[content.length - 1];
+        return last === '\r' || last === '\n' ? lines - 1 : lines;
     }
 
     /**

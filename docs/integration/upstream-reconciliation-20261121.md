@@ -383,3 +383,13 @@ remain release requirements.
 - `test-search-terminal-races.js` injects `ChildProcess` error/close sequences and tests frozen runtime after both orders, including when partial results existed.
 - The new race test first failed on a real bug: a later close had cleared `isError` after a genuine process error whenever results existed. A dedicated `processError` flag now preserves that hard error.
 - No media bytes, unmanaged PID behavior, auth trust, process launching, or production deployment changed.
+
+## 2026-11-22: write/read line count consistency
+
+- Fork baseline main `f701e1cb`, upstream `9a101b17`. Backport target upstream `9f06ff8cc49e` (write_file logical line count).
+- The upstream regression was run **before edits** and failed in all three cases: trailing newline (50 reported as 51), over-limit count (51 reported as 52), and mixed CR/LF (4 reported as 3).
+- Adapted beyond the upstream patch: the fork's shared `TextFileHandler.countLines` also ignored lone carriage returns, unlike `splitLinesPreservingEndings`. It now counts LF, CRLF and lone CR without allocating an array of split lines. Empty content still yields 0, trailing line breaks do not add a phantom line.
+- `handleWriteFile` and UTF-8 `handleReceiveFile` now use that shared helper. Existing binary receive behavior, hashes, filenames and structuredContent types remain unchanged.
+- Extended upstream `test-write-file-line-count.js` to assert helper boundary cases and `receive_file` structured lineCount. Four isolated test modules passed (write-line-count, file-output-contracts, native-file-input, negative-offset-readfile), zero failures/skips, including a successful Node v24 build.
+- AiGentAI ChatGPT/Copilot source-review requests were attempted. Copilot failed pre-submission; ChatGPT reported unknown-outcome timeout. Neither review was verified, and the unknown-outcome request was not resent.
+- No GitHub Actions run requested. No production deployment or package version change.
