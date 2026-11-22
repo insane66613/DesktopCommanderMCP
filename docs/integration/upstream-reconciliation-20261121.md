@@ -374,3 +374,12 @@ remain release requirements.
 - Context7 review: Model Context Protocol TypeScript SDK v1.x permits ordered, mixed text/image content blocks. We preserved the fork's model-facing and UI-preview payload separation.
 - Node v24.15.0 local build passed; nine targeted search/file/schema/stdio/budget tests passed, zero failed/skipped. No full-suite claim, no production deployment.
 - Deferred `1cf3335b0161` unified search outcome states because they require coordinated changes to `search-manager.ts`, `search-handlers.ts`, `structured-content.ts` and output schemas, plus failure/partial/stop/timeout regressions. Do not merge an isolated text-only subset.
+
+### Independent Copilot review and follow-up
+
+- Copilot's pinned-HEAD review of candidate `68094ed0` completed with source-access evidence but no executed tests. Three test/attribution gaps were accepted and repaired before merge.
+- PDF media blocks now receive per-page text headers containing their source file and `<!-- Page: N -->` markers. Empty-page/zero-page responses retain a file-level header.
+- `test-read-multiple-files.js` now generates a two-page embedded-PNG PDF using the project's `pdf-lib` dependency and checks image placement relative to both page headers. This exercised actual PDF parsing on Windows.
+- `test-search-terminal-races.js` injects `ChildProcess` error/close sequences and tests frozen runtime after both orders, including when partial results existed.
+- The new race test first failed on a real bug: a later close had cleared `isError` after a genuine process error whenever results existed. A dedicated `processError` flag now preserves that hard error.
+- No media bytes, unmanaged PID behavior, auth trust, process launching, or production deployment changed.

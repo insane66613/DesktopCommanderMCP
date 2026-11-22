@@ -296,9 +296,17 @@ export async function handleReadMultipleFiles(args: unknown): Promise<ServerResu
             // Bind each media block to its source before the model sees the bytes.
             const header = `\n--- ${result.path} contents: ---\n`;
             if (result.isPdf) {
-                contentItems.push({ type: "text", text: header });
-                result.payload?.pages.forEach((page, i) => {
-                    page.images.forEach((image, i) => {
+                // A PDF can contain multiple pages and embedded images. Name
+                // each page before its image group rather than only naming
+                // the document once (which loses page attribution).
+                const pages = result.payload?.pages ?? [];
+                if (pages.length === 0) contentItems.push({ type: "text", text: header });
+                pages.forEach((page, i) => {
+                    contentItems.push({
+                        type: "text",
+                        text: `${header}<!-- Page: ${page.pageNumber ?? i + 1} -->\n`
+                    });
+                    page.images.forEach((image) => {
                         contentItems.push({
                             type: "image",
                             data: image.data,

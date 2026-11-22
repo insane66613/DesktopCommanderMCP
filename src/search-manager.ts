@@ -51,6 +51,7 @@ export interface SearchSession {
   results: SearchResult[];
   isComplete: boolean;
   isError: boolean;
+  processError?: boolean;  // An actual ChildProcess failure survives a later close with partial results.
   error?: string;
   startTime: number;
   endTime?: number;  // Freeze elapsed time at the first terminal process event.
@@ -954,7 +955,7 @@ export interface SearchSessionOptions {
       }
 
       // If we have results, don't mark as error even if there were permission issues
-      if (session.totalMatches > 0) {
+      if (session.totalMatches > 0 && !session.processError) {
         session.isError = false;
       }
 
@@ -971,6 +972,7 @@ export interface SearchSessionOptions {
     });
 
     process.on('error', (error: Error) => {
+      session.processError = true;
       session.isComplete = true;
       session.endTime ??= Date.now();
       session.isError = true;

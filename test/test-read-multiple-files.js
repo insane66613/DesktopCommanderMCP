@@ -13,6 +13,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { handleReadMultipleFiles } from '../dist/handlers/filesystem-handlers.js';
 import { runIfMain } from './helpers/run-if-main.js';
+import { PDFDocument } from 'pdf-lib';
 
 const SAMPLE_PDF = path.join(path.dirname(fileURLToPath(import.meta.url)), 'samples', '01_sample_simple.pdf');
 // Two different 1x1 PNGs
@@ -56,8 +57,33 @@ async function testImagesAndPdfCarryTheirPath(dir) {
     'the text file should still come with its path');
 }
 
+async function testPdfPageImageAttribution(dir) {
+  const pdf = path.join(dir, 'embedded-images.pdf');
+  const document = await PDFDocument.create();
+  const pictures = [
+    await document.embedPng(Buffer.from(RED_PNG, 'base64')),
+    await document.embedPng(Buffer.from(BLUE_PNG, 'base64')),
+  ];
+  for (const [i, picture] of pictures.entries()) {
+    const page = document.addPage([200, 200]);
+    page.drawImage(picture, { x: 30, y: 30, width: 90, height: 90 });
+    page.drawText('Embedded page ' + (i + 1), { x: 20, y: 170, size: 12 });
+  }
+  await fs.writeFile(pdf, await document.save());
+  const { content } = await handleReadMultipleFiles({ paths: [pdf] });
+  const firstPage = content.findIndex(b => b.type === 'text' &&
+    b.text.includes('--- ' + pdf + ' contents: ---') && b.text.includes('Page: 1'));
+  const secondPage = content.findIndex(b => b.type === 'text' &&
+    b.text.includes('--- ' + pdf + ' contents: ---') && b.text.includes('Page: 2'));
+  const images = content.flatMap((b, i) => b.type === 'image' ? [i] : []);
+  check(firstPage >= 1 && secondPage > firstPage, 'PDF page markers must name the path and the page');
+  check(images.some(i => firstPage < i && i < secondPage), 'page 1 has no embedded image');
+  check(images.some(i => i > secondPage), 'page 2 has no embedded image');
+}
+
 const CASES = [
   ['images and PDF pages come with their file\'s path', testImagesAndPdfCarryTheirPath],
+  ['embedded PDF images attributed to their source page', testPdfPageImageAttribution],
 ];
 
 async function runTests() {
