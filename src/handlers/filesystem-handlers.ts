@@ -125,12 +125,25 @@ export async function handleReadFile(args: unknown): Promise<ServerResult> {
 
         const defaultLimit = config.fileReadLineLimit ?? 1000;
 
+        // Reject ambiguous pagination rather than silently ignoring one range.
+        // Check the raw arguments: Zod supplies offset=0 for omitted offsets.
+        const supplied = args as Record<string, unknown>;
+        if (parsed.view_range && ('offset' in supplied || 'length' in supplied)) {
+            return createErrorResponse('view_range cannot be combined with offset or length');
+        }
+        const offset = parsed.view_range ? parsed.view_range[0] - 1 : parsed.offset ?? 0;
+        const length = parsed.view_range
+            ? (parsed.view_range[1] === -1
+                ? defaultLimit
+                : parsed.view_range[1] - parsed.view_range[0] + 1)
+            : parsed.length ?? defaultLimit;
+
         // The sheet goes as given: the Excel handler knows the sheet names, so it
         // decides whether "2024" is an index or a sheet named 2024
         const options: ReadOptions = {
             isUrl: parsed.isUrl,
-            offset: parsed.offset ?? 0,
-            length: parsed.length ?? defaultLimit,
+            offset,
+            length,
             sheet: parsed.sheet,
             range: parsed.range
         };

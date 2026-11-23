@@ -426,6 +426,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         - 'length' (max lines to read, default: configurable via 'fileReadLineLimit' setting, initially 1000)
                           * Used with positive offsets for range reading
                           * Ignored when offset is negative (reads all requested tail lines)
+                        - 'view_range' ([start, end], both 1-based inclusive)
+                          * Use [100, 150] to read lines 100-150.
+                          * End -1 reads from start for at most fileReadLineLimit lines.
+                          * Cannot be combined with offset or length; invalid bounds are rejected.
                         
                         Examples:
                         - offset: 0, length: 10     → First 10 lines
