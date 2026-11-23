@@ -697,6 +697,31 @@ async function startRenderServer(basedir: string): Promise<RenderServer> {
 }
 
 /**
+ * Match the installed Puppeteer launcher when downloading Chrome for Testing.
+ * Resolve the pin lazily: a system browser or cached browser needs no lookup.
+ * Fall back to the previous stable-channel behavior if the pin is unavailable.
+ */
+export async function resolveCompatibleChromeBuildId(
+    resolveStable: () => Promise<string>,
+    readPinned: () => Promise<string | undefined> = async () => {
+        const { PUPPETEER_REVISIONS } = await import('puppeteer-core/internal/revisions.js');
+        return PUPPETEER_REVISIONS.chrome;
+    }
+): Promise<string> {
+    try {
+        const revision = await readPinned();
+        if (typeof revision === 'string' && /^\d+\.\d+\.\d+\.\d+$/.test(revision)) {
+            console.error(`Using Puppeteer's compatible Chrome for Testing build ${revision}.`);
+            return revision;
+        }
+    } catch {
+        // A different Puppeteer layout must not disable Chrome acquisition.
+    }
+    console.error('Puppeteer Chrome revision unavailable; falling back to the stable Chrome build.');
+    return resolveStable();
+}
+
+/**
  * Download and install Chrome using @puppeteer/browsers
  * Returns the executable path after installation
  */
@@ -706,7 +731,9 @@ async function installChrome(): Promise<CachedPuppeteerChrome> {
     
     const cacheDir = getPuppeteerCacheDir();
     const platform = detectBrowserPlatform()!;
-    const buildId = await resolveBuildId(Browser.CHROME, platform, 'stable');
+    const buildId = await resolveCompatibleChromeBuildId(
+        () => resolveBuildId(Browser.CHROME, platform, 'stable')
+    );
     
     console.error('Downloading Chrome for PDF generation (this may take a few minutes)...');
     await fs.mkdir(cacheDir, { recursive: true });
