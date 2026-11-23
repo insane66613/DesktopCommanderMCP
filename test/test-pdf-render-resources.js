@@ -203,7 +203,9 @@ async function testSuccessfulRender() {
     assert.ok(fs.statSync(outFile).size > 0, 'the rendered PDF should not be empty');
 
     assert.strictEqual(result.servers.length, 1, 'one web server per render');
-    const [{ address, probe }] = result.servers;
+    const [{ address, port, probe }] = result.servers;
+    assert.ok(port >= 20_000 && port < 60_000,
+        `Chromium render port ${port} must avoid blocked low-numbered ports`);
     assert.deepStrictEqual(await probe, { status: 403, body: 'Forbidden' },
         'a client other than the render\'s Chrome should be refused, not handed files from the served folder');
     assert.strictEqual(address, '127.0.0.1', 'the render\'s web server should listen on the loopback interface only');
