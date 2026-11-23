@@ -20,6 +20,8 @@ const isUrl = (source: string): boolean =>
 // Cached Chrome path to avoid repeated lookups
 let cachedChromePath: string | undefined | null = null; // null = not checked yet
 let chromeCheckPromise: Promise<string | undefined> | null = null;
+// Only retain a failure marker across acquisition; raw errors stay in server logs.
+let lastChromeAutoDownloadFailed = false;
 
 /** Name prefix of the temporary Chrome profile folder each PDF render gets */
 const CHROME_PROFILE_PREFIX = 'desktop-commander-chrome-profile-';
@@ -779,6 +781,7 @@ async function getChromePath(): Promise<string | undefined> {
         const systemChrome = findSystemChrome();
         if (systemChrome) {
             cachedChromePath = systemChrome;
+            lastChromeAutoDownloadFailed = false;
             return systemChrome;
         }
 
@@ -787,6 +790,7 @@ async function getChromePath(): Promise<string | undefined> {
         if (cachedChrome) {
             await pruneOldPuppeteerChromeBuilds(cachedChrome.executablePath);
             cachedChromePath = cachedChrome.executablePath;
+            lastChromeAutoDownloadFailed = false;
             return cachedChrome.executablePath;
         }
         
@@ -795,8 +799,10 @@ async function getChromePath(): Promise<string | undefined> {
             const installedChrome = await installChrome();
             await pruneOldPuppeteerChromeBuilds(installedChrome.executablePath);
             cachedChromePath = installedChrome.executablePath;
+            lastChromeAutoDownloadFailed = false;
             return installedChrome.executablePath;
         } catch (error) {
+            lastChromeAutoDownloadFailed = true;
             console.error('Failed to install Chrome:', error);
             // A transient install failure must not permanently disable later PDFs.
             // null means untested, while undefined is a cached negative result.
@@ -868,12 +874,35 @@ export async function parsePdfToMarkdown(source: string | Buffer | ArrayBuffer |
  * dest to '' (md-to-pdf would otherwise write it to dest, or to stdout - the
  * MCP connection - when dest is undefined).
  */
+/** Return actionable Chrome guidance without exposing raw download exceptions to MCP clients. */
+export function explainChromeLaunchFailure(error: unknown, autoDownloadFailed: boolean): Error | undefined {
+    const message = error instanceof Error ? error.message : String(error);
+    const missing = message.includes('Could not find Chrome');
+    const launchFailed = message.includes('Failed to launch the browser process');
+    if (autoDownloadFailed && (missing || launchFailed)) {
+        return new Error(
+            'PDF generation could not launch a browser after an automatic Chrome download failed. ' +
+            'Install Google Chrome from https://www.google.com/chrome/ or Chromium, then retry. ' +
+            'See Desktop Commander server logs for the download failure details.'
+        );
+    }
+    if (missing) {
+        return new Error(
+            'PDF generation requires Chrome or Chromium browser. ' +
+            'Please install Google Chrome from https://www.google.com/chrome/ ' +
+            'or Chromium, then try again.'
+        );
+    }
+    return undefined;
+}
+
 export async function parseMarkdownToPdf(markdown: string, options: any = {}): Promise<Buffer> {
     let profile: ChromeProfile | undefined;
     let server: RenderServer | undefined;
     let browser: Browser | undefined;
     // The render files as the caller gave them, by the checked paths the render reads
     let givenPaths = new Map<string, string>();
+    let autoDownloadFailed = false;
     try {
         const { convertMdToPdf, defaultConfig, puppeteer } = loadMdToPdf();
         // The folder the markdown's files are served from must be inside the allowed folders
@@ -887,6 +916,8 @@ export async function parseMarkdownToPdf(markdown: string, options: any = {}): P
 
         // Find Chrome: puppeteer cache -> system Chrome -> install
         const chromePath = await getChromePath();
+        // Preserve Puppeteer's own browser-cache fallback if our install failed.
+        autoDownloadFailed = !chromePath && lastChromeAutoDownloadFailed;
         const chromeEnv = getChromeEnvironment();
         profile = await createChromeProfile();
         server = await startRenderServer(basedir);
@@ -920,14 +951,10 @@ export async function parseMarkdownToPdf(markdown: string, options: any = {}): P
         return pdf.content as Buffer;
     } catch (error) {
         nameGivenPaths(error, givenPaths);
-        // Provide helpful error message if Chrome is not found
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        if (errorMessage.includes('Could not find Chrome')) {
-            throw new Error(
-                'PDF generation requires Chrome or Chromium browser. ' +
-                'Please install Google Chrome from https://www.google.com/chrome/ ' +
-                'or Chromium, then try again.'
-            );
+        const chromeError = explainChromeLaunchFailure(error, autoDownloadFailed);
+        if (chromeError) {
+            console.error('PDF browser launch failed:', error);
+            throw chromeError;
         }
         console.error('Error creating PDF:', error);
         throw error;
