@@ -1,6 +1,6 @@
 import fs from 'fs/promises';
 import type { ChildProcess } from 'child_process';
-import { randomBytes } from 'crypto';
+import { randomBytes, randomInt } from 'crypto';
 import { channel } from 'diagnostics_channel';
 import { existsSync, readdirSync } from 'fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
@@ -658,10 +658,32 @@ async function startRenderServer(basedir: string): Promise<RenderServer> {
             response.end();
         });
     });
-    await new Promise<void>((resolve, reject) => {
-        server.once('error', reject);
-        server.listen(0, '127.0.0.1', resolve);
-    });
+    // The OS can choose a port Chromium refuses to navigate to (for example 6665).
+    // Use a browser-safe high range, retaining loopback-only binding and the cookie gate.
+    const maxBindAttempts = 24;
+    for (let attempt = 0; attempt < maxBindAttempts; attempt++) {
+        try {
+            await new Promise<void>((resolve, reject) => {
+                const onError = (error: Error) => {
+                    server.off('listening', onListening);
+                    reject(error);
+                };
+                const onListening = () => {
+                    server.off('error', onError);
+                    resolve();
+                };
+                server.once('error', onError);
+                server.once('listening', onListening);
+                server.listen(randomInt(20_000, 60_000), '127.0.0.1');
+            });
+            break;
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if ((code !== 'EADDRINUSE' && code !== 'EACCES') || attempt === maxBindAttempts - 1) {
+                throw error;
+            }
+        }
+    }
 
     return {
         port: (server.address() as { port: number }).port,
