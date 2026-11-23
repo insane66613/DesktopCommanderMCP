@@ -1,0 +1,23 @@
+/** Verify Chrome build selection without installing/downloading a browser. */
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import { resolveCompatibleChromeBuildId } from '../dist/tools/pdf/markdown.js';
+import { PUPPETEER_REVISIONS } from 'puppeteer-core/internal/revisions.js';
+let stableCalls = 0;
+const stable = async () => { stableCalls++; return 'stable-build'; };
+const compatible = PUPPETEER_REVISIONS.chrome;
+assert.match(compatible, /^\d+\.\d+\.\d+\.\d+$/);
+const require = createRequire(import.meta.url);
+const pdfRequire = createRequire(require.resolve('md-to-pdf'));
+assert.equal(pdfRequire('puppeteer').default.browserVersion, compatible, 'md-to-pdf launcher must expect the same build');
+assert.equal(await resolveCompatibleChromeBuildId(stable), compatible);
+assert.equal(stableCalls, 0, 'real bundled Puppeteer pin avoids stable lookup');
+assert.equal(await resolveCompatibleChromeBuildId(stable, async () => '123.4.5.6'), '123.4.5.6');
+assert.equal(stableCalls, 0, 'injected valid pin avoids stable lookup');
+assert.equal(await resolveCompatibleChromeBuildId(stable, async () => 'latest'), 'stable-build');
+assert.equal(await resolveCompatibleChromeBuildId(stable, async () => undefined), 'stable-build');
+assert.equal(stableCalls, 2, 'invalid or absent pin uses stable lookup once');
+assert.equal(await resolveCompatibleChromeBuildId(stable, async () => { throw new Error('pin unavailable'); }), 'stable-build');
+assert.equal(stableCalls, 3, 'unavailable revision module uses stable fallback');
+await assert.rejects(resolveCompatibleChromeBuildId(async () => { throw new Error('offline'); }, async () => undefined), /offline/);
+console.log('PASS: compatible Puppeteer Chrome pin, invalid/missing/rejected fallback, propagated install failure');
