@@ -21,8 +21,9 @@ function simulatedAcquisition({ system = () => undefined, cached = () => undefin
     pruneOldPuppeteerChromeBuilds: prune,
     console: { error() {} },
   });
-  vm.runInContext('let cachedChromePath = null; let chromeCheckPromise = null;\n' +
-    source + '\nglobalThis.__getChromePath = getChromePath;', context);
+  vm.runInContext('let cachedChromePath = null; let chromeCheckPromise = null; let lastChromeAutoDownloadFailed = false;\n' +
+    source + '\nglobalThis.__getChromePath = getChromePath; globalThis.__getChromeError = () => lastChromeAutoDownloadFailed;', context);
+  context.__getChromePath.getLastError = context.__getChromeError;
   return context.__getChromePath;
 }
 // A network failure cannot poison the cache until process restart.
@@ -37,7 +38,9 @@ const retry = simulatedAcquisition({
   prune: async () => { prunes++; },
 });
 assert.equal(await retry(), undefined, 'first failed install should return undefined');
+assert.equal(retry.getLastError(), true, 'failed Chrome download marker must be retained');
 assert.equal(await retry(), 'mock-chrome.exe', 'later call must retry and succeed');
+assert.equal(retry.getLastError(), false, 'successful acquisition must clear stale failure');
 assert.equal(await retry(), 'mock-chrome.exe', 'successful path should be cached');
 assert.equal(installs, 2, 'failed acquisition must retry but success must not');
 assert.equal(prunes, 1, 'only successful install should be pruned');
