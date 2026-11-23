@@ -48,14 +48,31 @@ if (process.argv[2] !== '--isolated-child') {
     assert.match(throughDefault, /vrline03/);
     assert.match(throughDefault, /vrline04/);
     assert.doesNotMatch(throughDefault, /vrline05/);
+    // CRLF and multibyte characters must retain their original line boundaries.
+    const unicodeFile = path.join(os.homedir(), 'dc-view-range-unicode.txt');
+    await fs.writeFile(unicodeFile, 'start😀\r\nsecond雪\r\nthird🍉');
+    try {
+      const unicode = await handleReadFile({ path: unicodeFile, view_range: [2, 2] });
+      assert.ok(!unicode.isError, JSON.stringify(unicode.content));
+      const contents = unicode.content.map(entry => entry.text ?? '').join('\n');
+      assert.match(contents, /second雪/);
+      assert.doesNotMatch(contents, /start😀|third🍉/);
+    } finally { await fs.rm(unicodeFile, { force: true }); }
     const legacy = await text({ offset: 1, length: 2 });
     assert.match(legacy, /vrline02/);
     assert.match(legacy, /vrline03/);
     for (const key of ['offset', 'length']) {
-      const collision = await handleReadFile({ path: fixture, view_range: [2, 3], [key]: 0 });
-      assert.equal(collision.isError, true, `collision with ${key} was accepted`);
-      assert.match(JSON.stringify(collision.content), /cannot be combined/);
+      for (const value of [0, undefined]) {
+        // Property presence is the contract, including explicitly undefined.
+        const collision = await handleReadFile({ path: fixture, view_range: [2, 3], [key]: value });
+        assert.equal(collision.isError, true, `collision with ${key} was accepted`);
+        assert.match(JSON.stringify(collision.content), /cannot be combined/);
+      }
     }
+    assert.equal(ReadFileArgsSchema.safeParse({ path: fixture, view_range: null }).success, false);
+    assert.equal(ReadFileArgsSchema.safeParse({ path: fixture, view_range: [2, 3], offset: null }).success, false);
+    const max = Number.MAX_SAFE_INTEGER;
+    assert.equal(ReadFileArgsSchema.safeParse({ path: fixture, view_range: [max, max] }).success, true);
     for (const range of [[0, 2], [-1, 1], [3, 2], [1, 0], [1, -2],
       [1, 1.5], [1, 2, 3], [1], ['1', 2], [1, Number.MAX_SAFE_INTEGER + 1]]) {
       assert.equal(ReadFileArgsSchema.safeParse({ path: fixture, view_range: range }).success,
