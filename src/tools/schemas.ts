@@ -89,6 +89,14 @@ export const ReadFileArgsSchema = z.object({
   offset: z.number().optional().default(0),
   // Preserve omission so handleReadFile can apply config.fileReadLineLimit.
   length: z.number().optional(),
+  // Optional one-based inclusive line span for clients using editor-style ranges.
+  // End -1 means from start through the configured default read limit.
+  view_range: z.tuple([
+    z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+    z.number().int().min(-1).max(Number.MAX_SAFE_INTEGER),
+  ]).refine(([start, end]) => end === -1 || end >= start, {
+    message: 'view_range end must be -1 or greater than or equal to start',
+  }).optional(),
   sheet: z.string().optional(),  // String only for MCP client compatibility (Cursor doesn't support union types in JSON Schema)
   range: z.string().optional(),
   options: z.record(z.any()).optional(),
