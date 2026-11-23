@@ -46,12 +46,16 @@ async function searchAndWaitForCompletion(searchArgs, timeout = 10000) {
     while (Date.now() - startTime < timeout) {
       const moreResults = await handleGetMoreSearchResults({ sessionId });
       
-      if (moreResults.content[0].text.includes('✅ Search completed')) {
+      const output = moreResults.content[0].text;
+      const status = /^Status: ([A-Z_]+)$/m.exec(output)?.[1];
+      if (status === 'COMPLETED' ||
+          (status === 'MAX_RESULTS' && Number.isInteger(searchArgs.maxResults) && searchArgs.maxResults > 0)) {
         return { initialResult: result, finalResult: moreResults, sessionId };
       }
-      
-      if (moreResults.content[0].text.includes('❌ ERROR')) {
-        throw new Error(`Search failed: ${moreResults.content[0].text}`);
+
+      // A terminal search failure, timeout, stop or partial result is not a pass.
+      if (['FAILED', 'TIMED_OUT', 'STOPPED', 'PARTIAL'].includes(status) || moreResults.isError) {
+        throw new Error(`Search failed: ${output}`);
       }
       
       // Wait a bit before polling again
