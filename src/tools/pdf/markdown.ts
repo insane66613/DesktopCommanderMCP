@@ -771,14 +771,20 @@ async function getChromePath(): Promise<string | undefined> {
             return installedChrome.executablePath;
         } catch (error) {
             console.error('Failed to install Chrome:', error);
-            cachedChromePath = undefined;
+            // A transient install failure must not permanently disable later PDFs.
+            // null means untested, while undefined is a cached negative result.
+            cachedChromePath = null;
             return undefined;
         }
     })();
-    
-    const result = await chromeCheckPromise;
-    chromeCheckPromise = null;
-    return result;
+
+    const check = chromeCheckPromise;
+    try {
+        return await check;
+    } finally {
+        // Clear the in-flight coordinator even if discovery or pruning throws.
+        if (chromeCheckPromise === check) chromeCheckPromise = null;
+    }
 }
 
 /**
