@@ -43,6 +43,7 @@ function parseArgs(args) {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--json') { parsed.json = true; continue; }
+    if (arg === '--hotspots') { parsed.hotspots = true; continue; }
     if (arg === '--help') { parsed.help = true; continue; }
     if (arg === '--apply') { parsed.apply = true; continue; }
     if (arg === '--allow-patch-equivalent') { parsed.allowPatch = true; continue; }
@@ -111,6 +112,43 @@ function branches(cwd, remote, baseSha, wts) {
     item.classification = classifyBranch(item);
     return item;
   });
+}
+/**
+ * An optional, bounded source-overlap report. File overlap is a review hint,
+ * never proof that two branches are patch- or behavior-equivalent.
+ */
+export function summarizeHotspots(items) {
+  const byPath = new Map();
+  for (const item of items) {
+    if (!Array.isArray(item.changedPaths)) continue;
+    for (const path of item.changedPaths) {
+      if (!byPath.has(path)) byPath.set(path, new Set());
+      byPath.get(path).add(item.name);
+    }
+  }
+  return [...byPath.entries()].filter(([,names]) => names.size > 1)
+    .map(([path,names]) => ({ path, branchCount:names.size,
+      branches:[...names].sort() }))
+    .sort((a,b) => b.branchCount-a.branchCount || a.path.localeCompare(b.path))
+    .slice(0,50);
+}
+function addHotspots(cwd, mainSha, result) {
+  let sampled = 0;
+  for (const item of result.branches) {
+    if (!item.trackingMatches || !item.objectPresent || !item.uniquePatches) continue;
+    // -z disambiguates paths containing spaces or newlines. Do not infer
+    // semantic duplicates from path overlap, and include protected PR branches.
+    const output = git(['log','--right-only','--cherry-pick','--no-merges',
+      '--format=','--name-only','-z',mainSha + '...' + item.sha],cwd).out;
+    const paths = [...new Set(output.split('\0').map(s=>s.trim()).filter(Boolean))].sort();
+    item.changedPaths = paths;
+    item.changedPathCount = paths.length;
+    sampled++;
+  }
+  result.hotspots = summarizeHotspots(result.branches);
+  result.hotspotScope = {reviewedBranches:sampled, totalPaths:
+    new Set(result.branches.flatMap(item => item.changedPaths || [])).size,
+    disclaimer:'Same file paths imply overlapping review surface, not duplicate code or deletion approval'};
 }
 export function openPrs(cwd, owner, branch, repos) {
   const results = [];
@@ -217,6 +255,7 @@ async function main() {
   if (args.help) {
     console.log('node scripts/reconcile-branches.mjs [--remote fork] [--json] [--output NEW_REPORT.json]');
     console.log('  Read-only branch, worktree, patch and stale-ref audit by default.');
+    console.log('  Optional --hotspots: list changed files and overlapping branch paths (not equivalence)');
     console.log('  Retirement: --apply --retire BRANCH --expect-sha FULL_SHA --archive-dir PATH');
     console.log('  Extra approval for proven equivalent patches: --allow-patch-equivalent');
     return;
@@ -230,6 +269,7 @@ async function main() {
     branches:branches(cwd,args.remote,mainSha,wts)};
   const groups = Object.groupBy(result.branches, item => item.classification);
   result.summary = Object.fromEntries(Object.entries(groups).map(([k,v]) => [k,v.length]));
+  if (args.hotspots) addHotspots(cwd,mainSha,result);
   if (args.output) {
     const target = resolve(args.output);
     mkdirSync(dirname(target), {recursive:true});
@@ -245,6 +285,10 @@ async function main() {
       ' remote-heads=' + result.branches.length);
     for (const [kind,count] of Object.entries(result.summary)) {
       console.log(kind + ': ' + count);
+    }
+    if (args.hotspots) {
+      console.log('overlap-hotspots=' + result.hotspots.length + ' reviewed-branches=' + result.hotspotScope.reviewedBranches);
+      for (const h of result.hotspots.slice(0,15)) console.log(h.branchCount + ' branches: ' + h.path);
     }
     if (result.retirement) console.log(JSON.stringify(result.retirement));
   }

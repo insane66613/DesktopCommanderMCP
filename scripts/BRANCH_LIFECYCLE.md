@@ -11,7 +11,8 @@ Run from the DeskCommand repository, or a clean isolated worktree:
 
 ~~~powershell
 npm run branches:audit -- --remote fork
-npm run branches:audit -- --remote fork --json --output 'X:\CodeArchives\deskcommand-branch-audit-20261123.json'
+npm run branches:audit -- --remote fork --hotspots
+npm run branches:audit -- --remote fork --hotspots --json --output 'X:\CodeArchives\deskcommand-branch-audit-20261123.json'
 npm run branches:audit:test
 ~~~
 
@@ -24,6 +25,13 @@ The report records exact remote heads plus classifications:
 | MERGED_IN_MAIN | Remote SHA is a real ancestor of current main | Candidate for verified retirement |
 | PATCH_EQUIVALENT_CANDIDATE | No right-only nonmerge patches and no unique merge commits | Manual equivalence review |
 | UNIQUE_REVIEW | Unique unmerged patch or merge history | Inspect files and tests, keep by default |
+
+The optional `--hotspots` samples paths changed by unmerged, non-equivalent
+commits, groups files touched by multiple branches, and ranks the top 50
+collision surfaces. It includes protected PR branches as comparison points but
+never authorizes deletion. Common paths do not prove semantic equivalence;
+review exact source, tests, consumers and competing merges before merging.
+An audit without `--hotspots` avoids the extra Git history scan.
 
 Git patch equivalence is *not* semantic correctness proof. A candidate still
 requires ownership, use/consumer and current pull-request review. The CLI reports
