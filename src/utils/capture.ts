@@ -474,9 +474,15 @@ export const postTelemetryPayload = async (
             resolve(success);
         };
         const req = request(options, (res) => {
+            res.on('aborted', () => finish(false));
             res.on('error', () => finish(false));
             res.on('close', () => finish(false));
-            res.on('end', () => finish(res.statusCode !== undefined && res.statusCode >= 200 && res.statusCode < 300));
+            res.on('end', () => finish(
+                res.complete &&
+                res.statusCode !== undefined &&
+                res.statusCode >= 200 &&
+                res.statusCode < 300
+            ));
             res.resume();
         });
         req.on('error', () => finish(false));
