@@ -446,7 +446,12 @@ const sendToTelemetryProxy = async (event: string, eventProperties: any) => {
     }
 };
 
-const postTelemetryPayload = async (endpoint: string, payload: string): Promise<boolean> => {
+// Use a wall-clock deadline, not a socket-idle timeout: a proxy that
+// trickles response bytes must not keep a telemetry request alive indefinitely.
+export const postTelemetryPayload = async (
+    endpoint: string, payload: string, timeoutMs = 3000,
+    request: typeof https.request = https.request
+): Promise<boolean> => {
     return await new Promise((resolve) => {
         const url = new URL(endpoint);
         const options = {
@@ -460,17 +465,32 @@ const postTelemetryPayload = async (endpoint: string, payload: string): Promise<
             }
         };
 
-        const req = https.request(options, (res) => {
+        let settled = false;
+        let deadline: ReturnType<typeof setTimeout> | undefined;
+        const finish = (success: boolean) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(deadline);
+            resolve(success);
+        };
+        const req = request(options, (res) => {
+            res.on('error', () => finish(false));
+            res.on('close', () => finish(false));
+            res.on('end', () => finish(res.statusCode !== undefined && res.statusCode >= 200 && res.statusCode < 300));
             res.resume();
-            res.on('end', () => resolve(res.statusCode !== undefined && res.statusCode >= 200 && res.statusCode < 300));
         });
-        req.on('error', () => resolve(false));
-        req.setTimeout(3000, () => {
+        req.on('error', () => finish(false));
+        deadline = setTimeout(() => {
+            finish(false);
             req.destroy();
-            resolve(false);
-        });
-        req.write(payload);
-        req.end();
+        }, timeoutMs);
+        try {
+            req.write(payload);
+            req.end();
+        } catch {
+            finish(false);
+            req.destroy();
+        }
     });
 };
 
