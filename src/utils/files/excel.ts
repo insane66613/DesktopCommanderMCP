@@ -31,6 +31,9 @@ async function newWorkbook(): Promise<ExcelJS.Workbook> {
 
 // File size limit: 10MB
 const FILE_SIZE_LIMIT = 10 * 1024 * 1024;
+// Bound rectangular reads so sparse sheets cannot expand into enormous arrays.
+// Callers can use range or offset/length to read a smaller window.
+const MAX_CELLS_PER_READ = 100_000;
 
 /**
  * Excel file metadata (internal use only)
@@ -460,6 +463,13 @@ ${JSON.stringify(data)}`;
             return { sheetName, data: [], totalRows, returnedRows: 0, firstRow };
         }
 
+        const requestedCellCount = (endRow - startRow + 1) * (endCol - startCol + 1);
+        if (requestedCellCount > MAX_CELLS_PER_READ) {
+            throw new Error(
+                'Excel read spans ' + requestedCellCount + ' cells, exceeding the ' + MAX_CELLS_PER_READ + '-cell limit. ' +
+                'Use a smaller range or offset/length to read a smaller portion.'
+            );
+        }
         // Build 2D array (preserving types)
         const data: any[][] = [];
         for (let r = startRow; r <= endRow; r++) {

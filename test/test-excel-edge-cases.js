@@ -17,6 +17,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import ExcelJS from 'exceljs';
+import { ExcelFileHandler } from '../dist/utils/files/excel.js';
 import { handleReadFile, handleWriteFile, handleGetFileInfo } from '../dist/handlers/filesystem-handlers.js';
 import { handleEditBlock } from '../dist/handlers/edit-search-handlers.js';
 import { runIfMain } from './helpers/run-if-main.js';
@@ -83,6 +84,26 @@ async function testAppendArrayWithoutSheet1(dir) {
   assert.deepStrictEqual(after.Data, [['x'], ['y']], 'the rows should be appended to the workbook\'s sheet');
 }
 
+async function testSparseFarCornerReadIsBounded(dir) {
+  const file = path.join(dir, 'sparse.xlsx');
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet('Sparse');
+  worksheet.getCell('A1').value = 'near';
+  worksheet.getCell('XFD1048576').value = 'far';
+  await workbook.xlsx.writeFile(file);
+
+  await assert.rejects(
+    () => handleReadFile({ path: file }),
+    /100000-cell limit/,
+    'a sparse far-corner sheet should be bounded before allocating its rectangular result'
+  );
+
+  const handler = new ExcelFileHandler();
+  const farCell = await handler.read(file, { range: 'Sparse!XFD1048576' });
+  assert.ok(String(farCell.content).includes('far'),
+    'an explicit far-cell range should remain readable: ' + String(farCell.content));
+}
+
 async function testInfoOnUnreadableWorkbook(dir) {
   const file = path.join(dir, 'broken.xlsx');
   fs.writeFileSync(file, 'not a workbook');
@@ -99,6 +120,7 @@ export default async function runTests() {
     ["edit_block keeps content within the range TO corner", testRangeToCorner],
     ["read_file reads a sheet named like a number", testSheetNamedLikeANumber],
     ["write_file appends a 2D array to the workbook, not to a new Sheet1", testAppendArrayWithoutSheet1],
+    ["read_file bounds sparse far-corner sheets and preserves explicit ranges", testSparseFarCornerReadIsBounded],
     ["get_file_info says why a workbook can't be read", testInfoOnUnreadableWorkbook],
   ];
   try {
