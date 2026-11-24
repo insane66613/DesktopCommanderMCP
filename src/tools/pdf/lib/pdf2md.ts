@@ -91,6 +91,13 @@ export async function pdf2md(pdfBuffer: Uint8Array, pageNumbers: number[] | Page
             pageNumbers :
             generatePageNumbers(pageNumbers.offset, pageNumbers.length, pages.length);
 
+        // An empty explicit range means no pages, unlike the default empty
+        // array (all pages). Do not transform or extract images for an empty
+        // range; the finally block still releases the parsed document.
+        if (!Array.isArray(pageNumbers) && filterPageNumbers.length === 0) {
+            return { pages: [], metadata: extractMetadata(result) };
+        }
+
         // Filter and transform pages
         const pagesToProcess = filterPageNumbers.length === 0 ?
             pages :
