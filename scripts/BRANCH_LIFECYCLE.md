@@ -23,8 +23,20 @@ The report records exact remote heads plus classifications:
 | PROTECTED | Main, upstream PR lane, release lane or checked-out worktree | Preserve |
 | UNFETCHED_OR_MOVED | Local object or tracking tip does not match live remote | Fetch/inspect, never delete |
 | MERGED_IN_MAIN | Remote SHA is a real ancestor of current main | Candidate for verified retirement |
-| PATCH_EQUIVALENT_CANDIDATE | No right-only nonmerge patches and no unique merge commits | Manual equivalence review |
+| PATCH_EQUIVALENT_CANDIDATE | No unique patch/merge content, or an exact aggregate squash match | Manual equivalence review |
 | UNIQUE_REVIEW | Unique unmerged patch or merge history | Inspect files and tests, keep by default |
+
+Exact squash adoption is detected separately from per-commit cherry-pick equivalence.
+For each branch with unique non-merge commits and no unique merge commits, the audit
+compares the branch's aggregate raw diff from its merge-base to its tip against
+single-parent commits on current main that touch the same paths. The comparison
+uses exact raw path, mode and object-ID records with rename detection disabled;
+a match records `squashEquivalentCommit` and
+`squashCheck: "exact-match"`.
+A near-match, extra change, unique merge resolution, missing merge-base, or bounded
+scan limit remains UNIQUE_REVIEW. Exact content adoption is still not semantic
+correctness proof, and retirement remains manually gated by
+`--allow-patch-equivalent`.
 
 The optional `--hotspots` samples paths changed by unmerged, non-equivalent
 commits, groups files touched by multiple branches, and ranks the top 50

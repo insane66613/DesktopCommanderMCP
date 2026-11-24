@@ -32,6 +32,9 @@ assert.equal(classifyBranch({objectPresent:true,trackingMatches:true,
 assert.equal(classifyBranch({objectPresent:true,trackingMatches:true,
   uniquePatches:0,uniqueMerges:0}), 'PATCH_EQUIVALENT_CANDIDATE');
 assert.equal(classifyBranch({objectPresent:true,trackingMatches:true,
+  uniquePatches:2,uniqueMerges:0,squashEquivalentCommit:'a'.repeat(40)}),
+  'PATCH_EQUIVALENT_CANDIDATE');
+assert.equal(classifyBranch({objectPresent:true,trackingMatches:true,
   uniquePatches:1,uniqueMerges:0}), 'UNIQUE_REVIEW');
 assert.equal(classifyBranch({objectPresent:true,trackingMatches:true,
   uniquePatches:0,uniqueMerges:1}), 'UNIQUE_REVIEW');
@@ -66,6 +69,28 @@ try {
   git(repo,'switch','main');
   git(repo,'merge','--no-ff','merged','-m','integrate feature');
   git(repo,'push','fork','main');
+  git(repo,'switch','-c','squashed',base);
+  writeFileSync(join(repo,'squash-a.txt'),'squash A\n');
+  git(repo,'add','squash-a.txt');
+  git(repo,'commit','-m','squash source part one');
+  writeFileSync(join(repo,'squash-b.txt'),'squash B\n');
+  git(repo,'add','squash-b.txt');
+  git(repo,'commit','-m','squash source part two');
+  git(repo,'push','fork','squashed');
+  git(repo,'switch','main');
+  git(repo,'merge','--squash','squashed');
+  git(repo,'commit','-m','squash adoption');
+  const squashAdoptionSha = git(repo,'rev-parse','HEAD');
+  git(repo,'push','fork','main');
+  git(repo,'switch','-c','near-squash',base);
+  writeFileSync(join(repo,'squash-a.txt'),'squash A\n');
+  git(repo,'add','squash-a.txt');
+  git(repo,'commit','-m','near squash part one');
+  writeFileSync(join(repo,'squash-b.txt'),'squash B changed\n');
+  git(repo,'add','squash-b.txt');
+  git(repo,'commit','-m','near squash part two');
+  git(repo,'push','fork','near-squash');
+  git(repo,'switch','main');
   git(repo,'switch','-c','equivalent',base);
   writeFileSync(join(repo,'feature.txt'),'existing feature\n');
   git(repo,'add','feature.txt');
@@ -84,19 +109,28 @@ try {
   assert.equal(audit.worktrees.length,1);
   const hotspotAudit = JSON.parse(run(process.execPath,
     [cli,'--remote','fork','--hotspots','--json'],repo));
-  assert.equal(hotspotAudit.hotspotScope.reviewedBranches,1,
+  assert.equal(hotspotAudit.hotspotScope.reviewedBranches,2,
     'only non-equivalent unique patch branches need changed-file sampling');
   assert(hotspotAudit.branches.find(x => x.name === 'unique').changedPaths.includes('unique.txt'));
   assert.match(hotspotAudit.hotspotScope.disclaimer,/not duplicate code/);
-  assert.equal(audit.branches.length,5);
+  assert.equal(audit.branches.length,7);
   const byName = Object.fromEntries(audit.branches.map(x => [x.name,x]));
   assert.equal(byName.main.classification,'PROTECTED');
   assert.equal(byName.merged.classification,'MERGED_IN_MAIN');
   assert.equal(byName.equivalent.classification,'PATCH_EQUIVALENT_CANDIDATE');
+  assert.equal(byName.squashed.classification,'PATCH_EQUIVALENT_CANDIDATE',
+    'multi-commit work adopted by an exact squash must not be misclassified as unique');
+  assert.equal(byName.squashed.squashEquivalentCommit,squashAdoptionSha);
+  assert.equal(byName.squashed.squashCheck,'exact-match');
+  assert.equal(byName.squashed.uniquePatches,2);
+  assert.equal(byName['near-squash'].classification,'UNIQUE_REVIEW',
+    'a one-blob near-match must remain unique');
+  assert.equal(byName['near-squash'].squashEquivalentCommit,null);
+  assert.equal(byName['near-squash'].squashCheck,'no-match');
   assert.equal(byName.unique.classification,'UNIQUE_REVIEW');
   assert.equal(byName['codex/protected'].classification,'PROTECTED');
   assert.deepEqual(audit.summary,{
-    PROTECTED:2,MERGED_IN_MAIN:1,PATCH_EQUIVALENT_CANDIDATE:1,UNIQUE_REVIEW:1,
+    PROTECTED:2,MERGED_IN_MAIN:1,PATCH_EQUIVALENT_CANDIDATE:2,UNIQUE_REVIEW:2,
   });
   const attached = join(dir,'attached-worktree');
   git(repo,'worktree','add',attached,'unique');

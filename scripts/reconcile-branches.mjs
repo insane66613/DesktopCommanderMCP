@@ -14,6 +14,8 @@ const PROTECTED = [
   /^main$/, /^HEAD$/, /^codex\//, /^lane\//,
   /^reconcile\//, /^release\//,
 ];
+const MAX_SQUASH_PATHSPEC_BYTES = 16000;
+const MAX_SQUASH_CANDIDATES = 2000;
 const DEFAULT_FORK = 'insane66613/DesktopCommanderMCP';
 const DEFAULT_UPSTREAM = 'wonderwhy-er/DesktopCommanderMCP';
 
@@ -30,6 +32,9 @@ function run(command, args, cwd, options = {}) {
 function git(args, cwd, options = {}) { return run('git', args, cwd, options); }
 function sha256(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex').toUpperCase();
+}
+function sha256Text(value) {
+  return createHash('sha256').update(value,'utf8').digest('hex');
 }
 function durableJson(path, record, flag = 'w') {
   const fd = openSync(path, flag);
@@ -70,7 +75,8 @@ export function classifyBranch(input) {
   if (input.protected || input.checkedOut) return 'PROTECTED';
   if (!input.objectPresent || !input.trackingMatches) return 'UNFETCHED_OR_MOVED';
   if (input.inMain) return 'MERGED_IN_MAIN';
-  if (input.uniquePatches === 0 && input.uniqueMerges === 0) {
+  if (input.uniqueMerges === 0 &&
+      (input.uniquePatches === 0 || input.squashEquivalentCommit)) {
     return 'PATCH_EQUIVALENT_CANDIDATE';
   }
   return 'UNIQUE_REVIEW';
@@ -87,8 +93,44 @@ function worktrees(cwd) {
       .map(line => [line.split(' ')[0], line.slice(line.indexOf(' ') + 1)])))
     .filter(x => x.worktree);
 }
+function exactSquashAdoption(cwd, mainSha, branchSha, mergeBase, diffCache) {
+  const branchDiff = git(['diff-tree','--no-commit-id','--raw','-r','-z',
+    '--no-renames','--no-abbrev',mergeBase,branchSha],cwd).out;
+  if (!branchDiff) return {commit:null,status:'empty-diff'};
+  const paths = git(['diff-tree','--no-commit-id','--name-only','-r','-z',
+    '--no-renames',mergeBase,branchSha],cwd).out.split('\0').filter(Boolean);
+  if (!paths.length) return {commit:null,status:'empty-diff'};
+  const pathBytes = paths.reduce((total,path) => total + Buffer.byteLength(path,'utf8') + 1,0);
+  if (pathBytes > MAX_SQUASH_PATHSPEC_BYTES) {
+    return {commit:null,status:'path-limit-exceeded'};
+  }
+  const candidates = git(['--literal-pathspecs','rev-list','--no-merges',
+    mergeBase + '..' + mainSha,'--',...paths],cwd).out.split(/\r?\n/).filter(Boolean);
+  if (candidates.length > MAX_SQUASH_CANDIDATES) {
+    return {commit:null,status:'candidate-limit-exceeded'};
+  }
+  const branchDigest = sha256Text(branchDiff);
+  for (const commit of candidates) {
+    let digest = diffCache.get(commit);
+    let candidateDiff = null;
+    if (digest === undefined || digest === branchDigest) {
+      const parent = git(['rev-parse',commit + '^'],cwd).out;
+      candidateDiff = git(['diff-tree','--no-commit-id','--raw','-r','-z',
+        '--no-renames','--no-abbrev',parent,commit],cwd).out;
+      if (digest === undefined) {
+        digest = sha256Text(candidateDiff);
+        diffCache.set(commit,digest);
+      }
+    }
+    if (digest === branchDigest && candidateDiff === branchDiff) {
+      return {commit,status:'exact-match'};
+    }
+  }
+  return {commit:null,status:'no-match'};
+}
 function branches(cwd, remote, baseSha, wts) {
   const rows = git(['ls-remote','--heads',remote], cwd).out.split(/\r?\n/).filter(Boolean);
+  const diffCache = new Map();
   return rows.map(line => {
     const [sha, ref] = line.trim().split(/\s+/);
     const name = ref.slice('refs/heads/'.length);
@@ -98,16 +140,30 @@ function branches(cwd, remote, baseSha, wts) {
     const protectedBranch = PROTECTED.some(pattern => pattern.test(name));
     const checkedOut = wts.some(w => w.branch === 'refs/heads/' + name);
     const item = { name, sha, trackingMatches, objectPresent,
-      checkedOut, protected: protectedBranch, inMain: false,
-      uniquePatches: null, uniqueMerges: null };
+      checkedOut, protected: protectedBranch, inMain: false, mergeBase: null,
+      uniquePatches: null, uniqueMerges: null,
+      squashEquivalentCommit: null, squashCheck: 'not-checked' };
     if (trackingMatches && objectPresent) {
       item.inMain = git(['merge-base','--is-ancestor',sha,baseSha], cwd,
         {allowFailure:true}).status === 0;
+      const mergeBase = git(['merge-base',baseSha,sha],cwd,{allowFailure:true});
+      item.mergeBase = mergeBase.status === 0 ? mergeBase.out : null;
       const patches = git(['rev-list','--right-only','--cherry-pick',
         '--no-merges',baseSha + '...' + sha],cwd).out;
       const merges = git(['rev-list','--merges',baseSha + '..' + sha],cwd).out;
       item.uniquePatches = patches ? patches.split(/\r?\n/).length : 0;
       item.uniqueMerges = merges ? merges.split(/\r?\n/).length : 0;
+      if (item.uniqueMerges > 0) {
+        item.squashCheck = 'unique-merges-present';
+      } else if (item.uniquePatches > 0 && item.mergeBase) {
+        const squash = exactSquashAdoption(cwd,baseSha,sha,item.mergeBase,diffCache);
+        item.squashEquivalentCommit = squash.commit;
+        item.squashCheck = squash.status;
+      } else if (item.uniquePatches > 0) {
+        item.squashCheck = 'no-common-base';
+      } else {
+        item.squashCheck = 'not-needed';
+      }
     }
     item.classification = classifyBranch(item);
     return item;
@@ -135,7 +191,8 @@ export function summarizeHotspots(items) {
 function addHotspots(cwd, mainSha, result) {
   let sampled = 0;
   for (const item of result.branches) {
-    if (!item.trackingMatches || !item.objectPresent || !item.uniquePatches) continue;
+    if (!item.trackingMatches || !item.objectPresent || !item.uniquePatches ||
+        item.squashEquivalentCommit) continue;
     // -z disambiguates paths containing spaces or newlines. Do not infer
     // semantic duplicates from path overlap, and include protected PR branches.
     const output = git(['log','--right-only','--cherry-pick','--no-merges',
