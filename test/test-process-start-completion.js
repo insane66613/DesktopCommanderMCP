@@ -107,6 +107,36 @@ try {
       }
       terminalManager.completedSessions.delete(fakePid);
     }
+    // A ChildProcess error can be a failed kill or IPC send, not process exit.
+    for (const mode of ['before-return', 'after-return']) {
+      const child = Object.assign(new EventEmitter(), {
+        pid: fakePid, stdout: new EventEmitter(), stderr: new EventEmitter(),
+        stdin: new EventEmitter(), exitCode: null, signalCode: null,
+      });
+      let spawned;
+      const spawnReady = new Promise(resolve => { spawned = resolve; });
+      childProcess.spawn = () => { spawned(); return child; };
+      syncBuiltinESMExports();
+      const pending = startProcess({
+        command: `echo runtime-error-${mode}`, shell,
+        timeout_ms: mode === 'before-return' ? 60000 : 0,
+      });
+      await spawnReady;
+      if (mode === 'after-return') await pending;
+      child.emit('error', Object.assign(new Error('kill EPERM'), { code: 'EPERM' }));
+      const result = await pending;
+      assert.equal(result.structuredContent.isFinished, false);
+      assert.equal(terminalManager.getSession(fakePid)?.process, child,
+        'recoverable process error must retain the running session');
+      child.stdout.emit('data', Buffer.from('still-running\n'));
+      assert.match(terminalManager.readOutputPaginated(fakePid, -5, 5).lines.join('\n'), /still-running/);
+      child.exitCode = 7;
+      child.emit('exit', 7);
+      child.emit('close', 7);
+      assert.deepEqual(terminalManager.getProcessStatus(fakePid),
+        { isComplete: true, exitCode: 7, outputClosed: true });
+      terminalManager.completedSessions.delete(fakePid);
+    }
   } finally {
     childProcess.spawn = originalSpawn;
     syncBuiltinESMExports();

@@ -553,13 +553,12 @@ export class TerminalManager {
         resolve(result);
       };
 
-      // Now that resolveOnce exists, route process errors into it: an error after
-      // a successful spawn means the process is gone, so the caller must not sit
-      // waiting for output that will never arrive.
+      // A ChildProcess error may mean a failed kill or IPC send, not exit.
+      // Keep the generation-bound session until exit/close records completion;
+      // otherwise a still-running child becomes unreadable and unterminable.
       forwardProcessError = (err: Error) => {
         session.lifecycleVersion++;
-        if (this.sessions.get(session.pid) === session) this.sessions.delete(session.pid);
-        exitReason = 'process_exit';
+        exitReason = 'process_error';
         resolveOnce({
           pid: childProcess.pid!,
           output: output + `\nProcess error: ${err.message}`,

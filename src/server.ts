@@ -1136,7 +1136,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 
                         PERFORMANCE DEBUGGING (verbose_timing parameter):
                         Set verbose_timing: true to get detailed timing information including:
-                        - Exit reason (early_exit_quick_pattern, early_exit_periodic_check, process_exit, timeout)
+                        - Exit reason (early_exit_quick_pattern, early_exit_periodic_check, process_exit, process_error, timeout)
                         - Total duration and time to first output
                         - Complete timeline of all output events with timestamps
                         - Which detection mechanism triggered early exit
