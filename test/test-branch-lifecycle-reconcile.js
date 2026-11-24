@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { classifyBranch, retirementAllowed, verifyBundleRecovery } from '../scripts/reconcile-branches.mjs';
+import { classifyBranch, retirementAllowed, verifyBundleRecovery, summarizeHotspots } from '../scripts/reconcile-branches.mjs';
 
 const cli = resolve(fileURLToPath(new URL('../scripts/reconcile-branches.mjs', import.meta.url)));
 function run(command, args, cwd, expected = 0) {
@@ -15,6 +15,14 @@ function run(command, args, cwd, expected = 0) {
   return (r.stdout || '').trim();
 }
 function git(cwd, ...args) { return run('git',args,cwd); }
+assert.deepEqual(summarizeHotspots([
+  { name:'a', changedPaths:['src/a.ts','src/b.ts'] },
+  { name:'b', changedPaths:['src/b.ts'] },
+  { name:'c', changedPaths:['src/a.ts','src/b.ts'] },
+]), [
+  {path:'src/b.ts',branchCount:3,branches:['a','b','c']},
+  {path:'src/a.ts',branchCount:2,branches:['a','c']},
+], 'hotspot ranking must be descriptive, deterministic and not imply equivalence');
 assert.equal(classifyBranch({protected:true}), 'PROTECTED');
 assert.equal(classifyBranch({checkedOut:true}), 'PROTECTED');
 assert.equal(classifyBranch({trackingMatches:false}), 'UNFETCHED_OR_MOVED');
@@ -74,6 +82,12 @@ try {
   git(repo,'fetch','fork','+refs/heads/*:refs/remotes/fork/*');
   const audit = JSON.parse(run(process.execPath,[cli,'--remote','fork','--json'],repo));
   assert.equal(audit.worktrees.length,1);
+  const hotspotAudit = JSON.parse(run(process.execPath,
+    [cli,'--remote','fork','--hotspots','--json'],repo));
+  assert.equal(hotspotAudit.hotspotScope.reviewedBranches,1,
+    'only non-equivalent unique patch branches need changed-file sampling');
+  assert(hotspotAudit.branches.find(x => x.name === 'unique').changedPaths.includes('unique.txt'));
+  assert.match(hotspotAudit.hotspotScope.disclaimer,/not duplicate code/);
   assert.equal(audit.branches.length,5);
   const byName = Object.fromEntries(audit.branches.map(x => [x.name,x]));
   assert.equal(byName.main.classification,'PROTECTED');
