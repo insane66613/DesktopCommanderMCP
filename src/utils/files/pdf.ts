@@ -36,20 +36,13 @@ export class PdfFileHandler implements FileHandler {
             // If neither, we pass empty array (all pages).
             // Note: offset defaults to 0 if undefined.
             
-            let range: any;
-            if (length !== undefined) {
-                range = { offset, length };
-            } else if (offset > 0) {
-                 // If offset provided but no length, try to read reasonable amount or all?
-                 // PageRange requires length. Let's assume 0 means "all" or use a large number?
-                 // Looking at pdf2md implementation, it uses generatePageNumbers(offset, length, total).
-                 // We'll pass 0 for length to imply "rest" if supported, or just undefined length if valid.
-                 // But typescript requires length.
-                 range = { offset, length: 0 }; 
-            } else {
-                range = [];
-            }
-
+            // No range means all pages. An offset without a length means
+            // from that offset through the end, not an explicit empty range.
+            const range = length !== undefined
+                ? { offset, length }
+                : offset !== 0
+                    ? { offset, length: Number.MAX_SAFE_INTEGER }
+                    : [];
             const pdfResult = await parsePdfToMarkdown(path, range);
 
             return {
