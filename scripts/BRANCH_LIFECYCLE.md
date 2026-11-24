@@ -10,10 +10,10 @@ equate a branch's age or number of commits with obsolete functionality.
 Run from the DeskCommand repository, or a clean isolated worktree:
 
 ~~~powershell
-npm run branches:audit -- --remote fork
-npm run branches:audit -- --remote fork --hotspots
-npm run branches:audit -- --remote fork --hotspots --json --output 'X:\CodeArchives\deskcommand-branch-audit-20261123.json'
-npm run branches:audit:test
+node scripts/reconcile-branches.mjs --remote fork
+node scripts/reconcile-branches.mjs --remote fork --hotspots
+node scripts/reconcile-branches.mjs --remote fork --hotspots --json --output 'X:\CodeArchives\deskcommand-branch-audit-20261123.json'
+node test/test-branch-lifecycle-reconcile.js
 ~~~
 
 The report records exact remote heads plus classifications:
@@ -43,7 +43,7 @@ git remote prune --dry-run; **it never prunes worktrees automatically**.
 Do not batch deletion. For an integrated branch with no open PR and no checkout:
 
 ~~~powershell
-npm run branches:audit -- --remote fork --apply --retire 'specific/branch' --expect-sha 'FULL_40_CHARACTER_SHA' --archive-dir 'X:\CodeArchives\deskcommand-retired'
+node scripts/reconcile-branches.mjs --remote fork --apply --retire 'specific/branch' --expect-sha 'FULL_40_CHARACTER_SHA' --archive-dir 'X:\CodeArchives\deskcommand-retired'
 ~~~
 
 The command checks the current remote SHA, clean worktree, protected names,
