@@ -47,6 +47,8 @@
     "test": "npm run build && node test/run-all-tests.js",
     "test:integration": "npm run build && node test/integration/run-all-integration-tests.js",
     "test:debug": "node --inspect test/run-all-tests.js",
+    "branches:audit": "node scripts/reconcile-branches.mjs",
+    "branches:audit:test": "node test/test-branch-lifecycle-reconcile.js",
     "validate:tools": "npm run build && node scripts/validate-tools-sync.js",
     "link:local": "npm run build && npm link",
     "unlink:local": "npm unlink",
