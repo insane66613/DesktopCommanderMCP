@@ -24,11 +24,29 @@ async function setSetting(key, value) {
   const result = await client.callTool({ name:'set_config_value', arguments:{key,value} });
   assert.notEqual(result.isError,true, `set_config_value failed ${key}: ${JSON.stringify(result)}`);
 }
+const previewToolNames = [
+  'read_file', 'write_file', 'receive_file',
+  'export_project_file', 'list_directory', 'edit_block',
+];
+let unrelatedConfigUiUri;
 async function inspectPreview(expected, label) {
   const tools = (await client.listTools()).tools;
-  const readFile = tools.find(t=>t.name==='read_file');
-  assert(readFile, `${label}: ordinary read_file must remain registered`);
-  assert.equal(Boolean(readFile._meta?.['ui/resourceUri']),expected,label);
+  for (const name of previewToolNames) {
+    const tool = tools.find(t => t.name === name);
+    assert(tool, `${label}: ${name} must remain registered`);
+    assert.equal(Boolean(tool._meta?.['ui/resourceUri']), expected,
+      `${label}: ${name} must follow the current preview setting`);
+  }
+  const ordinaryTool = tools.find(t => t.name === 'get_file_info');
+  assert(ordinaryTool, `${label}: get_file_info must remain available`);
+  assert.equal(Boolean(ordinaryTool._meta?.['ui/resourceUri']), false,
+    `${label}: preview metadata must not leak to ordinary tools`);
+  const configTool = tools.find(t => t.name === 'get_config');
+  assert(configTool, `${label}: get_config must remain available`);
+  const configUiUri = configTool._meta?.['ui/resourceUri'] ?? null;
+  if (unrelatedConfigUiUri === undefined) unrelatedConfigUiUri = configUiUri;
+  else assert.equal(configUiUri, unrelatedConfigUiUri,
+    `${label}: file-preview AB state must not change unrelated config UI`);
 }
 async function main() {
   try {
