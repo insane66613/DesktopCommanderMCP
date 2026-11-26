@@ -201,6 +201,12 @@ export class RemoteChannel {
     private heartbeatDeviceId: string | null = null;
     // Single-slot queue keeping concurrent `status` PATCHes in order.
     private statusWriteChain: Promise<void> = Promise.resolve();
+    /** Coalesce only identical pending writes, not future heartbeats/status refreshes. */
+    private pendingStatusWrite: {
+        deviceId: string | null;
+        status: 'online' | 'offline';
+        promise: Promise<boolean>;
+    } | null = null;
     /**
      * Answers whether the local execution child is alive. Default yes, so a
      * RemoteChannel used without a device (tests, other callers) behaves as
@@ -1382,15 +1388,30 @@ export class RemoteChannel {
             console.debug(`[DEBUG] Status write '${status}' suppressed — teardown in progress`);
             return Promise.resolve(false);
         }
-        // The chain only sequences the writes; whether one landed goes back
-        // to whoever asked, so readiness can depend on it.
+        // Duplicate callbacks often queue the same status before the first
+        // PATCH completes. Share only the last pending request; intervening
+        // offline/online transitions still need their own ordered writes.
+        // Never cache a completed status: heartbeats and external changes need
+        // later refreshes to reach the provider.
+        const deviceId = this.deviceId;
+        if (this.pendingStatusWrite?.status === status &&
+            this.pendingStatusWrite.deviceId === deviceId) {
+            return this.pendingStatusWrite.promise;
+        }
+        // Capture the target at enqueue time. Otherwise a registration change
+        // can redirect an older queued status to the newer device ID.
         const write = this.statusWriteChain
-            .then(() => (this.deviceId ? this.setOnlineStatus(this.deviceId, status) : false))
+            .then(() => (deviceId ? this.setOnlineStatus(deviceId, status) : false))
             .catch((e: any) => {
                 console.error('[DEBUG] Status write failed:', e?.message);
                 return false;
             });
+        const pending = { deviceId, status, promise: write };
+        this.pendingStatusWrite = pending;
         this.statusWriteChain = write.then(() => undefined);
+        void write.then(() => {
+            if (this.pendingStatusWrite === pending) this.pendingStatusWrite = null;
+        });
         return write;
     }
 
