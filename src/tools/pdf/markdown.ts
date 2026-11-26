@@ -44,7 +44,16 @@ const require = createRequire(import.meta.url);
  * Commander's). Loaded when first used, not with this module: the server
  * loads this module at startup, before it answers initialize (#715).
  */
-export function loadMdToPdf() {
+type MdToPdfRuntime = {
+    convertMdToPdf: typeof import('md-to-pdf/dist/lib/md-to-pdf.js')['convertMdToPdf'];
+    defaultConfig: typeof import('md-to-pdf/dist/lib/config.js')['defaultConfig'];
+    puppeteer: PuppeteerNode;
+    serveHandler: (request: IncomingMessage, response: ServerResponse, config: { public: string; directoryListing: boolean; cleanUrls: boolean }) => Promise<void>;
+    grayMatter: (input: string, options: unknown) => { content: string; data: unknown };
+    yamlEngine: { parse: (input: string, options?: unknown) => unknown; stringify: (input: unknown, options?: unknown) => string };
+};
+
+export function loadMdToPdf(): MdToPdfRuntime {
     const requireFromMdToPdf = createRequire(require.resolve('md-to-pdf'));
     const { convertMdToPdf }: typeof import('md-to-pdf/dist/lib/md-to-pdf.js') = require('md-to-pdf/dist/lib/md-to-pdf.js');
     const { defaultConfig }: typeof import('md-to-pdf/dist/lib/config.js') = require('md-to-pdf/dist/lib/config.js');
