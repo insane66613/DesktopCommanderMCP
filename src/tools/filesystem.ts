@@ -782,67 +782,155 @@ export async function createDirectory(dirPath: string): Promise<void> {
     await fs.mkdir(validPath, { recursive: true });
 }
 
-/** Batch Git ignore checks per directory; preserve native traversal and empty folders. */
-async function ignoredGitEntries(directory: string, names: string[], deadline: number): Promise<Set<string>> {
-    const ignored = new Set<string>();
-    for (let i = 0; i < names.length; i += 64) {
-        const batch = names.slice(i, i + 64);
-        if (Date.now() >= deadline) throw new Error('Git-ignore directory listing deadline exceeded');
-        try {
-            const stdout = await new Promise<string>((resolve, reject) => {
-                const child = spawn('git', ['-C', directory, 'check-ignore', '-z', '--stdin'],
-                    { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
-                const output: Buffer[] = [];
-                const errors: Buffer[] = [];
-                let settled = false;
-                let timer: NodeJS.Timeout;
-                const finish = (error?: Error, value = '') => {
-                    if (settled) return;
-                    settled = true;
-                    clearTimeout(timer);
-                    if (error) reject(error);
-                    else resolve(value);
-                };
-                timer = setTimeout(() => {
-                    child.kill();
-                    finish(Object.assign(new Error('Git ignore query timed out'), { code: 'ETIMEDOUT' }));
-                }, Math.min(5000, Math.max(1, deadline - Date.now())));
-                child.stdout.on('data', (chunk: Buffer) => output.push(chunk));
-                child.stderr.on('data', (chunk: Buffer) => errors.push(chunk));
-                child.on('error', (error) => finish(error));
-                child.on('close', (code) => {
-                    const text = Buffer.concat(output).toString('utf8');
-                    const stderr = Buffer.concat(errors).toString('utf8');
-                    if (code === 0 || code === 1) finish(undefined, text);
-                    else finish(Object.assign(new Error(stderr || 'git check-ignore failed'),
-                        { code, stdout: text, stderr }));
-                });
-                // Git can exit before consuming stdin when outside a repository.
-                child.stdin.on('error', () => {});
-                child.stdin.end(batch.join('\0') + '\0');
-            });
-            for (const name of stdout.split('\0')) if (name) ignored.add(name);
-        } catch (error) {
-            const failure = error as Error & { code?: string | number; stdout?: string; stderr?: string };
-            for (const name of (failure.stdout ?? '').split('\0')) if (name) ignored.add(name);
-            if (failure.code === 1) continue; // No ignored paths in this batch.
-            // Outside a Git worktree there are no Git rules. A later batch
-            // unexpectedly losing its repository is instead a hard failure.
-            if (i === 0 && failure.code === 128 && /not a git repository/i.test(failure.stderr ?? '')) return new Set();
-            throw new Error(`Cannot apply Git ignore rules in ${directory}: ${failure.message}`);
-        }
+// Windows path separators differ from Git's internal slash syntax; on POSIX,
+// a literal backslash is an ordinary filename character and must survive.
+const gitRelativeName = (name: string): string =>
+    process.platform === 'win32' ? name.replace(/\\/g, '/') : name;
+
+/** Query Git's actual per-path ignore predicate in one bounded batch. */
+async function checkIgnoredGitPaths(directory: string, names: string[], deadline: number): Promise<Set<string>> {
+    if (!names.length) return new Set<string>();
+    if (Date.now() >= deadline) throw new Error('Git-ignore directory listing deadline exceeded');
+    const input = names.join('\0') + '\0';
+    if (Buffer.byteLength(input) > 8 * 1024 * 1024) throw new Error('Git ignore paths exceeded input budget');
+    return new Promise<Set<string>>((resolve, reject) => {
+        const child = spawn('git', ['-C', directory, 'check-ignore', '-z', '--stdin'],
+            { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+        const chunks: Buffer[] = [];
+        let bytes = 0;
+        let stderr = '';
+        let settled = false;
+        const finish = (error?: Error, paths = new Set<string>()) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            if (error) reject(error);
+            else resolve(paths);
+        };
+        const timer = setTimeout(() => {
+            child.kill();
+            finish(new Error('Git ignore path query timed out'));
+        }, Math.max(1, deadline - Date.now()));
+        child.stdout.on('data', (chunk: Buffer) => {
+            bytes += chunk.length;
+            if (bytes > 8 * 1024 * 1024) {
+                child.kill();
+                finish(new Error('Git ignore path query exceeded output budget'));
+            } else if (!settled) chunks.push(chunk);
+        });
+        child.stderr.on('data', (chunk: Buffer) => {
+            stderr = (stderr + chunk.toString('utf8')).slice(-4096);
+        });
+        child.on('error', error => finish(new Error('Git ignore path query failed: ' + error.message)));
+        child.on('close', code => {
+            if (settled) return;
+            if (code === 0 || code === 1) {
+                finish(undefined, new Set(Buffer.concat(chunks).toString('utf8').split('\0')
+                    .filter(Boolean).map(gitRelativeName)));
+            } else {
+                finish(new Error('Git ignore path query failed: ' + (stderr || 'git exited ' + code)));
+            }
+        });
+        child.stdin.on('error', () => {}); // Git may close before writing finishes on bad input.
+        child.stdin.end(input);
+    });
+}
+
+/** Discover ignored paths in one Git process, then verify ambiguous directories. */
+async function loadIgnoredGitPaths(directory: string, deadline: number): Promise<Set<string> | null> {
+    if (Date.now() >= deadline) throw new Error('Git-ignore directory listing deadline exceeded');
+    const discovered = await new Promise<Set<string> | null>((resolve, reject) => {
+        const child = spawn('git', ['-C', directory, 'ls-files',
+            '--others', '--ignored', '--exclude-standard', '--directory', '-z'],
+            { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+        const chunks: Buffer[] = [];
+        const errors: Buffer[] = [];
+        let bytes = 0;
+        let settled = false;
+        const finish = (error?: Error, entries: Set<string> | null = new Set<string>()) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            if (error) reject(error);
+            else resolve(entries);
+        };
+        const timer = setTimeout(() => {
+            child.kill();
+            finish(new Error('Git ignore query timed out'));
+        }, Math.max(1, deadline - Date.now()));
+        child.stdout.on('data', (chunk: Buffer) => {
+            bytes += chunk.length;
+            if (bytes > 8 * 1024 * 1024) {
+                child.kill();
+                finish(new Error('Git ignore query exceeded output budget'));
+            } else if (!settled) {
+                chunks.push(chunk);
+            }
+        });
+        child.stderr.on('data', (chunk: Buffer) => {
+            if (Buffer.concat(errors).length < 4096) errors.push(chunk.subarray(0, 4096));
+        });
+        child.on('error', (error) => finish(new Error('Cannot apply Git ignore rules: ' + error.message)));
+        child.on('close', (code) => {
+            if (settled) return;
+            const stderr = Buffer.concat(errors).toString('utf8').slice(-4096);
+            if (code === 0) {
+                const output = Buffer.concat(chunks).toString('utf8');
+                finish(undefined, new Set(output.split('\0').filter(Boolean).map(gitRelativeName)));
+            } else if (code === 128 && /not a git repository/i.test(stderr)) {
+                finish(undefined, new Set());
+            } else if (code === 128 && /directory entry not superset of prefix/i.test(stderr)) {
+                // Git's own ls-files enumeration breaks on roots beneath
+                // ignored ancestors. Fall back to check-ignore of native entries.
+                finish(undefined, null);
+            } else {
+                finish(new Error('Cannot apply Git ignore rules: ' + (stderr || 'git exited ' + code)));
+            }
+        });
+    });
+    if (discovered === null || discovered.has('./') || discovered.has('.')) {
+        // Git lists './' when the requested root itself is ignored. That
+        // does not identify which children are ignored; query each native
+        // entry via check-ignore in the fallback traversal instead.
+        return null;
     }
-    return ignored;
+    // --directory can report a *nonignored* directory whose only children
+    // are ignored. Confirm directory names with Git's actual predicate.
+    const ambiguousDirs = [...discovered].filter(name => name.endsWith('/'));
+    const confirmed = await checkIgnoredGitPaths(directory, ambiguousDirs, deadline);
+    for (const name of ambiguousDirs) if (!confirmed.has(name)) discovered.delete(name);
+    return discovered;
+}
+
+type GitIgnoreScope = { root: string; ignored: Set<string> | null };
+
+function ignoredInScope(ignored: Set<string>, relative: string): boolean {
+    const parts = gitRelativeName(relative).split('/').filter(Boolean);
+    let candidate = '';
+    for (const part of parts) {
+        candidate = candidate ? candidate + '/' + part : part;
+        if (ignored.has(candidate) || ignored.has(candidate + '/')) return true;
+    }
+    return false;
 }
 
 export async function listDirectory(dirPath: string, depth: number = 2, includeHidden: boolean = true, respectGitignore: boolean = false): Promise<string[]> {
     const validPath = await validatePath(dirPath);
     const results: string[] = [];
-    const ignoreDeadline = Date.now() + 12000; // One bound across all Git subprocess batches.
+    const ignoreDeadline = Date.now() + 12000; // One bound for all Git queries.
+    const scopeCache = new Map<string, GitIgnoreScope>();
+    async function scopeAt(root: string): Promise<GitIgnoreScope> {
+        const key = path.resolve(root);
+        const existing = scopeCache.get(key);
+        if (existing) return existing;
+        const scope = { root: key, ignored: await loadIgnoredGitPaths(key, ignoreDeadline) };
+        scopeCache.set(key, scope);
+        return scope;
+    }
 
     const MAX_NESTED_ITEMS = 100; // Maximum items to show per nested directory
 
-    async function listRecursive(currentPath: string, currentDepth: number, relativePath: string = '', isTopLevel: boolean = true): Promise<void> {
+    async function listRecursive(currentPath: string, currentDepth: number, relativePath: string = '', isTopLevel: boolean = true, inheritedScope?: GitIgnoreScope): Promise<void> {
         if (currentDepth <= 0) return;
 
         let entries;
@@ -862,16 +950,50 @@ export async function listDirectory(dirPath: string, depth: number = 2, includeH
             return;
         }
 
+        // A normal listing needs no Git subprocess. For opt-in ignore mode,
+        // reuse the one root snapshot while preserving nested repositories
+        // and validated symbolic-link targets as separate Git contexts.
+        let scope = inheritedScope;
+        if (respectGitignore && scope && currentPath !== scope.root) {
+            const relative = path.relative(scope.root, currentPath);
+            const outside = relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative);
+            const nestedRepo = await fs.stat(path.join(currentPath, '.git')).then(() => true, () => false);
+            if (outside || nestedRepo) {
+                scope = await scopeAt(currentPath);
+            } else if (relativePath &&
+                path.resolve(path.join(validPath, relativePath)) !== path.resolve(currentPath)) {
+                // A resolved junction can enter *below* an embedded repository
+                // root. Find its nearest owning .git on this link boundary,
+                // rather than incorrectly inheriting the outer repository.
+                let cursor = currentPath;
+                while (cursor !== scope.root) {
+                    if (await fs.stat(path.join(cursor, '.git')).then(() => true, () => false)) {
+                        scope = await scopeAt(cursor);
+                        break;
+                    }
+                    const parent = path.dirname(cursor);
+                    if (parent === cursor) break;
+                    cursor = parent;
+                }
+            }
+        }
         // Preserve historical defaults. An explicit false hides dot entries
         // at every level, without replacing validated filesystem traversal.
         let visibleEntries = includeHidden ? entries : entries.filter(entry => !entry.name.startsWith('.'));
         if (respectGitignore) {
-            // Git's check-ignore observes nested .gitignore, info/exclude and
-            // global ignores without replacing the validated directory walk.
-            // The metadata directory itself must never be recursed through.
             visibleEntries = visibleEntries.filter(entry => entry.name.toLowerCase() !== '.git');
-            const ignored = await ignoredGitEntries(currentPath, visibleEntries.map(entry => entry.name), ignoreDeadline);
-            visibleEntries = visibleEntries.filter(entry => !ignored.has(entry.name));
+            if (scope?.ignored === null) {
+                // Root beneath an ignored ancestor: ls-files cannot enumerate it.
+                // Check each native entry with Git's per-path predicate instead.
+                const checked = await checkIgnoredGitPaths(
+                    currentPath, visibleEntries.map(entry => entry.name), ignoreDeadline);
+                visibleEntries = visibleEntries.filter(entry => !checked.has(entry.name));
+            } else if (scope) {
+                visibleEntries = visibleEntries.filter(entry => {
+                    const relative = path.relative(scope.root, path.join(currentPath, entry.name));
+                    return !ignoredInScope(scope.ignored!, relative);
+                });
+            }
         }
         // Apply filtering for nested directories (not top level)
         const totalEntries = visibleEntries.length;
@@ -906,7 +1028,7 @@ export async function listDirectory(dirPath: string, depth: number = 2, includeH
                 } catch {
                     continue;
                 }
-                await listRecursive(validatedPath, currentDepth - 1, displayPath, false);
+                await listRecursive(validatedPath, currentDepth - 1, displayPath, false, scope);
             }
         }
 
@@ -924,7 +1046,10 @@ export async function listDirectory(dirPath: string, depth: number = 2, includeH
         return [`[FILE] ${path.basename(validPath)}`];
     }
 
-    await listRecursive(validPath, depth, '', true);
+    const gitScope: GitIgnoreScope | undefined = respectGitignore && stats?.isDirectory()
+        ? await scopeAt(validPath)
+        : undefined;
+    await listRecursive(validPath, depth, '', true, gitScope);
     return results;
 }
 
