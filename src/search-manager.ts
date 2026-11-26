@@ -620,6 +620,91 @@ export interface SearchSessionOptions {
   }
 
   /**
+   * Match DOCX text nodes through ripgrep's bounded Rust regex engine.
+   * One stdin search per workbook avoids a subprocess per XML text node.
+   * The line order mirrors the existing body -> header -> footer order.
+   */
+  private async matchDocxRegexCells(
+    cells: Array<{ text: string; file: string; line: number }>,
+    pattern: string,
+    ignoreCase: boolean,
+    maxResults?: number
+  ): Promise<SearchResult[]> {
+    const rgPath = await getRipgrepPath();
+    const args = ['--no-config', '--json', '--no-messages',
+      '--regexp', pattern, ...(ignoreCase ? ['--ignore-case'] : ['--case-sensitive']),
+      ...(maxResults && maxResults > 0 ? ['--max-count', String(maxResults)] : []),
+      '--', '-'];
+    const input = cells.map(cell => cell.text.replace(/[\r\n]/g, ' ')).join('\n') + '\n';
+    return new Promise<SearchResult[]>((resolve, reject) => {
+      const child = spawn(rgPath, args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+      const results: SearchResult[] = [];
+      let buffer = '';
+      let stderr = '';
+      let complete = false;
+      const finish = (error?: Error) => {
+        if (complete) return;
+        complete = true;
+        clearTimeout(timer);
+        if (error) reject(error);
+        else resolve(results);
+      };
+      const timer = setTimeout(() => {
+        child.kill();
+        finish(new Error('DOCX regex search timed out'));
+      }, 12000);
+      child.stdout.on('data', (chunk: Buffer) => {
+        if (complete) return;
+        buffer += chunk.toString('utf8');
+        if (buffer.length > 2 * 1024 * 1024) {
+          child.kill();
+          finish(new Error('DOCX regex search result exceeded the output budget'));
+          return;
+        }
+        let split: number;
+        while ((split = buffer.indexOf('\n')) !== -1) {
+          const line = buffer.slice(0, split);
+          buffer = buffer.slice(split + 1);
+          if (!line) continue;
+          try {
+            const message = JSON.parse(line);
+            if (message.type !== 'match') continue;
+            const lineNumber = message.data?.line_number;
+            if (!Number.isInteger(lineNumber) || lineNumber < 1 || lineNumber > cells.length) continue;
+            const cell = cells[lineNumber - 1];
+            const hit = message.data.submatches?.[0];
+            if (!hit || !Number.isInteger(hit.start) || !Number.isInteger(hit.end)) continue;
+            const utf8 = Buffer.from(cell.text.replace(/[\r\n]/g, ' '), 'utf8');
+            const start = utf8.subarray(0, hit.start).toString('utf8').length;
+            const end = utf8.subarray(0, hit.end).toString('utf8').length;
+            results.push({
+              file: cell.file,
+              line: cell.line,
+              match: this.getMatchContext(cell.text, start, end - start),
+              type: 'content'
+            });
+          } catch (error) {
+            child.kill();
+            finish(new Error('DOCX regex result parsing failed: ' +
+              (error instanceof Error ? error.message : String(error))));
+            return;
+          }
+        }
+      });
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderr = (stderr + chunk.toString('utf8')).slice(-4096);
+      });
+      child.on('error', (error) => finish(new Error('DOCX regex executable failed: ' + error.message)));
+      child.on('close', (code) => {
+        if (code === 0 || code === 1) finish();
+        else finish(new Error('DOCX regex search failed: ' + (stderr.trim() || 'ripgrep exit ' + code)));
+      });
+      child.stdin.on('error', () => {}); // Invalid regex may close stdin before its write.
+      child.stdin.end(input);
+    });
+  }
+
+  /**
    * Search DOCX files for content matches
    * Extracts <w:t> text from document.xml and searches it
    */
@@ -629,12 +714,12 @@ export interface SearchSessionOptions {
     ignoreCase: boolean,
     maxResults?: number,
     filePattern?: string,
-    _literalSearch?: boolean
+    literalSearch?: boolean
   ): Promise<SearchResult[]> {
     const results: SearchResult[] = [];
 
-    // Office file search always uses literal matching to prevent ReDoS.
-    // Regex patterns are treated as literal strings — this is intentional.
+    // Literal mode uses direct matching; regex mode is evaluated by ripgrep's
+    // linear-time engine rather than JavaScript's backtracking RegExp.
     const searchTerm = ignoreCase ? pattern.toLowerCase() : pattern;
 
     let docxFiles = await this.findDocxFiles(rootPath);
@@ -679,6 +764,7 @@ export interface SearchSessionOptions {
               : (aHeader ? -1 : 1);
           });
         const xmlParts = ['word/document.xml', ...numberedParts];
+        const regexCells: Array<{ text: string; file: string; line: number }> = [];
 
         for (const xmlPath of xmlParts) {
           if (maxResults && results.length >= maxResults) break;
@@ -697,15 +783,20 @@ export interface SearchSessionOptions {
             const text = m[1];
             if (!text || !text.trim()) continue;
             lineNum++;
+            const partName = xmlPath === 'word/document.xml' ? '' : `:${xmlPath.replace('word/', '')}`;
+            const sourceFile = `${filePath}${partName}`;
+            if (!literalSearch) {
+              regexCells.push({ text, file: sourceFile, line: lineNum });
+              continue;
+            }
 
             const textToSearch = ignoreCase ? text.toLowerCase() : text;
             const matchIndex = textToSearch.indexOf(searchTerm);
             if (matchIndex !== -1) {
               const matchContext = this.getMatchContext(text, matchIndex, searchTerm.length);
 
-              const partName = xmlPath === 'word/document.xml' ? '' : `:${xmlPath.replace('word/', '')}`;
               results.push({
-                file: `${filePath}${partName}`,
+                file: sourceFile,
                 line: lineNum,
                 match: matchContext,
                 type: 'content'
@@ -713,8 +804,15 @@ export interface SearchSessionOptions {
             }
           }
         }
-      } catch {
-        continue;
+        if (!literalSearch && regexCells.length) {
+          const remaining = maxResults ? maxResults - results.length : undefined;
+          results.push(...await this.matchDocxRegexCells(regexCells, pattern, ignoreCase, remaining));
+        }
+      } catch (error) {
+        // Invalid patterns, timeouts and regex execution failures must be
+        // visible to the Office-search outcome, never silently omitted.
+        if (error instanceof Error && error.message.startsWith('DOCX regex')) throw error;
+        continue; // Unreadable or malformed ZIP: preserve existing best-effort behavior.
       }
     }
 
