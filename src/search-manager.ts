@@ -1,5 +1,6 @@
 import { spawn, ChildProcess } from 'child_process';
 import { constants } from 'buffer';
+import { StringDecoder } from 'node:string_decoder';
 import path from 'path';
 import fs from 'fs/promises';
 import { validatePath } from './tools/filesystem.js';
@@ -45,6 +46,14 @@ export const SHOWN_TEXT_CHARS = 100;
 const keptText = (text: string | undefined): string | undefined =>
   text === undefined ? undefined : Buffer.from(text.slice(0, SHOWN_TEXT_CHARS + 1), 'utf16le').toString('utf16le');
 
+class DocxRegexError extends Error {
+  constructor(message: string) { super(message); this.name = 'DocxRegexError'; }
+}
+
+const MAX_DOCX_REGEX_INPUT_BYTES = 8 * 1024 * 1024;
+const MAX_DOCX_REGEX_OUTPUT_BYTES = 2 * 1024 * 1024;
+const MAX_DOCX_REGEX_RESULTS = 5000;
+
 export type SearchOutcome = 'completed' | 'timed_out' | 'stopped' | 'max_results' | 'partial' | 'failed';
 
 export interface SearchSession {
@@ -59,6 +68,7 @@ export interface SearchSession {
   ripgrepClosed?: boolean;
   ripgrepExitCode?: number | null;
   pendingOffice?: number;
+  officeAbort?: AbortController; // Owns DOCX regex children across stop, timeout and disposal.
   officeError?: boolean;
   timeoutTimer?: NodeJS.Timeout;
   error?: string;
@@ -148,6 +158,7 @@ export interface SearchSessionOptions {
       isComplete: false,
       isError: false,
       pendingOffice: Number(shouldSearchExcel) + Number(shouldSearchDocx),
+      officeAbort: shouldSearchDocx ? new AbortController() : undefined,
       startTime: Date.now(),
       lastReadTime: Date.now(),
       options,
@@ -180,6 +191,7 @@ export interface SearchSessionOptions {
           return;
         }
         session.stopReason = 'timed_out';
+        session.officeAbort?.abort();
         let signalled = true;
         if (!session.ripgrepClosed && !session.process.killed) {
           signalled = session.process.kill('SIGTERM');
@@ -216,6 +228,7 @@ export interface SearchSessionOptions {
         // Ignore late results after a timeout, stop or hard failure.
         if (session.isComplete) return;
         for (const result of excelResults) {
+          if (session.options.maxResults && session.totalMatches >= session.options.maxResults) break;
           session.results.push(result);
           session.totalMatches++;
         }
@@ -237,15 +250,22 @@ export interface SearchSessionOptions {
         options.ignoreCase !== false,
         options.maxResults,
         options.filePattern,
-        options.literalSearch  // Respect literalSearch flag for Office files
+        options.literalSearch,  // Respect literalSearch flag for Office files
+        session.officeAbort?.signal
       ).then(docxResults => {
         if (session.isComplete) return;
         for (const result of docxResults) {
+          if (session.options.maxResults && session.totalMatches >= session.options.maxResults) break;
           session.results.push(result);
           session.totalMatches++;
         }
       }).catch((err) => {
-        if (!session.isComplete) session.officeError = true;
+        if (!session.isComplete) {
+          session.officeError = true;
+          const message = 'DOCX search error: ' + (err instanceof Error ? err.message : String(err));
+          session.error = ((session.error ?? '') + (session.error ? '\n' : '') + message)
+            .slice(-MAX_KEPT_ERROR_CHARS);
+        }
         capture('docx_search_error', { error: err instanceof Error ? err.message : String(err) });
       }).finally(() => {
         if (session.isComplete) return;
@@ -370,19 +390,32 @@ export interface SearchSessionOptions {
     if (session.ripgrepClosed) {
       // Ripgrep finished; the requested Office search is still outstanding.
       session.stopReason = 'stopped';
+      session.officeAbort?.abort();
       this.finishSearchIfReady(session, true);
       return true;
     }
-    if (session.process.killed) return false;
+    if (session.process.killed) {
+      // The primary process may already have been signalled while DOCX scans
+      // remain active. Such a search is still cancellable by the caller.
+      if ((session.pendingOffice ?? 0) <= 0) return false;
+      session.stopReason = 'stopped';
+      session.officeAbort?.abort();
+      this.finishSearchIfReady(session, true);
+      return true;
+    }
 
     // Mark before signalling: a test process may emit close synchronously.
     session.stopReason = 'stopped';
-    if (!session.process.kill('SIGTERM')) {
+    const signalled = session.process.kill('SIGTERM');
+    if (!signalled && (session.pendingOffice ?? 0) <= 0) {
       session.stopReason = undefined;
       return false;
     }
+    // A primary ripgrep process may have exited without yet emitting close.
+    // In that case, pending Office work still needs to be aborted.
     // User cancellation also abandons pending Office scans. Ripgrep close
     // cannot wait indefinitely for an uncooperative document parser.
+    session.officeAbort?.abort();
     if ((session.pendingOffice ?? 0) > 0) this.finishSearchIfReady(session, true);
     return true;
   }
@@ -391,6 +424,7 @@ export interface SearchSessionOptions {
   dispose(): void {
     for (const session of this.sessions.values()) {
       if (session.timeoutTimer) clearTimeout(session.timeoutTimer);
+      session.officeAbort?.abort();
       if (!session.process.killed && !session.ripgrepClosed) session.process.kill('SIGTERM');
     }
     this.sessions.clear();
@@ -628,39 +662,76 @@ export interface SearchSessionOptions {
     cells: Array<{ text: string; file: string; line: number }>,
     pattern: string,
     ignoreCase: boolean,
-    maxResults?: number
+    maxResults?: number,
+    signal?: AbortSignal
   ): Promise<SearchResult[]> {
-    const rgPath = await getRipgrepPath();
+    if (signal?.aborted) throw new DocxRegexError('DOCX regex search aborted');
+    // Bound the complete input before joining it or starting any subprocess.
+    let inputBytes = 0;
+    const textLines: string[] = [];
+    for (const cell of cells) {
+      if (signal?.aborted) throw new DocxRegexError('DOCX regex search aborted');
+      const line = cell.text.replace(/[\r\n]/g, ' ');
+      inputBytes += Buffer.byteLength(line, 'utf8') + 1;
+      if (inputBytes > MAX_DOCX_REGEX_INPUT_BYTES) {
+        throw new DocxRegexError('DOCX regex input exceeded the byte budget');
+      }
+      textLines.push(line);
+    }
+    const input = textLines.join('\n') + '\n';
+    let rgPath: string;
+    try {
+      rgPath = await getRipgrepPath();
+    } catch (error) {
+      throw new DocxRegexError('DOCX regex executable unavailable: ' +
+        (error instanceof Error ? error.message : String(error)));
+    }
+    if (signal?.aborted) throw new DocxRegexError('DOCX regex search aborted');
+    const effectiveCap = maxResults && maxResults > 0
+      ? Math.min(maxResults, MAX_DOCX_REGEX_RESULTS)
+      : MAX_DOCX_REGEX_RESULTS;
+    const rgLimit = maxResults && maxResults > 0 && maxResults <= MAX_DOCX_REGEX_RESULTS
+      ? maxResults : MAX_DOCX_REGEX_RESULTS + 1;
     const args = ['--no-config', '--json', '--no-messages',
       '--regexp', pattern, ...(ignoreCase ? ['--ignore-case'] : ['--case-sensitive']),
-      ...(maxResults && maxResults > 0 ? ['--max-count', String(maxResults)] : []),
-      '--', '-'];
-    const input = cells.map(cell => cell.text.replace(/[\r\n]/g, ' ')).join('\n') + '\n';
+      '--max-count', String(rgLimit), '--', '-'];
     return new Promise<SearchResult[]>((resolve, reject) => {
       const child = spawn(rgPath, args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
       const results: SearchResult[] = [];
+      const decoder = new StringDecoder('utf8');
       let buffer = '';
       let stderr = '';
+      let stdoutBytes = 0;
+      let stdinError: Error | undefined;
       let complete = false;
+      let timer: NodeJS.Timeout;
       const finish = (error?: Error) => {
         if (complete) return;
         complete = true;
         clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
         if (error) reject(error);
         else resolve(results);
       };
-      const timer = setTimeout(() => {
+      const onAbort = () => {
         child.kill();
-        finish(new Error('DOCX regex search timed out'));
+        finish(new DocxRegexError('DOCX regex search aborted'));
+      };
+      timer = setTimeout(() => {
+        child.kill();
+        finish(new DocxRegexError('DOCX regex search timed out'));
       }, 12000);
+      signal?.addEventListener('abort', onAbort, { once: true });
+      if (signal?.aborted) onAbort();
       child.stdout.on('data', (chunk: Buffer) => {
         if (complete) return;
-        buffer += chunk.toString('utf8');
-        if (buffer.length > 2 * 1024 * 1024) {
+        stdoutBytes += chunk.length;
+        if (stdoutBytes > MAX_DOCX_REGEX_OUTPUT_BYTES) {
           child.kill();
-          finish(new Error('DOCX regex search result exceeded the output budget'));
+          finish(new DocxRegexError('DOCX regex cumulative output exceeded the byte budget'));
           return;
         }
+        buffer += decoder.write(chunk);
         let split: number;
         while ((split = buffer.indexOf('\n')) !== -1) {
           const line = buffer.slice(0, split);
@@ -677,6 +748,11 @@ export interface SearchSessionOptions {
             const utf8 = Buffer.from(cell.text.replace(/[\r\n]/g, ' '), 'utf8');
             const start = utf8.subarray(0, hit.start).toString('utf8').length;
             const end = utf8.subarray(0, hit.end).toString('utf8').length;
+            if (results.length >= effectiveCap) {
+              child.kill();
+              finish(new DocxRegexError('DOCX regex matched more than the bounded result limit'));
+              return;
+            }
             results.push({
               file: cell.file,
               line: cell.line,
@@ -685,7 +761,7 @@ export interface SearchSessionOptions {
             });
           } catch (error) {
             child.kill();
-            finish(new Error('DOCX regex result parsing failed: ' +
+            finish(new DocxRegexError('DOCX regex result parsing failed: ' +
               (error instanceof Error ? error.message : String(error))));
             return;
           }
@@ -694,13 +770,31 @@ export interface SearchSessionOptions {
       child.stderr.on('data', (chunk: Buffer) => {
         stderr = (stderr + chunk.toString('utf8')).slice(-4096);
       });
-      child.on('error', (error) => finish(new Error('DOCX regex executable failed: ' + error.message)));
+      child.on('error', (error) =>
+        finish(new DocxRegexError('DOCX regex executable failed: ' + error.message)));
       child.on('close', (code) => {
-        if (code === 0 || code === 1) finish();
-        else finish(new Error('DOCX regex search failed: ' + (stderr.trim() || 'ripgrep exit ' + code)));
+        if (complete) return;
+        buffer += decoder.end();
+        if (code !== 0 && code !== 1) {
+          finish(new DocxRegexError('DOCX regex search failed: ' +
+            (stderr.trim() || 'ripgrep exit ' + code)));
+        } else if (stdinError) {
+          finish(new DocxRegexError('DOCX regex input delivery failed: ' + stdinError.message));
+        } else if (buffer.trim()) {
+          finish(new DocxRegexError('DOCX regex returned an incomplete JSON line'));
+        } else {
+          finish();
+        }
       });
-      child.stdin.on('error', () => {}); // Invalid regex may close stdin before its write.
-      child.stdin.end(input);
+      // An invalid pattern may close stdin early; keep the diagnostic from
+      // ripgrep's exit code, but do not silently swallow other stdin failures.
+      child.stdin.on('error', (error: Error) => { stdinError = error; });
+      try { child.stdin.end(input); }
+      catch (error) {
+        child.kill();
+        finish(new DocxRegexError('DOCX regex input delivery failed: ' +
+          (error instanceof Error ? error.message : String(error))));
+      }
     });
   }
 
@@ -714,15 +808,18 @@ export interface SearchSessionOptions {
     ignoreCase: boolean,
     maxResults?: number,
     filePattern?: string,
-    literalSearch?: boolean
+    literalSearch?: boolean,
+    signal?: AbortSignal
   ): Promise<SearchResult[]> {
+    if (signal?.aborted) throw new DocxRegexError('DOCX regex search aborted');
     const results: SearchResult[] = [];
 
     // Literal mode uses direct matching; regex mode is evaluated by ripgrep's
     // linear-time engine rather than JavaScript's backtracking RegExp.
     const searchTerm = ignoreCase ? pattern.toLowerCase() : pattern;
 
-    let docxFiles = await this.findDocxFiles(rootPath);
+    let docxFiles = await this.findDocxFiles(rootPath, signal);
+    if (signal?.aborted) throw new DocxRegexError('DOCX regex search aborted');
 
     if (filePattern) {
       const patterns = filePattern.split('|').map(p => p.trim()).filter(Boolean);
@@ -744,10 +841,12 @@ export interface SearchSessionOptions {
     const PizZip = loadPizZip();
 
     for (const filePath of docxFiles) {
+      if (signal?.aborted) throw new DocxRegexError('DOCX regex search aborted');
       if (maxResults && results.length >= maxResults) break;
 
       try {
         const buf = await fs.readFile(filePath);
+        if (signal?.aborted) throw new DocxRegexError('DOCX regex search aborted');
         const zip = new PizZip(buf);
 
         // Discover numbered XML header/footer parts, including numbers > 3.
@@ -765,8 +864,10 @@ export interface SearchSessionOptions {
           });
         const xmlParts = ['word/document.xml', ...numberedParts];
         const regexCells: Array<{ text: string; file: string; line: number }> = [];
+        let regexCellBytes = 0;
 
         for (const xmlPath of xmlParts) {
+          if (signal?.aborted) throw new DocxRegexError('DOCX regex search aborted');
           if (maxResults && results.length >= maxResults) break;
 
           const file = zip.file(xmlPath);
@@ -786,6 +887,10 @@ export interface SearchSessionOptions {
             const partName = xmlPath === 'word/document.xml' ? '' : `:${xmlPath.replace('word/', '')}`;
             const sourceFile = `${filePath}${partName}`;
             if (!literalSearch) {
+              regexCellBytes += Buffer.byteLength(text, 'utf8') + 1;
+              if (regexCellBytes > MAX_DOCX_REGEX_INPUT_BYTES) {
+                throw new DocxRegexError('DOCX regex input exceeded the byte budget');
+              }
               regexCells.push({ text, file: sourceFile, line: lineNum });
               continue;
             }
@@ -806,12 +911,13 @@ export interface SearchSessionOptions {
         }
         if (!literalSearch && regexCells.length) {
           const remaining = maxResults ? maxResults - results.length : undefined;
-          results.push(...await this.matchDocxRegexCells(regexCells, pattern, ignoreCase, remaining));
+          results.push(...await this.matchDocxRegexCells(regexCells, pattern, ignoreCase, remaining, signal));
         }
       } catch (error) {
         // Invalid patterns, timeouts and regex execution failures must be
         // visible to the Office-search outcome, never silently omitted.
-        if (error instanceof Error && error.message.startsWith('DOCX regex')) throw error;
+        if (error instanceof DocxRegexError) throw error;
+        if (signal?.aborted) throw new DocxRegexError('DOCX regex search aborted');
         continue; // Unreadable or malformed ZIP: preserve existing best-effort behavior.
       }
     }
@@ -822,14 +928,17 @@ export interface SearchSessionOptions {
   /**
    * Find all DOCX files in a directory recursively
    */
-  private async findDocxFiles(rootPath: string): Promise<string[]> {
+  private async findDocxFiles(rootPath: string, signal?: AbortSignal): Promise<string[]> {
     const docxFiles: string[] = [];
     const isDocx = (name: string) => name.toLowerCase().endsWith('.docx');
 
     async function walk(dir: string): Promise<void> {
+      if (signal?.aborted) throw new DocxRegexError('DOCX regex search aborted');
       try {
         const entries = await fs.readdir(dir, { withFileTypes: true });
+        if (signal?.aborted) throw new DocxRegexError('DOCX regex search aborted');
         for (const entry of entries) {
+          if (signal?.aborted) throw new DocxRegexError('DOCX regex search aborted');
           const fullPath = path.join(dir, entry.name);
           if (entry.isDirectory()) {
             if (!entry.name.startsWith('.') && entry.name !== 'node_modules') {
@@ -839,17 +948,24 @@ export interface SearchSessionOptions {
             docxFiles.push(fullPath);
           }
         }
-      } catch { /* skip */ }
+      } catch (error) {
+        if (error instanceof DocxRegexError) throw error;
+        /* inaccessible directories are skipped as before */
+      }
     }
 
     try {
+      if (signal?.aborted) throw new DocxRegexError('DOCX regex search aborted');
       const stats = await fs.stat(rootPath);
       if (stats.isFile() && isDocx(rootPath)) {
         return [rootPath];
       } else if (stats.isDirectory()) {
         await walk(rootPath);
       }
-    } catch { /* skip */ }
+    } catch (error) {
+      if (error instanceof DocxRegexError) throw error;
+      /* missing paths are skipped as before */
+    }
 
     return docxFiles;
   }

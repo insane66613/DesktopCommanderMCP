@@ -50,6 +50,19 @@ try {
     .map(hit => hit.file), [filename, filename + ':footer5.xml'],
     'real start_search must expose body and footer regex results');
   await assert.rejects(search('('), /regex|pattern|parse|error/i, 'invalid regex must be reported');
+  const invalid = await searchManager.startSearch({
+    rootPath: dir, searchType: 'content', pattern: '(',
+    filePattern: '*.docx', literalSearch: false, timeout: 15000,
+  });
+  let bad = searchManager.readSearchResults(invalid.sessionId);
+  const invalidDeadline = Date.now() + 12000;
+  while (!bad.isComplete && Date.now() < invalidDeadline) {
+    await new Promise(resolve => setTimeout(resolve, 20));
+    bad = searchManager.readSearchResults(invalid.sessionId);
+  }
+  assert.equal(bad.isComplete, true, 'invalid regex must produce a terminal session');
+  assert.equal(bad.isError, true, 'invalid pattern must be failed rather than silently partial');
+  assert.match(bad.error ?? '', /regex|parse|error/i, 'the public result must explain the failure');
   const pathological = 'a'.repeat(4096) + '!';
   const stressZip = new PizZip();
   stressZip.file('word/document.xml', part(pathological));
