@@ -12,20 +12,29 @@ const xml = (text) => '<w:document xmlns:w="http://schemas.openxmlformats.org/wo
 try {
   const zip = new PizZip();
   zip.file('word/document.xml', xml('needle main body'));
-  zip.file('word/header2.xml', xml('ordinary header'));
-  zip.file('word/header4.xml', xml('needle header four'));
+  // Intentionally scramble archive insertion order to exercise deterministic
+  // body -> header2 -> header4 -> header10 -> footer3 -> footer5 ordering.
   zip.file('word/footer5.xml', xml('needle footer five'));
+  zip.file('word/header10.xml', xml('needle header ten'));
+  zip.file('word/header4.xml', xml('needle header four'));
+  zip.file('word/footer3.xml', xml('needle footer three'));
+  zip.file('word/header2.xml', xml('needle header two'));
   zip.file('word/footnotes.xml', xml('needle intentionally excluded'));
   fs.writeFileSync(filename, zip.generate({ type: 'nodebuffer' }));
   const hits = await searchManager.searchDocxFiles(dir, 'needle', true, 20, '*.docx', true);
-  assert.equal(hits.length, 3, 'document plus all numbered headers/footers should be searchable');
+  assert.equal(hits.length, 6, 'document plus all numbered headers/footers should be searchable');
+  assert.deepEqual(hits.map(hit => hit.file), [filename, ...[
+    'header2.xml', 'header4.xml', 'header10.xml', 'footer3.xml', 'footer5.xml'
+  ].map(part => filename + ':' + part)], 'stable body/header/footer numeric ordering');
   assert.ok(hits.some(hit => hit.file === filename && hit.match.includes('main body')));
   assert.ok(hits.some(hit => hit.file === filename + ':header4.xml'));
   assert.ok(hits.some(hit => hit.file === filename + ':footer5.xml'));
   assert.equal(hits.some(hit => hit.file.includes('footnotes.xml')), false);
   const bounded = await searchManager.searchDocxFiles(dir, 'needle', true, 2, '*.docx', true);
   assert.equal(bounded.length, 2, 'maxResults applies to all XML parts combined');
-  console.log('PASS: DOCX body, dynamically discovered header/footer parts, and global result limit');
+  assert.deepEqual(bounded.map(hit => hit.file), [filename, filename + ':header2.xml'],
+    'body and earliest header take precedence when results are capped');
+  console.log('PASS: DOCX body, dynamic numbered parts, deterministic precedence and global cap');
 } finally {
   searchManager.dispose();
   fs.rmSync(dir, { recursive: true, force: true });

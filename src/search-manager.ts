@@ -665,12 +665,20 @@ export interface SearchSessionOptions {
         const buf = await fs.readFile(filePath);
         const zip = new PizZip(buf);
 
-        // Discover every numbered header/footer part. The historical fixed 1..3
-        // list silently missed content in larger Word documents.
-        const linkedParts = zip.file(/^word\/(?:header|footer)\d+\.xml$/)
+        // Discover numbered XML header/footer parts, including numbers > 3.
+        // Preserve historical body -> headers -> footers precedence when a
+        // result limit is supplied; use numeric order within each part type.
+        // These are archive parts, not necessarily relationship-linked parts.
+        const numberedParts = zip.file(/^word\/(?:header|footer)\d+\.xml$/)
           .map((entry: { name: string }) => entry.name)
-          .sort((a: string, b: string) => a.localeCompare(b, undefined, { numeric: true }));
-        const xmlParts = ['word/document.xml', ...linkedParts];
+          .sort((a: string, b: string) => {
+            const aHeader = a.startsWith('word/header');
+            const bHeader = b.startsWith('word/header');
+            return aHeader === bHeader
+              ? a.localeCompare(b, undefined, { numeric: true })
+              : (aHeader ? -1 : 1);
+          });
+        const xmlParts = ['word/document.xml', ...numberedParts];
 
         for (const xmlPath of xmlParts) {
           if (maxResults && results.length >= maxResults) break;
