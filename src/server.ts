@@ -1109,6 +1109,21 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         • start_process("node:local") → Run stateless Node.js code on the MCP server
                         • start_process("wc -l /path/file.csv") → Run a one-shot shell command
 
+                        LOCAL DATA AND EXCEL ANALYSIS:
+                        - Prefer read_file and edit_block for ordinary Excel sheet/range reads and edits.
+                        - For complex local workbook transformations, start node:local, then submit one
+                          complete self-contained JavaScript script through interact_with_process.
+                          ExcelJS is available: import ExcelJS from 'exceljs'; use console.log()
+                          to return results. Imports and variables do not survive between calls.
+                        - ExcelJS can read/write XLSX but does not evaluate formulas. Formula
+                          results are cached values, which may be missing or stale after edits.
+                        - When Python is unavailable, node:local can analyze accessible local
+                          files without relying on a Python interpreter. Do not assume the
+                          browser-hosted analysis runtime can read this device's filesystem;
+                          use a local tool or explicitly export the needed file first.
+                        - For separate Python/Node shell scripts, write a standalone file with
+                          receive_file instead of passing inline source through shell quoting.
+
                         Interactive process sessions support follow-up input after they are started.
                         Long-running process sessions expose newly available output while they remain active.
                         Binary files can be processed with appropriate command-line tools or libraries available
