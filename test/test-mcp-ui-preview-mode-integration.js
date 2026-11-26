@@ -48,9 +48,26 @@ async function inspectPreview(expected, label) {
   else assert.equal(configUiUri, unrelatedConfigUiUri,
     `${label}: file-preview AB state must not change unrelated config UI`);
 }
+async function inspectOverrides(readExpected, directoryExpected, label) {
+  const tools = (await client.listTools()).tools;
+  const enabled = name => Boolean(tools.find(tool => tool.name === name)?._meta?.['ui/resourceUri']);
+  assert.equal(enabled('read_file'), readExpected, `${label}: read_file`);
+  assert.equal(enabled('list_directory'), directoryExpected, `${label}: list_directory`);
+  for (const name of previewToolNames.filter(name =>
+    name !== 'read_file' && name !== 'list_directory')) {
+    assert.equal(enabled(name), true, `${label}: unrelated ${name} stays enabled`);
+  }
+  assert.equal(enabled('get_file_info'), false, `${label}: no metadata leak`);
+}
 async function main() {
   try {
     await client.connect(transport, { timeout: 30000 });
+    const initialConfig = await client.callTool({name:'get_config',arguments:{verbose:true}});
+    const initialEntries = initialConfig.structuredContent?.entries ?? [];
+    for (const key of ['showReadFileUI','showListDirectoryUI']) {
+      assert.equal(initialEntries.find(entry => entry.key === key)?.value,true,
+        `${key}: new installs must show the inherited-enabled config switch`);
+    }
     assert.equal(client.getServerCapabilities()?.tools?.listChanged,true,
       'Server must negotiate dynamic tool list updates');
     await setSetting('mcpUiPreviewMode','on');
@@ -64,6 +81,29 @@ async function main() {
     await inspectPreview(false,'explicit per-tool file-preview off still wins globally on');
     await setSetting('filePreviewsEnabled',true);
     await inspectPreview(true,'restoring file-preview toggle restores metadata');
+    await setSetting('showReadFileUI',false);
+    await inspectOverrides(false,true,'read_file opt-out is independent');
+    const exampleFile = path.join(env.home,'preview-normal-result.txt');
+    fs.writeFileSync(exampleFile,'preview hidden; ordinary read remains functional');
+    const normalRead = await client.callTool({
+      name:'read_file', arguments:{path:exampleFile},
+    });
+    assert.notEqual(normalRead.isError,true,'hiding widget cannot block ordinary read_file');
+    assert(normalRead.content.some(item => item.text?.includes('ordinary read')),
+      'hiding UI metadata cannot remove ordinary read_file content');
+    await setSetting('showListDirectoryUI',false);
+    await inspectOverrides(false,false,'both independent opt-outs enabled');
+    await setSetting('showReadFileUI',true);
+    await inspectOverrides(true,false,'restoring read_file does not restore list_directory');
+    await setSetting('mcpUiPreviewMode','off');
+    await inspectPreview(false,'global off beats explicit child true');
+    await setSetting('mcpUiPreviewMode','on');
+    await inspectOverrides(true,false,'restoring global policy preserves directory opt-out');
+    await setSetting('showListDirectoryUI',true);
+    await inspectPreview(true,'both child controls restored');
+    const beforeChildNoop = notifications;
+    await setSetting('showListDirectoryUI',true);
+    assert.equal(notifications,beforeChildNoop,'child no-op must not notify');
     await setSetting('mcpUiPreviewMode','legacy');
     await inspectPreview(false,'legacy false disables preview');
     await setSetting('mcpUiPreviewMode','auto');
@@ -77,6 +117,8 @@ async function main() {
     const persisted = JSON.parse(fs.readFileSync(configPath,'utf8'));
     assert.equal(persisted.mcpUiPreviewMode,'auto','new mode persists to disk');
     assert.equal(persisted.mcpUiPreviewsEnabled,false,'legacy field is not clobbered');
+    assert.equal(persisted.showReadFileUI,true,'read file override persists');
+    assert.equal(persisted.showListDirectoryUI,true,'directory override persists');
     const bad = await client.callTool({ name:'set_config_value',
       arguments:{key:'mcpUiPreviewMode',value:'typo-not-a-mode'} });
     assert.equal(bad.isError,true,'invalid enum must be rejected');

@@ -170,9 +170,12 @@ export async function getConfig(args?: unknown) {
       const entries: Array<{ key: string; value: unknown; valueType: string; editable: boolean }> = CONFIG_FIELD_KEYS.map((key) => {
         const definition = CONFIG_FIELD_DEFINITIONS[key];
         const value = (configWithSystemInfo as Record<string, unknown>)[key];
+        // Older saved configs lack the per-tool opt-outs. Display their effective
+        // inherited-on state rather than an unchecked switch with a visible widget.
+        const inheritedPreviewOn = key === 'showReadFileUI' || key === 'showListDirectoryUI';
         return {
           key,
-          value: value === undefined ? null : value,
+          value: value === undefined ? (inheritedPreviewOn ? true : null) : value,
           valueType: definition.valueType,
           editable: true,
         };

@@ -331,10 +331,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         const showMcpUiPreviews = await shouldShowMcpUiPreviews();
         const config = await configManager.getConfig();
         const showFilePreviews = showMcpUiPreviews && config.filePreviewsEnabled !== false;
+        // Historical per-tool opt-outs inherit global and file-preview policy.
+        // In particular, a true child setting cannot override explicit global off.
+        const showReadFilePreview = showFilePreviews && config.showReadFileUI !== false;
+        const showListDirectoryPreview = showFilePreviews && config.showListDirectoryUI !== false;
 
-        // Cache inputs include both the global MCP UI decision and the dedicated
-        // file-preview override so live config changes invalidate tool metadata.
-        const clientKey = `${currentClient?.name ?? ''}:${showMcpUiPreviews}:${showFilePreviews}`;
+        // Include both independent overrides so tool-definition metadata and
+        // cached tools/list snapshots change with the effective policy.
+        const clientKey = `${currentClient?.name ?? ''}:${showMcpUiPreviews}:${showFilePreviews}:${showReadFilePreview}:${showListDirectoryPreview}`;
         if (_toolListCache?.key === clientKey) {
             return { tools: _toolListCache.tools };
         }
@@ -357,6 +361,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         - fileWriteLineLimit (max lines per write_file call, default 50)
                         - processStartOutputLineLimit (initial command-preview lines; 0 disables, default 25)
                         - filePreviewsEnabled (boolean user override for interactive file previews)
+                        - showReadFileUI (boolean, optional read_file widget override; false hides only read_file)
+                        - showListDirectoryUI (boolean, optional list_directory widget override; false hides only directory listing)
                         - mcpUiPreviewsEnabled (legacy boolean opt-out for rich MCP preview widgets)
                         - mcpUiPreviewMode (legacy | auto | on | off, explicit rich-preview control)
                         - telemetryEnabled (boolean for telemetry opt-in/out)
@@ -395,6 +401,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         - fileWriteLineLimit (number, max lines per write_file call)
                         - processStartOutputLineLimit (number, initial start_process preview lines; 0 disables)
                         - filePreviewsEnabled (boolean, show interactive file-preview UI)
+                        - showReadFileUI (boolean, optional read_file widget opt-out)
+                        - showListDirectoryUI (boolean, optional list_directory widget opt-out)
                         - mcpUiPreviewsEnabled (legacy boolean, false disables rich MCP previews)
                         - mcpUiPreviewMode (legacy | auto | on | off, explicit rich-preview control)
                         - telemetryEnabled (boolean)
@@ -475,7 +483,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         ${PATH_GUIDANCE}
                         ${CMD_PREFIX_DESCRIPTION}`,
                 inputSchema: zodToJsonSchema(ReadFileArgsSchema),
-                _meta: buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true, showFilePreviews),
+                _meta: buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true, showReadFilePreview),
                 annotations: {
                     title: "Read File or URL",
                     readOnlyHint: true,
@@ -801,7 +809,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         ${PATH_GUIDANCE}
                         ${CMD_PREFIX_DESCRIPTION}`,
                 inputSchema: zodToJsonSchema(ListDirectoryArgsSchema),
-                _meta: buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true, showFilePreviews),
+                _meta: buildUiToolMeta(FILE_PREVIEW_RESOURCE_URI, true, showListDirectoryPreview),
                 annotations: {
                     title: "List Directory Contents",
                     readOnlyHint: true,
@@ -1640,6 +1648,7 @@ async function handleCallToolRequestCore(request: CallToolRequest, signal?: Abor
                         ? String((args as any).key ?? '') : '';
                     const affectsToolMetadata = [
                         'mcpUiPreviewMode', 'mcpUiPreviewsEnabled', 'filePreviewsEnabled',
+                        'showReadFileUI', 'showListDirectoryUI',
                     ].includes(changedConfigKey);
                     const previousValue = affectsToolMetadata
                         ? await configManager.getValue(changedConfigKey) : undefined;
