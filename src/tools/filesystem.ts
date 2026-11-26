@@ -776,7 +776,7 @@ export async function createDirectory(dirPath: string): Promise<void> {
     await fs.mkdir(validPath, { recursive: true });
 }
 
-export async function listDirectory(dirPath: string, depth: number = 2): Promise<string[]> {
+export async function listDirectory(dirPath: string, depth: number = 2, includeHidden: boolean = true): Promise<string[]> {
     const validPath = await validatePath(dirPath);
     const results: string[] = [];
 
@@ -802,13 +802,16 @@ export async function listDirectory(dirPath: string, depth: number = 2): Promise
             return;
         }
 
+        // Preserve historical defaults. An explicit false hides dot entries
+        // at every level, without replacing validated filesystem traversal.
+        const visibleEntries = includeHidden ? entries : entries.filter(entry => !entry.name.startsWith('.'));
         // Apply filtering for nested directories (not top level)
-        const totalEntries = entries.length;
-        let entriesToShow = entries;
+        const totalEntries = visibleEntries.length;
+        let entriesToShow = visibleEntries;
         let filteredCount = 0;
 
         if (!isTopLevel && totalEntries > MAX_NESTED_ITEMS) {
-            entriesToShow = entries.slice(0, MAX_NESTED_ITEMS);
+            entriesToShow = visibleEntries.slice(0, MAX_NESTED_ITEMS);
             filteredCount = totalEntries - MAX_NESTED_ITEMS;
         }
 
