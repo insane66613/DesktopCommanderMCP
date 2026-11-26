@@ -787,6 +787,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         - depth=1: Only direct contents of the directory
                         - depth=2: Contents plus one level of subdirectories
                         - depth=3+: Multiple levels deep
+
+                        OPTIONAL VISIBILITY FILTERS:
+                        - includeHidden (default: true): false hides dot-prefixed entries.
+                        - respectGitignore (default: false): true applies Git ignore rules
+                          including nested .gitignore, local info/exclude and global patterns.
+                          Requires Git for repositories; does not hide nonignored empty folders.
+                          Defaults preserve existing directory output and tool compatibility.
                         
                         CONTEXT OVERFLOW PROTECTION:
                         - Top-level directory shows ALL items

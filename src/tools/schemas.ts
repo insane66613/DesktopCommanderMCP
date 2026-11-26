@@ -193,6 +193,8 @@ export const ListDirectoryArgsSchema = z.object({
   depth: z.number().optional().default(2),
   // Omitted keeps historical visibility; false hides dot-prefixed entries.
   includeHidden: z.boolean().optional().default(true),
+  // Opt in to Git's ignored-path rules without changing the default listing.
+  respectGitignore: z.boolean().optional().default(false),
   // 'ui' when fired by the file-preview UI, else 'llm'. 'ui' calls are
   // excluded from tool-call telemetry; see isUiOriginCall in server.ts.
   origin: z.enum(['ui', 'llm']).optional(),

@@ -2,7 +2,7 @@ import fs from "fs/promises";
 import path from "path";
 import os from 'os';
 import type fetch from 'cross-fetch';
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import { capture } from '../utils/capture.js';
 import { withTimeout, runWithAbortableTimeout } from '../utils/withTimeout.js';
@@ -782,9 +782,63 @@ export async function createDirectory(dirPath: string): Promise<void> {
     await fs.mkdir(validPath, { recursive: true });
 }
 
-export async function listDirectory(dirPath: string, depth: number = 2, includeHidden: boolean = true): Promise<string[]> {
+/** Batch Git ignore checks per directory; preserve native traversal and empty folders. */
+async function ignoredGitEntries(directory: string, names: string[], deadline: number): Promise<Set<string>> {
+    const ignored = new Set<string>();
+    for (let i = 0; i < names.length; i += 64) {
+        const batch = names.slice(i, i + 64);
+        if (Date.now() >= deadline) throw new Error('Git-ignore directory listing deadline exceeded');
+        try {
+            const stdout = await new Promise<string>((resolve, reject) => {
+                const child = spawn('git', ['-C', directory, 'check-ignore', '-z', '--stdin'],
+                    { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+                const output: Buffer[] = [];
+                const errors: Buffer[] = [];
+                let settled = false;
+                let timer: NodeJS.Timeout;
+                const finish = (error?: Error, value = '') => {
+                    if (settled) return;
+                    settled = true;
+                    clearTimeout(timer);
+                    if (error) reject(error);
+                    else resolve(value);
+                };
+                timer = setTimeout(() => {
+                    child.kill();
+                    finish(Object.assign(new Error('Git ignore query timed out'), { code: 'ETIMEDOUT' }));
+                }, Math.min(5000, Math.max(1, deadline - Date.now())));
+                child.stdout.on('data', (chunk: Buffer) => output.push(chunk));
+                child.stderr.on('data', (chunk: Buffer) => errors.push(chunk));
+                child.on('error', (error) => finish(error));
+                child.on('close', (code) => {
+                    const text = Buffer.concat(output).toString('utf8');
+                    const stderr = Buffer.concat(errors).toString('utf8');
+                    if (code === 0 || code === 1) finish(undefined, text);
+                    else finish(Object.assign(new Error(stderr || 'git check-ignore failed'),
+                        { code, stdout: text, stderr }));
+                });
+                // Git can exit before consuming stdin when outside a repository.
+                child.stdin.on('error', () => {});
+                child.stdin.end(batch.join('\0') + '\0');
+            });
+            for (const name of stdout.split('\0')) if (name) ignored.add(name);
+        } catch (error) {
+            const failure = error as Error & { code?: string | number; stdout?: string; stderr?: string };
+            for (const name of (failure.stdout ?? '').split('\0')) if (name) ignored.add(name);
+            if (failure.code === 1) continue; // No ignored paths in this batch.
+            // Outside a Git worktree there are no Git rules. A later batch
+            // unexpectedly losing its repository is instead a hard failure.
+            if (i === 0 && failure.code === 128 && /not a git repository/i.test(failure.stderr ?? '')) return new Set();
+            throw new Error(`Cannot apply Git ignore rules in ${directory}: ${failure.message}`);
+        }
+    }
+    return ignored;
+}
+
+export async function listDirectory(dirPath: string, depth: number = 2, includeHidden: boolean = true, respectGitignore: boolean = false): Promise<string[]> {
     const validPath = await validatePath(dirPath);
     const results: string[] = [];
+    const ignoreDeadline = Date.now() + 12000; // One bound across all Git subprocess batches.
 
     const MAX_NESTED_ITEMS = 100; // Maximum items to show per nested directory
 
@@ -810,7 +864,15 @@ export async function listDirectory(dirPath: string, depth: number = 2, includeH
 
         // Preserve historical defaults. An explicit false hides dot entries
         // at every level, without replacing validated filesystem traversal.
-        const visibleEntries = includeHidden ? entries : entries.filter(entry => !entry.name.startsWith('.'));
+        let visibleEntries = includeHidden ? entries : entries.filter(entry => !entry.name.startsWith('.'));
+        if (respectGitignore) {
+            // Git's check-ignore observes nested .gitignore, info/exclude and
+            // global ignores without replacing the validated directory walk.
+            // The metadata directory itself must never be recursed through.
+            visibleEntries = visibleEntries.filter(entry => entry.name.toLowerCase() !== '.git');
+            const ignored = await ignoredGitEntries(currentPath, visibleEntries.map(entry => entry.name), ignoreDeadline);
+            visibleEntries = visibleEntries.filter(entry => !ignored.has(entry.name));
+        }
         // Apply filtering for nested directories (not top level)
         const totalEntries = visibleEntries.length;
         let entriesToShow = visibleEntries;
@@ -835,16 +897,16 @@ export async function listDirectory(dirPath: string, depth: number = 2, includeH
 
             // If it's a directory and we have depth remaining, recurse
             if (isDirectory && currentDepth > 1) {
+                // Only a validation denial is an allowed skipped child. Any
+                // filtering failure inside recursion must reach the caller;
+                // otherwise a partial directory tree looks like a full success.
+                let validatedPath: string;
                 try {
-                    // Validate the path before recursing, and list the folder that was
-                    // checked: a link can be retargeted between the check and the read
-                    const validatedPath = await validatePath(fullPath);
-                    await listRecursive(validatedPath, currentDepth - 1, displayPath, false);
-                } catch (error) {
-                    // If validation fails or we can't access it, it will be marked as denied
-                    // when we try to read it in the recursive call
+                    validatedPath = await validatePath(fullPath);
+                } catch {
                     continue;
                 }
+                await listRecursive(validatedPath, currentDepth - 1, displayPath, false);
             }
         }
 
