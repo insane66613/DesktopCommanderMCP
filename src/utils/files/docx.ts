@@ -68,8 +68,6 @@ function compactXml(prettyXml: string): string {
 interface DocxZipContents {
     zip: PizZip;
     documentXml: string;
-    /** All XML parts keyed by path (e.g. "word/header1.xml") */
-    xmlParts: Map<string, string>;
 }
 
 const require = createRequire(import.meta.url);
@@ -93,21 +91,11 @@ function loadDocxZip(buf: Buffer): DocxZipContents {
     const docFile = zip.file('word/document.xml');
     if (!docFile) throw new Error('Invalid DOCX: missing word/document.xml');
 
-    const xmlParts = new Map<string, string>();
-    // Collect all XML parts for potential editing
-    const zipFiles = zip.files;
-    for (const relativePath of Object.keys(zipFiles)) {
-        if (relativePath.endsWith('.xml') || relativePath.endsWith('.rels')) {
-            try {
-                xmlParts.set(relativePath, zipFiles[relativePath].asText());
-            } catch { /* skip binary entries */ }
-        }
-    }
-
+    // Keep ZIP entries lazy. Readers decode document.xml and only the specific
+    // header/footer parts they need; unrelated XML and relationships stay compressed.
     return {
         zip,
         documentXml: docFile.asText(),
-        xmlParts,
     };
 }
 
