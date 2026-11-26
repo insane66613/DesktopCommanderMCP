@@ -318,8 +318,15 @@ export class DesktopCommanderIntegration {
 
         // Proxy other tools to MCP server
         try {
+            // The child may disconnect after ensureReady() resolves, before
+            // this request is dispatched. A captured client also lets the SDK
+            // reject an in-flight request on close rather than dereferencing null.
+            const client = this.mcpClient;
+            if (!client) {
+                throw new Error('Local Desktop Commander MCP connection was lost before tool dispatch; retry the request only if it is safe to do so');
+            }
             console.debug('[DEBUG] Calling MCP tool:', toolName, 'args:', JSON.stringify(args).substring(0, 100));
-            const result = await this.mcpClient!.callTool({
+            const result = await client.callTool({
                 name: toolName,
                 arguments: args,
                 _meta: { remote: true, ...metadata || {} }
