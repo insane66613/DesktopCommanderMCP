@@ -2,6 +2,7 @@ import { MCPDevice, getRemoteDeviceConfigPath, removeRemoteDeviceConfig } from '
 import os from 'os';
 import { captureRemote } from '../utils/capture.js';
 import { startDeviceLog } from '../remote-device/diagnostics/device-log.js';
+import { launchCaffeinateNonBlocking } from '../utils/no-sleep.js';
 
 const BLUE = '\x1b[34m';
 const RESET = '\x1b[0m';
@@ -98,8 +99,10 @@ Note:
         try {
             console.debug('[DEBUG] Start caffeinate', process.pid);
             const { default: caffeinate } = await import('caffeinate');
-            caffeinate({ pid: process.pid });
-            console.log('☕ No sleep mode enabled');
+            const started = launchCaffeinateNonBlocking(caffeinate, process.pid, error => {
+                console.warn('⚠️ Failed to start caffeinate:', error);
+            });
+            if (started) console.log('☕ No sleep mode enabled');
         } catch (error) {
             console.warn('⚠️ Failed to start caffeinate:', error);
         }
