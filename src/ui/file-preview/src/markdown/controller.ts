@@ -855,6 +855,14 @@ export function createMarkdownController(dependencies: MarkdownControllerDepende
         }
         cancelAutosave();
         const state = workspaceState;
+        // The async save may finish after navigation to another file. Only the
+        // workspace that initiated it may update shared UI, payload overrides,
+        // or schedule further saves. The old file's disk result remains valid.
+        const ownsCurrentWorkspace = (): boolean => {
+            if (workspaceState !== state) return false;
+            const visible = dependencies.getCurrentPayload();
+            return !visible || visible.filePath === state.filePath;
+        };
         state.saving = true;
         state.saveIndicator = 'saving';
         state.error = null;
@@ -934,13 +942,16 @@ export function createMarkdownController(dependencies: MarkdownControllerDepende
             state.outline = extractMarkdownOutline(state.draftContent);
             state.saving = false;
             state.saveIndicator = state.dirty ? 'idle' : 'saved';
-            if (state.dirty) scheduleAutosave();
+            if (state.dirty && ownsCurrentWorkspace()) scheduleAutosave();
             if (!state.outline.some((item) => item.id === state.activeHeadingId)) {
                 state.activeHeadingId = state.outline[0]?.id ?? null;
             }
 
+            // No stale save completion may write the new file's preview or
+            // clear its save indicator. No further asynchronous work below.
+            if (!ownsCurrentWorkspace()) return;
             const currentPayload = dependencies.getCurrentPayload();
-            if (currentPayload) {
+            if (currentPayload && currentPayload.filePath === state.filePath) {
                 const statusLineMatch = currentPayload.content.match(/^(\[Reading [^\]]+\]\r?\n(?:\r?\n)?)/);
                 const statusLine = statusLineMatch?.[1] ?? '';
                 dependencies.storePayloadOverride({ ...currentPayload, content: statusLine + savedContent });
@@ -954,7 +965,7 @@ export function createMarkdownController(dependencies: MarkdownControllerDepende
                 dependencies.updateSaveStatus('Unsaved edits', 'saving');
             } else {
                 flashSaveStatus('Saved', 'saved', 1800, () => {
-                    if (!state.dirty && !state.saving) {
+                    if (ownsCurrentWorkspace() && !state.dirty && !state.saving) {
                         state.saveIndicator = 'idle';
                         return true;
                     }
@@ -968,6 +979,9 @@ export function createMarkdownController(dependencies: MarkdownControllerDepende
         } catch (error) {
             state.saving = false;
             state.saveIndicator = 'idle';
+            // A failed request from an abandoned file must not reload or open
+            // a conflict dialog over the file the user is editing now.
+            if (!ownsCurrentWorkspace()) return;
 
             // Pull per-hunk counts from the synthetic error thrown by the save
             // loop, when this catch is reached via a partial/total hunk failure.
@@ -979,6 +993,7 @@ export function createMarkdownController(dependencies: MarkdownControllerDepende
             const isTotalFailure = appliedCount === 0 && skippedCount > 0;
 
             const freshPayload = await readCompletePayload(state.filePath).catch(() => null);
+            if (!ownsCurrentWorkspace()) return;
             let reloadedFromDisk = false;
             let freshContentForDialog: string | null = null;
             if (freshPayload) {
@@ -1006,7 +1021,7 @@ export function createMarkdownController(dependencies: MarkdownControllerDepende
                     `your draft still has them; save again to merge.`
                 );
                 dependencies.rerender();
-                flashSaveStatus('Saved (partial)', 'saved', 3000);
+                flashSaveStatus('Saved (partial)', 'saved', 3000, ownsCurrentWorkspace);
                 dependencies.trackUiEvent?.('markdown_save_partial', {
                     file_extension: getFileExtensionForAnalytics(state.filePath),
                     applied: appliedCount,
@@ -1027,7 +1042,7 @@ export function createMarkdownController(dependencies: MarkdownControllerDepende
                 dependencies.showConflictDialog({
                     fileName: displayName,
                     onUseDiskVersion: () => {
-                        if (workspaceState === state) {
+                        if (ownsCurrentWorkspace()) {
                             syncStateFromContent(state, savedFreshContent);
                             dependencies.rerender();
                         }
@@ -1037,6 +1052,7 @@ export function createMarkdownController(dependencies: MarkdownControllerDepende
                         });
                     },
                     onSaveMyChanges: () => {
+                        if (!ownsCurrentWorkspace()) return;
                         dependencies.trackUiEvent?.('markdown_save_conflict_resolved', {
                             file_extension: getFileExtensionForAnalytics(state.filePath),
                             action: 'save_mine',
@@ -1049,7 +1065,7 @@ export function createMarkdownController(dependencies: MarkdownControllerDepende
                         void saveDocument();
                     },
                     onCancel: () => {
-                        if (workspaceState === state) {
+                        if (ownsCurrentWorkspace()) {
                             state.error = 'File changed on disk. Save again to merge your edits, or reopen to discard them.';
                             dependencies.rerender();
                         }
@@ -1067,7 +1083,7 @@ export function createMarkdownController(dependencies: MarkdownControllerDepende
                     ? 'File changed on disk. Save again to merge your edits, or reopen the file to discard them.'
                     : error instanceof Error ? error.message : 'Save failed.';
                 dependencies.rerender();
-                flashSaveStatus('Save failed', 'saving', 3000);
+                flashSaveStatus('Save failed', 'saving', 3000, ownsCurrentWorkspace);
             }
 
             dependencies.trackUiEvent?.('markdown_save_failed', {
