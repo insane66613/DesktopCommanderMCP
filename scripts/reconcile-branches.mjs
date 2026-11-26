@@ -6,8 +6,8 @@
  */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, openSync, fsyncSync, closeSync, mkdtempSync, rmSync } from 'node:fs';
-import { dirname, resolve, join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, openSync, fsyncSync, closeSync, mkdtempSync, rmSync, lstatSync, copyFileSync, constants as fsConstants } from 'node:fs';
+import { dirname, resolve, join, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const PROTECTED = [
@@ -33,6 +33,28 @@ function git(args, cwd, options = {}) { return run('git', args, cwd, options); }
 function sha256(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex').toUpperCase();
 }
+// Read and hash the SAME bytes used for the retirement decision. Symlinked
+// review inputs, mutable hard links, and path substitution fail closed.
+function pinnedEvidence(path, expectedSha256) {
+  if (!isAbsolute(path) || !/^[0-9a-f]{64}$/i.test(expectedSha256 || '')) {
+    throw new Error('Evidence requires absolute path and complete SHA256');
+  }
+  const before = lstatSync(path);
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1) {
+    throw new Error('Review evidence is not an isolated regular file');
+  }
+  const bytes = readFileSync(path);
+  const after = lstatSync(path);
+  if (before.dev !== after.dev || before.ino !== after.ino ||
+      before.size !== after.size || bytes.length !== after.size) {
+    throw new Error('Review evidence file changed while reading');
+  }
+  const actual = createHash('sha256').update(bytes).digest('hex').toUpperCase();
+  if (actual !== expectedSha256.toUpperCase()) {
+    throw new Error('Review evidence SHA256 mismatch');
+  }
+  return {bytes,sha256:actual};
+}
 function sha256Text(value) {
   return createHash('sha256').update(value,'utf8').digest('hex');
 }
@@ -53,9 +75,11 @@ function parseArgs(args) {
     if (arg === '--apply') { parsed.apply = true; continue; }
     if (arg === '--approve-current-semantics') { parsed.approveCurrent = true; continue; }
     if (arg === '--allow-patch-equivalent') { parsed.allowPatch = true; continue; }
+    if (arg === '--allow-semantic-supersession') { parsed.allowSemantic = true; continue; }
     const key = { '--remote':'remote', '--output':'output', '--retire':'retire',
       '--expect-sha':'expectSha', '--expect-main':'expectMain', '--archive-dir':'archiveDir',
-      '--fork-repo':'forkRepo', '--upstream-repo':'upstreamRepo' }[arg];
+      '--fork-repo':'forkRepo', '--upstream-repo':'upstreamRepo',
+      '--review-receipt':'reviewReceipt', '--review-sha256':'reviewSha256' }[arg];
     if (!key || i + 1 >= args.length) { throw new Error('Unknown/incomplete argument: ' + arg); }
     parsed[key] = args[++i];
   }
@@ -75,6 +99,12 @@ function parseArgs(args) {
   if (parsed.expectSha && !/^[0-9a-f]{40}$/i.test(parsed.expectSha)) {
     throw new Error('--expect-sha must be a complete 40-character commit SHA');
   }
+  if (parsed.allowSemantic && (!parsed.reviewReceipt || !/^[0-9a-f]{64}$/i.test(parsed.reviewSha256 || ''))) {
+    throw new Error('Semantic retirement requires --review-receipt and --review-sha256 (exact 64-character hash)');
+  }
+  if ((parsed.reviewReceipt || parsed.reviewSha256) && !parsed.allowSemantic) {
+    throw new Error('Review receipt requires --allow-semantic-supersession');
+  }
   if (!/^[\w.-]+$/.test(parsed.remote)) throw new Error('Invalid remote name');
   return parsed;
 }
@@ -88,6 +118,65 @@ export function classifyBranch(input) {
   }
   return 'UNIQUE_REVIEW';
 }
+// Historical semantics are not established by file overlap or a Git patch hash.
+// A separate exact-SHA review attestation is required to retire a UNIQUE_REVIEW branch.
+export function semanticReviewApproved(item, review) {
+  if (item?.classification !== 'UNIQUE_REVIEW' || !review || review.schemaVersion !== 1 ||
+      review.decision !== 'APPROVED_SEMANTICALLY_SUPERSEDED' ||
+      review.branch !== item.name || review.branchSha !== item.sha ||
+      review.mainSha !== item.mainSha ||
+      review.ownerApproval?.authorization !== 'OWNER_DIRECTIVE_BRANCH_RETIREMENT' ||
+      !review.ownerApproval?.sourceInstruction ||
+      review.unresolvedFeatureGaps !== 0 ||
+      review.consumerAudit?.status !== 'NO_ACTIVE_CONSUMERS' ||
+      !Array.isArray(review.consumerAudit.scopes) ||
+      !['repository','automation','deployment'].every(scope=>review.consumerAudit.scopes.includes(scope)) ||
+      !Array.isArray(review.commitMap) || review.commitMap.length === 0 ||
+      !Array.isArray(review.reviewEvidence) || review.reviewEvidence.length < 2 ||
+      review.reviewEvidence.some(e => !e.kind || !e.sourceId ||
+        !isAbsolute(e.path || '') || !/^[0-9a-f]{64}$/i.test(e.sha256 || '')) ||
+      new Set(review.reviewEvidence.map(e=>e.sha256.toUpperCase())).size !==
+        review.reviewEvidence.length ||
+      !Array.isArray(review.knownDifferences) ||
+      review.knownDifferences.some(d => !d.behavior || !d.affectedInterface ||
+        !['REPLACED','INTENTIONALLY_RETIRED'].includes(d.currentDisposition) ||
+        !d.rationale || !d.testEvidence || !d.rollbackConsequence ||
+        d.ownerApproved !== true)) {
+    return false;
+  }
+  return review.commitMap.every(c => /^[0-9a-f]{40}$/.test(c.sha || '') &&
+    typeof c.current === 'string' && c.current.length >= 8 &&
+    typeof c.sourcePath === 'string' && c.sourcePath.length > 2 &&
+    typeof c.testEvidence === 'string' && c.testEvidence.length >= 8 &&
+    ['ADOPTED_AND_EXTENDED','ADOPTED_ROUTING_REPLACED','INTENTIONALLY_RETIRED'].includes(c.classification));
+}
+export function loadSemanticReview(cwd, item, args) {
+  if (item?.classification !== 'UNIQUE_REVIEW') throw new Error('Semantic review requires UNIQUE_REVIEW branch');
+  const path = resolve(args.reviewReceipt);
+  const pinned = pinnedEvidence(path,args.reviewSha256);
+  const checksum = pinned.sha256;
+  const review = JSON.parse(pinned.bytes.toString('utf8'));
+  for (const evidence of review.reviewEvidence || []) {
+    pinnedEvidence(evidence.path,evidence.sha256);
+  }
+  if (!semanticReviewApproved(item, review)) throw new Error('Semantic retirement evidence incomplete or stale');
+  if (review.commitMap.some(c=>c.sourcePath.includes('..') ||
+      !existsSync(resolve(cwd,c.sourcePath)))) {
+    throw new Error('Commit successor file missing or outside repository');
+  }
+  const commits = git(['rev-list','--no-merges',item.mainSha + '..' + item.sha],cwd)
+    .out.split(/\r?\n/).filter(Boolean).sort();
+  const merges = git(['rev-list','--merges',item.mainSha + '..' + item.sha],cwd).out;
+  const mapped = review.commitMap.map(c => c.sha).sort();
+  if (merges || commits.length !== mapped.length || commits.some((c,i)=>c!==mapped[i])) {
+    throw new Error('Semantic review must map every unique commit and contain no unreviewed merges');
+  }
+  if (review.commitMap.some(c=>c.classification !== 'ADOPTED_AND_EXTENDED') &&
+      review.knownDifferences.length === 0) {
+    throw new Error('Changed or intentionally retired behavior requires explicit disposition');
+  }
+  return {path,checksum,review};
+}
 export function retirementAllowed(item, opts = {}) {
   if (!item || item.checkedOut || item.protected) return false;
   if (!item.trackingMatches || !item.objectPresent) return false;
@@ -96,8 +185,10 @@ export function retirementAllowed(item, opts = {}) {
       opts.expectSha?.toLowerCase() !== item.sha ||
       opts.expectMain?.toLowerCase() !== item.mainSha) return false;
   if (item.classification === 'MERGED_IN_MAIN') return item.inMain === true;
-  return item.classification === 'PATCH_EQUIVALENT_CANDIDATE' &&
-    opts.allowPatch === true && item.currentResidual?.status === 'checked';
+  if (item.classification === 'PATCH_EQUIVALENT_CANDIDATE') {
+    return opts.allowPatch === true && item.currentResidual?.status === 'checked';
+  }
+  return opts.allowSemantic === true && semanticReviewApproved(item,opts.semanticReview);
 }
 function worktrees(cwd) {
   return git(['worktree','list','--porcelain'], cwd).out.split(/\r?\n\r?\n/)
@@ -287,7 +378,8 @@ export function verifyBundleRecovery(bundle, mainSha, branchSha, cwd, branchRef)
   }
 }
 function retire(cwd, args, item, mainSha, wts) {
-  if (!retirementAllowed(item, args)) {
+  const semantic = args.allowSemantic ? loadSemanticReview(cwd,item,args) : null;
+  if (!retirementAllowed(item, {...args,semanticReview:semantic?.review})) {
     throw new Error('Branch is not an eligible, explicitly reviewed retirement');
   }
   if (item.sha.toLowerCase() !== args.expectSha.toLowerCase()) {
@@ -329,8 +421,23 @@ function retire(cwd, args, item, mainSha, wts) {
     throw new Error('Bundle does not contain the expected complete branch heads');
   }
   verifyBundleRecovery(bundle, mainSha, item.sha, cwd, branchRef);
+  const archivedReviewInputs = [];
+  if (semantic) {
+    const inputs = [{path:semantic.path,sha256:semantic.checksum},
+      ...semantic.review.reviewEvidence];
+    for (let i = 0; i < inputs.length; i++) {
+      const e = inputs[i];
+      pinnedEvidence(e.path,e.sha256);
+      const dest = join(archiveDir,id + '-evidence-' + i + '.json');
+      copyFileSync(e.path,dest,fsConstants.COPYFILE_EXCL);
+      pinnedEvidence(dest,e.sha256);
+      archivedReviewInputs.push({original:e.path,archive:dest,sha256:e.sha256});
+    }
+  }
   const record = { state:'PREPARED', preparedAt:new Date().toISOString(),
     main:mainSha, remote:args.remote,
+    semanticReview:semantic ? {path:semantic.path,sha256:semantic.checksum,
+      decision:semantic.review.decision,archivedReviewInputs} : null,
     branch:item, approval:{main:args.expectMain,branch:args.expectSha,currentSemanticsAndConsumers:true},
     bundle, bundleSha256:sha256(bundle), heads,
     openPrs:prs, restoredBy:'git fetch ' + bundle + ' ' +
@@ -347,6 +454,11 @@ function retire(cwd, args, item, mainSha, wts) {
   }
   if (sha256(bundle) !== record.bundleSha256) {
     throw new Error('Archive or remote changed before deletion');
+  }
+  if (semantic) {
+    pinnedEvidence(semantic.path,semantic.checksum);
+    for (const e of semantic.review.reviewEvidence) pinnedEvidence(e.path,e.sha256);
+    for (const e of archivedReviewInputs) pinnedEvidence(e.archive,e.sha256);
   }
   verifyLiveTarget(cwd,args.remote,item.name,mainSha,item.sha);
   if (git(['rev-parse','--verify',branchRef],cwd).out !== item.sha) {
@@ -370,6 +482,7 @@ async function main() {
     console.log('  Optional --hotspots: list changed files and overlapping branch paths (not equivalence)');
     console.log('  Retirement: --apply --retire BRANCH --expect-sha FULL_SHA --expect-main FULL_SHA --approve-current-semantics --archive-dir PATH');
     console.log('  Extra approval for proven equivalent patches: --allow-patch-equivalent');
+    console.log('  Historical retirement: --allow-semantic-supersession --review-receipt ABSOLUTE_JSON_PATH --review-sha256 EXACT_SHA256');
     return;
   }
   const cwd = process.cwd();

@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { classifyBranch, retirementAllowed, verifyBundleRecovery, summarizeHotspots, verifyLiveTarget } from '../scripts/reconcile-branches.mjs';
+import { classifyBranch, retirementAllowed, verifyBundleRecovery, summarizeHotspots, verifyLiveTarget,
+  semanticReviewApproved, loadSemanticReview } from '../scripts/reconcile-branches.mjs';
 
 const cli = resolve(fileURLToPath(new URL('../scripts/reconcile-branches.mjs', import.meta.url)));
 function run(command, args, cwd, expected = 0) {
@@ -139,6 +141,81 @@ try {
   assert.equal(byName['near-squash'].squashEquivalentCommit,null);
   assert.equal(byName['near-squash'].squashCheck,'no-match');
   assert.equal(byName.unique.classification,'UNIQUE_REVIEW');
+  // Historical semantic retirement is explicit and evidence-bound, never
+  // inferred from branch age, similar source, or cherry-pick ancestry.
+  const semanticItem = byName.unique;
+  const uniqueCommits = git(repo,'rev-list','--no-merges',
+    semanticItem.mainSha + '..' + semanticItem.sha).split(/\r?\n/).filter(Boolean);
+  const evidencePaths = [join(dir,'review-1.json'),join(dir,'review-2.json')];
+  const evidence = evidencePaths.map((path,i) => {
+    const bytes = JSON.stringify({source:'synthetic independent review',index:i});
+    writeFileSync(path,bytes);
+    return {kind:'adversarial-review',sourceId:'test-review-' + i,path,
+      sha256:createHash('sha256').update(bytes).digest('hex').toUpperCase()};
+  });
+  const semanticReview = {
+    schemaVersion:1, decision:'APPROVED_SEMANTICALLY_SUPERSEDED',
+    branch:semanticItem.name,branchSha:semanticItem.sha,mainSha:semanticItem.mainSha,
+    ownerApproval:{authorization:'OWNER_DIRECTIVE_BRANCH_RETIREMENT',
+      sourceInstruction:'explicit synthetic test approval'},unresolvedFeatureGaps:0,
+    consumerAudit:{status:'NO_ACTIVE_CONSUMERS',scopes:['repository','automation','deployment']},
+    commitMap:uniqueCommits.map(sha=>({sha,classification:'ADOPTED_AND_EXTENDED',
+      current:'Current behavior deliberately reviewed and preserved',
+      sourcePath:'base.txt',testEvidence:'synthetic-main-base-existing'})),
+    knownDifferences:[],reviewEvidence:evidence,
+  };
+  const semanticArgs = {...approve(semanticItem),allowSemantic:true,
+    semanticReview};
+  assert.equal(semanticReviewApproved(semanticItem,semanticReview),true);
+  assert.equal(retirementAllowed(semanticItem,semanticArgs),true);
+  assert.equal(retirementAllowed(semanticItem,{...approve(semanticItem),
+    semanticReview}),false,'explicit opt-in is mandatory');
+  for (const invalid of [
+    {...semanticReview,ownerApproval:false},
+    {...semanticReview,unresolvedFeatureGaps:1},
+    {...semanticReview,branchSha:'f'.repeat(40)},
+    {...semanticReview,mainSha:'f'.repeat(40)},
+    {...semanticReview,consumerAudit:{status:'UNVERIFIED',scopes:['repository','automation','deployment']}},
+    {...semanticReview,reviewEvidence:[evidence[0]]},
+    {...semanticReview,commitMap:[]},
+    {...semanticReview,commitMap:[{sha:uniqueCommits[0],
+      classification:'UNKNOWN',current:'Current behavior',sourcePath:'base.txt',testEvidence:'synthetic'}]},
+  ]) {
+    assert.equal(retirementAllowed(semanticItem,{...semanticArgs,semanticReview:invalid}),
+      false,'invalid or stale semantic approval must never authorize retirement');
+  }
+  assert.equal(retirementAllowed(byName['codex/protected'],
+    {...semanticArgs,semanticReview}),false);
+  assert.equal(retirementAllowed(byName.merged,
+    {...approve(byName.merged),allowSemantic:true,semanticReview}),true,
+    'existing safe merged path remains unchanged');
+  const reviewPath = join(dir,'semantic-review.json');
+  const saveReview = r => {
+    writeFileSync(reviewPath,JSON.stringify(r));
+    const reviewSha256 = createHash('sha256').update(JSON.stringify(r))
+      .digest('hex').toUpperCase();
+    return {reviewReceipt:reviewPath,reviewSha256};
+  };
+  let reviewedArgs = saveReview(semanticReview);
+  assert.equal(loadSemanticReview(repo,semanticItem,reviewedArgs).checksum,
+    reviewedArgs.reviewSha256);
+  assert.throws(()=>loadSemanticReview(repo,semanticItem,
+    {...reviewedArgs,reviewSha256:'0'.repeat(64)}),/SHA256 mismatch/);
+  reviewedArgs = saveReview({...semanticReview,commitMap:[
+    {sha:'f'.repeat(40),classification:'ADOPTED_AND_EXTENDED',
+      current:'Fake recorded replacement',sourcePath:'base.txt',testEvidence:'synthetic'}]});
+  assert.throws(()=>loadSemanticReview(repo,semanticItem,reviewedArgs),
+    /map every unique commit/,'receipt must exactly cover every historical commit');
+  reviewedArgs = saveReview(semanticReview);
+  const disallowed = spawnSync(process.execPath,[cli,'--remote','fork','--retire','unique',
+    '--apply','--allow-semantic-supersession','--review-receipt',reviewPath,
+    '--review-sha256','0'.repeat(64),'--archive-dir',dir,
+    '--expect-sha',semanticItem.sha,'--expect-main',semanticItem.mainSha,
+    '--approve-current-semantics'],{cwd:repo,encoding:'utf8'});
+  assert.notEqual(disallowed.status,0);
+  assert.match(disallowed.stderr,/SHA256 mismatch/);
+  assert.equal(git(repo,'ls-remote','fork','refs/heads/unique').split(/\s+/)[0],
+    semanticItem.sha,'rejected review must not mutate remote');
   assert.equal(byName['codex/protected'].classification,'PROTECTED');
   assert.deepEqual(audit.summary,{
     PROTECTED:2,MERGED_IN_MAIN:1,PATCH_EQUIVALENT_CANDIDATE:2,UNIQUE_REVIEW:2,
