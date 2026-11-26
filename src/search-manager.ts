@@ -665,9 +665,12 @@ export interface SearchSessionOptions {
         const buf = await fs.readFile(filePath);
         const zip = new PizZip(buf);
 
-        // Search all XML parts that can contain text
-        const xmlParts = ['word/document.xml', 'word/header1.xml', 'word/header2.xml',
-          'word/header3.xml', 'word/footer1.xml', 'word/footer2.xml', 'word/footer3.xml'];
+        // Discover every numbered header/footer part. The historical fixed 1..3
+        // list silently missed content in larger Word documents.
+        const linkedParts = zip.file(/^word\/(?:header|footer)\d+\.xml$/)
+          .map((entry: { name: string }) => entry.name)
+          .sort((a: string, b: string) => a.localeCompare(b, undefined, { numeric: true }));
+        const xmlParts = ['word/document.xml', ...linkedParts];
 
         for (const xmlPath of xmlParts) {
           if (maxResults && results.length >= maxResults) break;
