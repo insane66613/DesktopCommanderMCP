@@ -1,0 +1,46 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import ExcelJS from 'exceljs';
+import { ExcelFileHandler } from '../dist/utils/files/excel.js';
+
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dc-excel-formula-'));
+const filename = path.join(root, 'facts.[2026]+.xlsx');
+const excel = new ExcelFileHandler();
+try {
+  const wb = new ExcelJS.Workbook();
+  const first = wb.addWorksheet('Numbers');
+  first.getCell('A2').value = 3;
+  first.getCell('B2').value = 4;
+  first.getCell('C2').value = { formula: 'A2+B2', result: 7 };
+  first.getCell('C2').numFmt = '0.00';
+  const hidden = wb.addWorksheet('Audit Private');
+  hidden.state = 'hidden';
+  hidden.getCell('A1').value = 'kept';
+  await wb.xlsx.writeFile(filename);
+  const before = await excel.read(filename, { sheet: 'Numbers', range: 'A2:C2' });
+  assert.ok(before.content.includes('[3,4,7]'), 'formula cached result must be readable');
+  await excel.editRange(filename, 'Numbers!B2:B2', [[9]]);
+  const after = new ExcelJS.Workbook();
+  await after.xlsx.readFile(filename);
+  assert.equal(after.getWorksheet('Numbers').getCell('C2').value.formula, 'A2+B2');
+  assert.equal(after.getWorksheet('Numbers').getCell('C2').numFmt, '0.00');
+  assert.equal(after.getWorksheet('Numbers').getCell('B2').value, 9);
+  assert.equal(after.getWorksheet('Audit Private').state, 'hidden');
+  assert.equal(after.getWorksheet('Audit Private').getCell('A1').value, 'kept');
+  await excel.editRange(filename, 'Numbers!D2:D2', [['=B2*2']]);
+  const formulas = new ExcelJS.Workbook();
+  await formulas.xlsx.readFile(filename);
+  assert.equal(formulas.getWorksheet('Numbers').getCell('D2').value.formula, 'B2*2');
+  assert.equal(formulas.getWorksheet('Numbers').getCell('C2').value.formula, 'A2+B2');
+  const digest = () => crypto.createHash('sha256').update(fs.readFileSync(filename)).digest('hex');
+  const intact = digest();
+  await assert.rejects(excel.editRange(filename, 'Numbers!E1:E1', [[1,2]]), /nothing was written/);
+  assert.equal(digest(), intact, 'oversized range edit must not change workbook bytes');
+  const range = await excel.read(filename, { range: "'Audit Private'!A1:A1" });
+  assert.ok(range.content.includes('kept'), 'quoted sheet range must resolve');
+  await assert.rejects(excel.read(filename, { sheet: 'Missing' }));
+  console.log('PASS: XLSX formula/style/sheet preservation, bounded edit, named sheet read');
+} finally { fs.rmSync(root, { recursive: true, force: true }); }
