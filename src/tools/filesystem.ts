@@ -510,9 +510,14 @@ export async function readFileFromDisk(
     // Get file extension for telemetry
     const fileExtension = getFileExtension(validPath);
 
+    // Share one stat across directory detection and file-size telemetry.
+    // A failed first stat still gets the historical retry below, so missing or
+    // intermittently unavailable paths retain the original error behavior.
+    let fileStats: Awaited<ReturnType<typeof fs.stat>> | undefined;
     // Check if path is a directory — return listing instead of EISDIR error
     try {
         const stats = await fs.stat(validPath);
+        fileStats = stats;
         if (stats.isDirectory()) {
             const dirListOp = async () => {
                 const entries = await listDirectory(validPath);
@@ -544,9 +549,10 @@ export async function readFileFromDisk(
         // stat() failed (e.g. ENOENT) — fall through to the read path below
     }
 
-    // Check file size before attempting to read
+    // Reuse the successful directory probe instead of a redundant filesystem
+    // roundtrip. If the probe failed, retry stat as before to collect telemetry.
     try {
-        const stats = await fs.stat(validPath);
+        const stats = fileStats ?? await fs.stat(validPath);
 
         // Capture file extension in telemetry without capturing the file path
         capture('server_read_file', {
