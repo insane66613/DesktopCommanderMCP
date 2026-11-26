@@ -191,6 +191,8 @@ export const CreateDirectoryArgsSchema = z.object({
 export const ListDirectoryArgsSchema = z.object({
   path: z.string(),
   depth: z.number().optional().default(2),
+  // Omitted keeps historical visibility; false hides dot-prefixed entries.
+  includeHidden: z.boolean().optional().default(true),
   // 'ui' when fired by the file-preview UI, else 'llm'. 'ui' calls are
   // excluded from tool-call telemetry; see isUiOriginCall in server.ts.
   origin: z.enum(['ui', 'llm']).optional(),
