@@ -14,6 +14,8 @@ const PROTECTED = [
   /^main$/, /^HEAD$/, /^codex\//, /^lane\//,
   /^reconcile\//, /^release\//,
 ];
+const MAX_SQUASH_PATHSPEC_BYTES = 16000;
+const MAX_SQUASH_CANDIDATES = 2000;
 const DEFAULT_FORK = 'insane66613/DesktopCommanderMCP';
 const DEFAULT_UPSTREAM = 'wonderwhy-er/DesktopCommanderMCP';
 
@@ -25,11 +27,14 @@ function run(command, args, cwd, options = {}) {
     const detail = (result.stderr || result.error?.message || '').slice(0, 800);
     throw new Error(command + ' ' + args.join(' ') + ': ' + detail);
   }
-  return { out: (result.stdout || '').trim(), status: result.status, err: (result.stderr || '').trim() };
+  return { out: options.raw ? (result.stdout || '') : (result.stdout || '').trim(), status: result.status, err: (result.stderr || '').trim() };
 }
 function git(args, cwd, options = {}) { return run('git', args, cwd, options); }
 function sha256(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex').toUpperCase();
+}
+function sha256Text(value) {
+  return createHash('sha256').update(value,'utf8').digest('hex');
 }
 function durableJson(path, record, flag = 'w') {
   const fd = openSync(path, flag);
@@ -46,9 +51,10 @@ function parseArgs(args) {
     if (arg === '--hotspots') { parsed.hotspots = true; continue; }
     if (arg === '--help') { parsed.help = true; continue; }
     if (arg === '--apply') { parsed.apply = true; continue; }
+    if (arg === '--approve-current-semantics') { parsed.approveCurrent = true; continue; }
     if (arg === '--allow-patch-equivalent') { parsed.allowPatch = true; continue; }
     const key = { '--remote':'remote', '--output':'output', '--retire':'retire',
-      '--expect-sha':'expectSha', '--archive-dir':'archiveDir',
+      '--expect-sha':'expectSha', '--expect-main':'expectMain', '--archive-dir':'archiveDir',
       '--fork-repo':'forkRepo', '--upstream-repo':'upstreamRepo' }[arg];
     if (!key || i + 1 >= args.length) { throw new Error('Unknown/incomplete argument: ' + arg); }
     parsed[key] = args[++i];
@@ -60,6 +66,12 @@ function parseArgs(args) {
   if (parsed.retire && !parsed.apply) {
     throw new Error('--retire requires --apply; default mode only audits');
   }
+  if (parsed.apply && (!parsed.expectMain || !parsed.approveCurrent)) {
+    throw new Error('--apply requires --expect-main and --approve-current-semantics (exact current semantic and consumer review)');
+  }
+  if (parsed.expectMain && !/^[0-9a-f]{40}$/i.test(parsed.expectMain)) {
+    throw new Error('--expect-main must be a complete 40-character commit SHA');
+  }
   if (parsed.expectSha && !/^[0-9a-f]{40}$/i.test(parsed.expectSha)) {
     throw new Error('--expect-sha must be a complete 40-character commit SHA');
   }
@@ -70,7 +82,8 @@ export function classifyBranch(input) {
   if (input.protected || input.checkedOut) return 'PROTECTED';
   if (!input.objectPresent || !input.trackingMatches) return 'UNFETCHED_OR_MOVED';
   if (input.inMain) return 'MERGED_IN_MAIN';
-  if (input.uniquePatches === 0 && input.uniqueMerges === 0) {
+  if (input.uniqueMerges === 0 &&
+      (input.uniquePatches === 0 || input.squashEquivalentCommit)) {
     return 'PATCH_EQUIVALENT_CANDIDATE';
   }
   return 'UNIQUE_REVIEW';
@@ -78,8 +91,13 @@ export function classifyBranch(input) {
 export function retirementAllowed(item, opts = {}) {
   if (!item || item.checkedOut || item.protected) return false;
   if (!item.trackingMatches || !item.objectPresent) return false;
-  if (item.classification === 'MERGED_IN_MAIN') return true;
-  return item.classification === 'PATCH_EQUIVALENT_CANDIDATE' && !!opts.allowPatch;
+  if (!opts.approveCurrent || !/^[0-9a-f]{40}$/.test(item.sha || '') ||
+      !/^[0-9a-f]{40}$/.test(item.mainSha || '') ||
+      opts.expectSha?.toLowerCase() !== item.sha ||
+      opts.expectMain?.toLowerCase() !== item.mainSha) return false;
+  if (item.classification === 'MERGED_IN_MAIN') return item.inMain === true;
+  return item.classification === 'PATCH_EQUIVALENT_CANDIDATE' &&
+    opts.allowPatch === true && item.currentResidual?.status === 'checked';
 }
 function worktrees(cwd) {
   return git(['worktree','list','--porcelain'], cwd).out.split(/\r?\n\r?\n/)
@@ -87,8 +105,71 @@ function worktrees(cwd) {
       .map(line => [line.split(' ')[0], line.slice(line.indexOf(' ') + 1)])))
     .filter(x => x.worktree);
 }
+function exactSquashAdoption(cwd, mainSha, branchSha, mergeBase, diffCache) {
+  const branchDiff = git(['diff-tree','--no-commit-id','--raw','-r','-z',
+    '--no-renames','--no-abbrev',mergeBase,branchSha],cwd).out;
+  if (!branchDiff) return {commit:null,status:'empty-diff'};
+  const paths = git(['diff-tree','--no-commit-id','--name-only','-r','-z',
+    '--no-renames',mergeBase,branchSha],cwd,{raw:true}).out.split('\0').filter(Boolean);
+  if (!paths.length) return {commit:null,status:'empty-diff'};
+  const pathBytes = paths.reduce((total,path) => total + Buffer.byteLength(path,'utf8') + 1,0);
+  if (pathBytes > MAX_SQUASH_PATHSPEC_BYTES) {
+    return {commit:null,status:'path-limit-exceeded'};
+  }
+  const candidates = git(['--literal-pathspecs','rev-list','--no-merges',
+    mergeBase + '..' + mainSha,'--',...paths],cwd).out.split(/\r?\n/).filter(Boolean);
+  if (candidates.length > MAX_SQUASH_CANDIDATES) {
+    return {commit:null,status:'candidate-limit-exceeded'};
+  }
+  const branchDigest = sha256Text(branchDiff);
+  for (const commit of candidates) {
+    let digest = diffCache.get(commit);
+    let candidateDiff = null;
+    if (digest === undefined || digest === branchDigest) {
+      const parent = git(['rev-parse',commit + '^'],cwd).out;
+      candidateDiff = git(['diff-tree','--no-commit-id','--raw','-r','-z',
+        '--no-renames','--no-abbrev',parent,commit],cwd).out;
+      if (digest === undefined) {
+        digest = sha256Text(candidateDiff);
+        diffCache.set(commit,digest);
+      }
+    }
+    if (digest === branchDigest && candidateDiff === branchDiff) {
+      return {commit,status:'exact-match'};
+    }
+  }
+  return {commit:null,status:'no-match'};
+}
+// Compare current trees on the branch's original affected paths. Historic
+// adoption is evidence, not proof that the current target retains the behavior.
+export function currentResidual(cwd, baseSha, branchSha, mergeBase) {
+  if (!mergeBase) return {status:'no-common-base'};
+  const paths = git(['diff-tree','--no-commit-id','-r','--name-only','-z','--no-renames',
+    '--ignore-submodules=none',mergeBase,branchSha],cwd,{raw:true}).out.split('\0').filter(Boolean);
+  if (paths.reduce((n,p)=>n+Buffer.byteLength(p,'utf8')+1,0)>MAX_SQUASH_PATHSPEC_BYTES) {
+    return {status:'path-limit-exceeded'};
+  }
+  const changedPaths = paths.length ? git(['--literal-pathspecs','diff-tree','--no-commit-id','-r',
+    '--name-only','-z','--no-renames','--ignore-submodules=none',branchSha,baseSha,'--',...paths],
+    cwd,{raw:true}).out.split('\0').filter(Boolean) : [];
+  return {status:'checked', affectedPaths:paths, changedPaths};
+}
+export function verifyLiveTarget(cwd, remote, name, mainSha, branchSha) {
+  if (git(['rev-parse','refs/heads/main'],cwd).out !== mainSha) {
+    throw new Error('Local main moved; review is stale');
+  }
+  const ref = 'refs/heads/' + name;
+  const rows = git(['ls-remote','--heads',remote,'refs/heads/main',ref],cwd)
+    .out.split(/\r?\n/).filter(Boolean).map(line=>line.split(/\s+/));
+  const heads = new Map(rows.map(([sha,key])=>[key,sha]));
+  if (rows.length !== 2 || heads.get('refs/heads/main') !== mainSha ||
+      heads.get(ref) !== branchSha) {
+    throw new Error('Live remote main or branch moved; review is stale');
+  }
+}
 function branches(cwd, remote, baseSha, wts) {
   const rows = git(['ls-remote','--heads',remote], cwd).out.split(/\r?\n/).filter(Boolean);
+  const diffCache = new Map();
   return rows.map(line => {
     const [sha, ref] = line.trim().split(/\s+/);
     const name = ref.slice('refs/heads/'.length);
@@ -97,19 +178,36 @@ function branches(cwd, remote, baseSha, wts) {
     const objectPresent = git(['cat-file','-e',sha + '^{commit}'], cwd, {allowFailure:true}).status === 0;
     const protectedBranch = PROTECTED.some(pattern => pattern.test(name));
     const checkedOut = wts.some(w => w.branch === 'refs/heads/' + name);
-    const item = { name, sha, trackingMatches, objectPresent,
-      checkedOut, protected: protectedBranch, inMain: false,
-      uniquePatches: null, uniqueMerges: null };
+    const item = { name, sha, mainSha:baseSha, trackingMatches, objectPresent,
+      checkedOut, protected: protectedBranch, inMain: false, mergeBase: null,
+      uniquePatches: null, uniqueMerges: null,
+      squashEquivalentCommit: null, squashCheck: 'not-checked' };
     if (trackingMatches && objectPresent) {
       item.inMain = git(['merge-base','--is-ancestor',sha,baseSha], cwd,
         {allowFailure:true}).status === 0;
+      const mergeBase = git(['merge-base',baseSha,sha],cwd,{allowFailure:true});
+      item.mergeBase = mergeBase.status === 0 ? mergeBase.out : null;
       const patches = git(['rev-list','--right-only','--cherry-pick',
         '--no-merges',baseSha + '...' + sha],cwd).out;
       const merges = git(['rev-list','--merges',baseSha + '..' + sha],cwd).out;
       item.uniquePatches = patches ? patches.split(/\r?\n/).length : 0;
       item.uniqueMerges = merges ? merges.split(/\r?\n/).length : 0;
+      if (item.uniqueMerges > 0) {
+        item.squashCheck = 'unique-merges-present';
+      } else if (item.uniquePatches > 0 && item.mergeBase) {
+        const squash = exactSquashAdoption(cwd,baseSha,sha,item.mergeBase,diffCache);
+        item.squashEquivalentCommit = squash.commit;
+        item.squashCheck = squash.status;
+      } else if (item.uniquePatches > 0) {
+        item.squashCheck = 'no-common-base';
+      } else {
+        item.squashCheck = 'not-needed';
+      }
     }
     item.classification = classifyBranch(item);
+    if (item.classification === 'PATCH_EQUIVALENT_CANDIDATE') {
+      item.currentResidual = currentResidual(cwd,baseSha,sha,item.mergeBase);
+    }
     return item;
   });
 }
@@ -135,7 +233,8 @@ export function summarizeHotspots(items) {
 function addHotspots(cwd, mainSha, result) {
   let sampled = 0;
   for (const item of result.branches) {
-    if (!item.trackingMatches || !item.objectPresent || !item.uniquePatches) continue;
+    if (!item.trackingMatches || !item.objectPresent || !item.uniquePatches ||
+        item.squashEquivalentCommit) continue;
     // -z disambiguates paths containing spaces or newlines. Do not infer
     // semantic duplicates from path overlap, and include protected PR branches.
     const output = git(['log','--right-only','--cherry-pick','--no-merges',
@@ -168,23 +267,27 @@ export function openPrs(cwd, owner, branch, repos) {
   }
   return results;
 }
-export function verifyBundleRecovery(bundle, mainSha, branchSha, cwd) {
+export function verifyBundleRecovery(bundle, mainSha, branchSha, cwd, branchRef) {
+  if (!branchRef || !branchRef.startsWith('refs/remotes/') ||
+      git(['check-ref-format',branchRef],cwd,{allowFailure:true}).status !== 0) {
+    throw new Error('Exact archived branch ref required');
+  }
   const temp = mkdtempSync(join(dirname(bundle), '.recovery-check-'));
   try {
     const bare = join(temp, 'restored.git');
-    git(['clone','--bare',bundle,bare],cwd);
-    for (const sha of [mainSha,branchSha]) {
-      git(['cat-file','-e',sha + '^{commit}'],bare);
+    git(['init','--bare',bare],cwd);
+    git(['fetch','--no-tags',bundle,'refs/heads/main:refs/heads/main',branchRef+':'+branchRef],bare);
+    if (git(['rev-parse','--verify','refs/heads/main^{commit}'],bare).out !== mainSha ||
+        git(['rev-parse','--verify',branchRef+'^{commit}'],bare).out !== branchSha) {
+      throw new Error('Bundle restored the wrong named main or branch ref');
     }
-    if (git(['rev-parse','refs/heads/main'],bare).out !== mainSha) {
-      throw new Error('Bundle clone restored the wrong main commit');
-    }
+    git(['fsck','--full','--strict'],bare);
   } finally {
     rmSync(temp,{recursive:true,force:true,maxRetries:5,retryDelay:200});
   }
 }
 function retire(cwd, args, item, mainSha, wts) {
-  if (!retirementAllowed(item, {allowPatch:args.allowPatch})) {
+  if (!retirementAllowed(item, args)) {
     throw new Error('Branch is not an eligible, explicitly reviewed retirement');
   }
   if (item.sha.toLowerCase() !== args.expectSha.toLowerCase()) {
@@ -196,14 +299,18 @@ function retire(cwd, args, item, mainSha, wts) {
   if (git(['status','--porcelain','-uall'],cwd).out) {
     throw new Error('Working tree dirty; retirement blocked');
   }
+  verifyLiveTarget(cwd,args.remote,item.name,mainSha,item.sha);
   const owner = (args.forkRepo || DEFAULT_FORK).split('/')[0];
   const prs = openPrs(cwd, owner, item.name, [
     args.forkRepo || DEFAULT_FORK, args.upstreamRepo || DEFAULT_UPSTREAM,
   ]);
   if (prs.length) throw new Error('Open pull requests protect this branch: ' + JSON.stringify(prs));
   const ref = 'refs/heads/' + item.name;
-  const remoteHead = git(['ls-remote',args.remote,ref],cwd).out.split(/\s+/)[0];
-  if (remoteHead !== item.sha) throw new Error('Remote tip moved before bundle');
+  verifyLiveTarget(cwd,args.remote,item.name,mainSha,item.sha);
+  const branchRef = 'refs/remotes/' + args.remote + '/' + item.name;
+  if (git(['rev-parse','--verify',branchRef],cwd).out !== item.sha) {
+    throw new Error('Local tracking tip moved before bundle');
+  }
   const archiveDir = resolve(args.archiveDir);
   mkdirSync(archiveDir, { recursive: true });
   const safeName = item.name.replace(/[^a-zA-Z0-9._-]/g,'_');
@@ -214,16 +321,18 @@ function retire(cwd, args, item, mainSha, wts) {
     throw new Error('Archive or receipt already exists; never overwrite');
   }
   git(['bundle','create',bundle,'refs/heads/main',
-    'refs/remotes/' + args.remote + '/' + item.name],cwd);
+    branchRef],cwd);
   git(['bundle','verify',bundle],cwd);
   const heads = git(['bundle','list-heads',bundle],cwd).out;
-  if (!heads.includes(item.sha) || !heads.includes(mainSha)) {
+  const namedHeads = new Map(heads.split(/\r?\n/).map(line=>line.split(/\s+/)).map(([sha,name])=>[name,sha]));
+  if (namedHeads.get(branchRef) !== item.sha || namedHeads.get('refs/heads/main') !== mainSha) {
     throw new Error('Bundle does not contain the expected complete branch heads');
   }
-  verifyBundleRecovery(bundle, mainSha, item.sha, cwd);
+  verifyBundleRecovery(bundle, mainSha, item.sha, cwd, branchRef);
   const record = { state:'PREPARED', preparedAt:new Date().toISOString(),
     main:mainSha, remote:args.remote,
-    branch:item, bundle, bundleSha256:sha256(bundle), heads,
+    branch:item, approval:{main:args.expectMain,branch:args.expectSha,currentSemanticsAndConsumers:true},
+    bundle, bundleSha256:sha256(bundle), heads,
     openPrs:prs, restoredBy:'git fetch ' + bundle + ' ' +
       'refs/remotes/' + args.remote + '/' + item.name + ':refs/heads/recovered/' + safeName };
   durableJson(receipt,record,'wx');
@@ -236,9 +345,12 @@ function retire(cwd, args, item, mainSha, wts) {
       worktrees(cwd).some(w => w.branch === 'refs/heads/' + item.name)) {
     throw new Error('Worktree changed before deletion');
   }
-  const beforeDelete = git(['ls-remote',args.remote,ref],cwd).out.split(/\s+/)[0];
-  if (beforeDelete !== item.sha || sha256(bundle) !== record.bundleSha256) {
+  if (sha256(bundle) !== record.bundleSha256) {
     throw new Error('Archive or remote changed before deletion');
+  }
+  verifyLiveTarget(cwd,args.remote,item.name,mainSha,item.sha);
+  if (git(['rev-parse','--verify',branchRef],cwd).out !== item.sha) {
+    throw new Error('Local tracking tip moved before deletion');
   }
   git(['push','--atomic','--force-with-lease=' + ref + ':' + item.sha,
     args.remote,':' + ref],cwd);
@@ -256,7 +368,7 @@ async function main() {
     console.log('node scripts/reconcile-branches.mjs [--remote fork] [--json] [--output NEW_REPORT.json]');
     console.log('  Read-only branch, worktree, patch and stale-ref audit by default.');
     console.log('  Optional --hotspots: list changed files and overlapping branch paths (not equivalence)');
-    console.log('  Retirement: --apply --retire BRANCH --expect-sha FULL_SHA --archive-dir PATH');
+    console.log('  Retirement: --apply --retire BRANCH --expect-sha FULL_SHA --expect-main FULL_SHA --approve-current-semantics --archive-dir PATH');
     console.log('  Extra approval for proven equivalent patches: --allow-patch-equivalent');
     return;
   }

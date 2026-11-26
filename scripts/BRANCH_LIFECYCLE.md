@@ -23,8 +23,20 @@ The report records exact remote heads plus classifications:
 | PROTECTED | Main, upstream PR lane, release lane or checked-out worktree | Preserve |
 | UNFETCHED_OR_MOVED | Local object or tracking tip does not match live remote | Fetch/inspect, never delete |
 | MERGED_IN_MAIN | Remote SHA is a real ancestor of current main | Candidate for verified retirement |
-| PATCH_EQUIVALENT_CANDIDATE | No right-only nonmerge patches and no unique merge commits | Manual equivalence review |
+| PATCH_EQUIVALENT_CANDIDATE | No unique patch/merge content, or an exact aggregate squash match | Manual equivalence review |
 | UNIQUE_REVIEW | Unique unmerged patch or merge history | Inspect files and tests, keep by default |
+
+Exact squash adoption is detected separately from per-commit cherry-pick equivalence.
+For each branch with unique non-merge commits and no unique merge commits, the audit
+compares the branch's aggregate raw diff from its merge-base to its tip against
+single-parent commits on current main that touch the same paths. The comparison
+uses exact raw path, mode and object-ID records with rename detection disabled;
+a match records `squashEquivalentCommit` and
+`squashCheck: "exact-match"`.
+A near-match, extra change, unique merge resolution, missing merge-base, or bounded
+scan limit remains UNIQUE_REVIEW. Historical exact content adoption (including a subsequently reverted squash) is still not semantic
+correctness proof, and retirement remains manually gated by exact current branch/main approval in addition to
+`--allow-patch-equivalent`. The audit reports affected paths and current differing paths; missing or unbounded residual evidence blocks patch retirement.
 
 The optional `--hotspots` samples paths changed by unmerged, non-equivalent
 commits, groups files touched by multiple branches, and ranks the top 50
@@ -43,19 +55,19 @@ git remote prune --dry-run; **it never prunes worktrees automatically**.
 Do not batch deletion. For an integrated branch with no open PR and no checkout:
 
 ~~~powershell
-node scripts/reconcile-branches.mjs --remote fork --apply --retire 'specific/branch' --expect-sha 'FULL_40_CHARACTER_SHA' --archive-dir 'X:\CodeArchives\deskcommand-retired'
+node scripts/reconcile-branches.mjs --remote fork --apply --retire 'specific/branch' --expect-sha 'FULL_BRANCH_SHA' --expect-main 'FULL_MAIN_SHA' --approve-current-semantics --archive-dir 'X:\CodeArchives\deskcommand-retired'
 ~~~
 
 The command checks the current remote SHA, clean worktree, protected names,
 current GitHub fork/upstream open PRs, and ancestry. Before deleting, it creates
 a complete, verified Git bundle containing both main and the retiring ref,
-writes a prepared JSON receipt, and verifies the bundle SHA-256. Deletion uses
+restores both exact named refs into a fresh bare repository, runs strict full fsck, writes a prepared JSON receipt, and verifies the bundle SHA-256. Deletion uses
 an exact-SHA --force-with-lease and readback. It does not force-remove local
 branches or worktrees. An existing archive path stops the operation.
 
 To retire a patch-equivalent (but not ancestor) branch, add
 --allow-patch-equivalent **only after reviewing its full file-level differences**
-and absence of unique merge resolutions.
+and absence of unique merge resolutions. All retirements also require explicit current semantic and consumer clearance bound to the exact full branch and main SHAs. Changed affected paths require review of current behavior, not merely the historical match. The flag is an operator attestation, not an automated semantic test. Local and live remote main and branch are rechecked before archive and immediately before the branch CAS. Coordinate an exclusive target-main mutation window with the integration owner: Git push lease protects the retiring ref, not a concurrent unrelated main update after the final read.
 
 **Unique branches cannot be deleted by this CLI.** Preserve their full history
 and independently verify obsolete/superseded behavior, active PRs, and current
@@ -64,7 +76,7 @@ dirty, untracked or active worktree content.
 
 The CLI fails closed if gh cannot verify open pull requests, the local branch
 tracking differs from the GitHub remote, a bundle fails verification, the SHA
-changes, or the current checkout is dirty.
+changes, current semantic approval is missing or stale, or the current checkout is dirty.
 
 ## Recovery and next-chat handoff
 
