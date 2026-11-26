@@ -93,6 +93,13 @@ async function main() {
       'hiding UI metadata cannot remove ordinary read_file content');
     await setSetting('showListDirectoryUI',false);
     await inspectOverrides(false,false,'both independent opt-outs enabled');
+    const normalListing = await client.callTool({
+      name:'list_directory',arguments:{path:env.home},
+    });
+    assert.notEqual(normalListing.isError,true,
+      'hiding directory widget cannot block ordinary list_directory');
+    assert(normalListing.content.some(item => item.text?.includes('preview-normal-result.txt')),
+      'hiding the widget cannot remove ordinary directory listing output');
     await setSetting('showReadFileUI',true);
     await inspectOverrides(true,false,'restoring read_file does not restore list_directory');
     await setSetting('mcpUiPreviewMode','off');
