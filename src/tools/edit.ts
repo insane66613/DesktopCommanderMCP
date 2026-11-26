@@ -141,9 +141,11 @@ export async function performSearchReplace(filePath: string, block: SearchReplac
     }
     
 
-    // Read file directly to preserve line endings - critical for edit operations
-    const validPath = await validatePath(filePath);
-    const content = await readFileInternal(validPath, 0, Number.MAX_SAFE_INTEGER);
+    // readFileInternal validates the path before reading, and writeFile
+    // revalidates immediately before writing. An additional validation here
+    // repeats realpath and stat calls without providing another I/O boundary.
+    // Keep both read-time and write-time checks (including symlink resolution).
+    const content = await readFileInternal(filePath, 0, Number.MAX_SAFE_INTEGER);
     
     // Make sure content is a string
     if (typeof content !== 'string') {
