@@ -71,9 +71,15 @@ export const CONFIG_FIELD_DEFINITIONS = {
     valueType: 'boolean',
   },
   mcpUiPreviewsEnabled: {
-    label: 'MCP UI Previews',
-    description: 'Show rich MCP preview widgets for supported Desktop Commander tools. Turn this off to use normal tool results without preview widgets.',
+    label: 'MCP UI Previews (Legacy)',
+    description: 'Legacy boolean: false always disables rich preview widgets in Legacy mode; otherwise old showMcpUI true/false takes precedence over A/B. In explicit Auto, On or Off modes, the legacy boolean is ignored.',
     valueType: 'boolean',
+  },
+  mcpUiPreviewMode: {
+    label: 'MCP UI Preview Mode',
+    description: 'Legacy preserves existing settings, including historical showMcpUI true/false if present. Auto explicitly follows the A/B experiment; On always shows supported widgets; Off always hides them. Selecting Auto, On or Off overrides legacy settings.',
+    valueType: 'string',
+    options: ['legacy', 'auto', 'on', 'off'],
   },
 } as const satisfies Record<string, ConfigFieldDefinition>;
 

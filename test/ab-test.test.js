@@ -9,7 +9,9 @@ import {
   MCP_UI_HIDE_VARIANT,
   MCP_UI_SHOW_VARIANT,
   resolveMcpUiPreviewDecision,
+  resolveMcpUiPreviewMode,
 } from '../dist/utils/mcp-ui-ab-test.js';
+import { CONFIG_FIELD_DEFINITIONS } from '../dist/config-field-definitions.js';
 
 // Mock the dependencies before importing ab-test
 let mockExperiments = {};
@@ -358,6 +360,73 @@ async function runTests() {
     assert.strictEqual(calls.captured.length, 1);
     assert.strictEqual(calls.captured[0].properties.variant, MCP_UI_HIDE_VARIANT);
     assert.strictEqual(calls.captured[0].properties.mcp_ui_enabled, false);
+  });
+
+  await test('MCP UI mode offers explicit legacy/auto/on/off choices', async () => {
+    const config = CONFIG_FIELD_DEFINITIONS.mcpUiPreviewMode;
+    assert.deepStrictEqual(config.options, ['legacy', 'auto', 'on', 'off']);
+    assert.strictEqual(config.valueType, 'string');
+  });
+
+  await test('MCP UI on is force-on even when legacy is disabled and AB hides', async () => {
+    let abCalls = 0;
+    const decision = await resolveMcpUiPreviewMode('on', false, async () => {
+      abCalls++;
+      return false;
+    });
+    assert.strictEqual(decision, true);
+    assert.strictEqual(abCalls, 0, 'force-on must bypass AB and network wait');
+  });
+
+  await test('MCP UI off is force-off and never enrolls in experiment', async () => {
+    let abCalls = 0;
+    const decision = await resolveMcpUiPreviewMode('off', true, async () => {
+      abCalls++;
+      return true;
+    });
+    assert.strictEqual(decision, false);
+    assert.strictEqual(abCalls, 0);
+  });
+
+  await test('MCP UI auto explicitly follows assigned hide/show variants', async () => {
+    assert.strictEqual(await resolveMcpUiPreviewMode('auto', false, async () => false), false);
+    assert.strictEqual(await resolveMcpUiPreviewMode('auto', false, async () => true), true);
+  });
+
+  await test('MCP UI legacy preserves existing boolean and AB semantics', async () => {
+    let abCalls = 0;
+    const abHide = async () => { abCalls++; return false; };
+    assert.strictEqual(await resolveMcpUiPreviewMode(undefined, false, abHide), false);
+    assert.strictEqual(await resolveMcpUiPreviewMode('legacy', false, abHide), false);
+    assert.strictEqual(abCalls, 0);
+    assert.strictEqual(await resolveMcpUiPreviewMode(undefined, true, abHide), false);
+    assert.strictEqual(await resolveMcpUiPreviewMode('legacy', true, async () => true), true);
+    assert.strictEqual(abCalls, 1);
+  });
+
+  await test('MCP UI malformed stored mode fails closed, absent mode preserves legacy', async () => {
+    assert.strictEqual(await resolveMcpUiPreviewMode('nonsense', true, async () => true), false);
+    assert.strictEqual(await resolveMcpUiPreviewMode(null, true, async () => true), false);
+    assert.strictEqual(await resolveMcpUiPreviewMode(123, true, async () => true), false);
+    assert.strictEqual(await resolveMcpUiPreviewMode(undefined, true, async () => true), true);
+  });
+
+  await test('MCP UI historical true force-on and false force-off migrate without rewriting', async () => {
+    let abCalls = 0;
+    const ab = async () => { abCalls++; return false; };
+    assert.strictEqual(await resolveMcpUiPreviewMode('legacy', true, ab, true), true);
+    assert.strictEqual(await resolveMcpUiPreviewMode('legacy', false, ab, true), false);
+    assert.strictEqual(await resolveMcpUiPreviewMode(undefined, true, ab, false), false);
+    assert.strictEqual(abCalls, 0);
+  });
+
+  await test('MCP UI explicit new mode overrides conflicting historical flags', async () => {
+    const hide = async () => false;
+    const show = async () => true;
+    assert.strictEqual(await resolveMcpUiPreviewMode('on', false, hide, false), true);
+    assert.strictEqual(await resolveMcpUiPreviewMode('off', true, show, true), false);
+    assert.strictEqual(await resolveMcpUiPreviewMode('auto', false, hide, true), false);
+    assert.strictEqual(await resolveMcpUiPreviewMode('auto', false, show, false), true);
   });
 
   // Summary

@@ -65,18 +65,44 @@ export async function resolveMcpUiPreviewDecision(deps: McpUiPreviewDecisionDeps
   }
 }
 
-export async function shouldShowMcpUiPreviews(): Promise<boolean> {
-  const userSetting = await configManager.getValue('mcpUiPreviewsEnabled');
-  if (userSetting === false) {
-    return false;
+/**
+ * Resolve the explicit preview setting without mutating existing A/B enrollment.
+ * Legacy is the default, preserving both historic boolean and A/B behavior.
+ * Auto is an explicit choice and does not inherit a stale legacy false value.
+ */
+export async function resolveMcpUiPreviewMode(
+  mode: unknown,
+  legacyEnabled: unknown,
+  resolveAuto: () => Promise<boolean>,
+  historicalShowMcpUi?: unknown,
+): Promise<boolean> {
+  if (mode === 'on') return true;
+  if (mode === 'off') return false;
+  // A hand-edited or corrupted persisted mode must not silently enable UI.
+  // Only an absent value is allowed to inherit the old configuration rules.
+  if (mode !== undefined && mode !== 'legacy' && mode !== 'auto') return false;
+  if (mode !== 'auto') {
+    // Historical showMcpUI was an explicit tri-state override. Preserve it
+    // only when the new mode has not explicitly superseded legacy behavior.
+    // Modern explicit disable always wins in Legacy mode. Otherwise an
+    // old showMcpUI:true field could re-enable previews after an upgrade.
+    if (legacyEnabled === false) return false;
+    if (historicalShowMcpUi === true) return true;
+    if (historicalShowMcpUi === false) return false;
   }
+  return resolveAuto();
+}
 
-  return resolveMcpUiPreviewDecision({
+export async function shouldShowMcpUiPreviews(): Promise<boolean> {
+  const mode = await configManager.getValue('mcpUiPreviewMode');
+  const legacyEnabled = await configManager.getValue('mcpUiPreviewsEnabled');
+  const historicalShowMcpUi = await configManager.getValue('showMcpUI');
+  return resolveMcpUiPreviewMode(mode, legacyEnabled, () => resolveMcpUiPreviewDecision({
     getExistingAssignment: () => configManager.getValue(`abTest_${MCP_UI_EXPERIMENT_NAME}`),
     isFirstRun: () => configManager.isFirstRun(),
     wasLoadedFromCache: () => featureFlagManager.wasLoadedFromCache(),
     waitForFreshFlags: () => featureFlagManager.waitForFreshFlags(),
     getABTestVariant,
     capture,
-  });
+  }), historicalShowMcpUi);
 }

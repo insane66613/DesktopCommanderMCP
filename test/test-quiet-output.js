@@ -44,6 +44,10 @@ assert.match(builtServer, /File preview UI is disabled by configuration/);
 
 const builtMcpUiDecision = fs.readFileSync(path.join(repoRoot, 'dist', 'utils', 'mcp-ui-ab-test.js'), 'utf8');
 assert.match(builtMcpUiDecision, /mcpUiPreviewsEnabled/);
-assert.match(builtMcpUiDecision, /userSetting === false/);
+assert.match(builtMcpUiDecision, /legacyEnabled === false/,
+  'legacy false must still disable previews');
+assert.match(builtMcpUiDecision, /mcpUiPreviewMode/);
+assert.match(builtMcpUiDecision, /mode === 'on'/);
+assert.match(builtMcpUiDecision, /mode === 'off'/);
 
 console.log('quiet-output regression checks passed');

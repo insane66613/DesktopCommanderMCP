@@ -54,7 +54,8 @@ export interface ServerConfig {
   fileReadLineLimit?: number; // Default line limit for file read operations (changed from character-based)
   processStartOutputLineLimit?: number; // Initial command-output lines shown by start_process
   filePreviewsEnabled?: boolean; // User opt-out for interactive file-preview UI
-  mcpUiPreviewsEnabled?: boolean; // User opt-out for rich MCP preview widgets
+  mcpUiPreviewsEnabled?: boolean; // Legacy opt-out for rich MCP preview widgets
+  mcpUiPreviewMode?: 'legacy' | 'auto' | 'on' | 'off'; // Explicit force-on/off/AB with backward-compatible legacy mode
   clientId?: string; // Unique client identifier for analytics
   currentClient?: ClientInfo; // Current connected client information
   [key: string]: any; // Allow for arbitrary configuration keys (including abTest_* keys)
@@ -390,6 +391,7 @@ class ConfigManager {
       processStartOutputLineLimit: 25, // Keep command cards concise; full output remains paginated
       filePreviewsEnabled: true, // Preserve file-preview UI unless the user explicitly disables it
       mcpUiPreviewsEnabled: true, // Preserve existing behavior unless the user explicitly disables previews
+      mcpUiPreviewMode: 'legacy', // Preserve prior boolean + A/B semantics until explicitly changed
       pendingWelcomeOnboarding: true, // New install flag - triggers A/B test for welcome page
       welcomeOnboardingEligible: true // Distinguishes new installs from migrated legacy configs
     };

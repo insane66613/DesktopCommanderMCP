@@ -123,7 +123,7 @@ export const server = new Server(
     },
     {
         capabilities: {
-            tools: {},
+            tools: { listChanged: true },
             resources: {},  // Add empty resources capability
             prompts: {},    // Add empty prompts capability
             logging: {},    // Add logging capability for console redirection
@@ -288,7 +288,7 @@ server.setRequestHandler(InitializeRequestSchema, async (request: InitializeRequ
         return {
             protocolVersion,
             capabilities: {
-                tools: {},
+                tools: { listChanged: true },
                 resources: {},
                 prompts: {},
                 logging: {},
@@ -357,7 +357,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         - fileWriteLineLimit (max lines per write_file call, default 50)
                         - processStartOutputLineLimit (initial command-preview lines; 0 disables, default 25)
                         - filePreviewsEnabled (boolean user override for interactive file previews)
-                        - mcpUiPreviewsEnabled (boolean user override for rich MCP preview widgets)
+                        - mcpUiPreviewsEnabled (legacy boolean opt-out for rich MCP preview widgets)
+                        - mcpUiPreviewMode (legacy | auto | on | off, explicit rich-preview control)
                         - telemetryEnabled (boolean for telemetry opt-in/out)
                         - currentClient (information about the currently connected MCP client)
                         - clientHistory (history of all clients that have connected)
@@ -394,7 +395,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         - fileWriteLineLimit (number, max lines per write_file call)
                         - processStartOutputLineLimit (number, initial start_process preview lines; 0 disables)
                         - filePreviewsEnabled (boolean, show interactive file-preview UI)
-                        - mcpUiPreviewsEnabled (boolean, show rich MCP preview widgets)
+                        - mcpUiPreviewsEnabled (legacy boolean, false disables rich MCP previews)
+                        - mcpUiPreviewMode (legacy | auto | on | off, explicit rich-preview control)
                         - telemetryEnabled (boolean)
                         
                         IMPORTANT: Setting allowedDirectories to an empty array ([]) allows full access 
@@ -1634,7 +1636,27 @@ async function handleCallToolRequestCore(request: CallToolRequest, signal?: Abor
                 break;
             case "set_config_value":
                 try {
+                    const changedConfigKey = args && typeof args === 'object'
+                        ? String((args as any).key ?? '') : '';
+                    const affectsToolMetadata = [
+                        'mcpUiPreviewMode', 'mcpUiPreviewsEnabled', 'filePreviewsEnabled',
+                    ].includes(changedConfigKey);
+                    const previousValue = affectsToolMetadata
+                        ? await configManager.getValue(changedConfigKey) : undefined;
                     result = await setConfigValue(args);
+                    // Only a durable, changed preview preference can invalidate
+                    // advertised metadata. No-op or failed saves do not notify.
+                    if (!result?.isError && affectsToolMetadata &&
+                        !Object.is(previousValue, await configManager.getValue(changedConfigKey))) {
+                        _toolListCache = null;
+                        try {
+                            await server.sendToolListChanged();
+                        } catch (error) {
+                            // The preference is already saved; a notification error
+                            // must not turn a successful Save into a false failure.
+                            logToStderr('error', `Unable to notify clients of updated tool metadata: ${error}`);
+                        }
+                    }
                 } catch (error) {
                     capture('server_request_error', { message: `Error in set_config_value handler: ${error}` });
                     result = {
