@@ -42,6 +42,8 @@ export interface TooltipMessage {
 export interface ApplyConfigResult {
     ok: boolean;
     tooltip?: TooltipMessage;
+    /** An older in-flight save must not update the current row or host context. */
+    superseded?: boolean;
 }
 
 interface RenderHooks {
@@ -54,6 +56,32 @@ type ToolCall = (name: string, args?: Record<string, unknown>) => Promise<unknow
 type TrackConfigUiEvent = (event: string, params?: Record<string, unknown>) => void;
 
 let shellController: ToolShellController | undefined;
+
+interface SaveFeedbackState {
+    generations: Map<string, number>;
+    clearTimers: Map<string, number>;
+    visibleUntil: Map<string, number>;
+    pendingByKey: Map<string, Promise<void>>;
+}
+
+// A host context update may rebuild the editor while a save is in flight.
+// Keep pending operations and their announcements with the controller, not
+// with a replaceable DOM tree.
+const saveFeedbackByController = new WeakMap<object, SaveFeedbackState>();
+
+function feedbackFor(controller: object): SaveFeedbackState {
+    let feedback = saveFeedbackByController.get(controller);
+    if (!feedback) {
+        feedback = {
+            generations: new Map(),
+            clearTimers: new Map(),
+            visibleUntil: new Map(),
+            pendingByKey: new Map(),
+        };
+        saveFeedbackByController.set(controller, feedback);
+    }
+    return feedback;
+}
 
 const CONFIG_EDITOR_COMPONENT = 'config_editor';
 const GET_CONFIG_TOOL_NAME = 'get_config';
@@ -398,8 +426,13 @@ export function createConfigEditorController(callTool: ToolCall, trackConfigUiEv
         state.draftValue = value;
     };
 
-    const apply = async (): Promise<ApplyConfigResult> => {
-        const selected = getSelectedEntry();
+    const apply = async (request?: { key: string; draftValue: string }): Promise<ApplyConfigResult> => {
+        // Capture the requested setting before asynchronous writes. Queued
+        // requests must never borrow a later selection or draft from the UI.
+        const selected = request
+            ? state.payload?.entries.find((entry) => entry.key === request.key)
+            : getSelectedEntry();
+        const requestedDraft = request?.draftValue ?? state.draftValue;
         if (!selected) {
             return {
                 ok: false,
@@ -420,7 +453,7 @@ export function createConfigEditorController(callTool: ToolCall, trackConfigUiEv
             };
         }
 
-        const parsed = parseDraftValue(state.draftValue, selected.valueType);
+        const parsed = parseDraftValue(requestedDraft, selected.valueType);
         if (!parsed.ok) {
             return {
                 ok: false,
@@ -432,7 +465,9 @@ export function createConfigEditorController(callTool: ToolCall, trackConfigUiEv
         }
 
         if (areConfigValuesEqual(parsed.value, selected.value)) {
-            state.draftValue = stringifyValueForInput(selected.value);
+            if (state.selectedKey === selected.key && state.draftValue === requestedDraft) {
+                state.draftValue = stringifyValueForInput(selected.value);
+            }
             return { ok: false };
         }
 
@@ -486,12 +521,24 @@ export function createConfigEditorController(callTool: ToolCall, trackConfigUiEv
 
             const refreshedPayload = extractPayload(refreshed);
             if (refreshedPayload) {
-                setPayload(refreshedPayload);
-                if (state.selectedKey === selected.key) {
-                    const updatedSelected = getSelectedEntry();
-                    state.draftValue = updatedSelected
-                        ? stringifyValueForInput(updatedSelected.value)
-                        : state.draftValue;
+                // Another setting may have completed a more recent save while
+                // this get_config response was pending. Update only the key
+                // that this operation owns, retaining the other live rows.
+                const latestPayload = state.payload;
+                const updatedEntry = refreshedPayload.entries.find((entry) => entry.key === selected.key);
+                const mergedPayload = latestPayload && updatedEntry
+                    ? {
+                        ...refreshedPayload,
+                        entries: latestPayload.entries.map((entry) =>
+                            entry.key === selected.key ? updatedEntry : entry),
+                    }
+                    : refreshedPayload;
+                const activeKey = state.selectedKey;
+                const activeDraft = state.draftValue;
+                const keepDraft = activeKey !== selected.key || activeDraft !== requestedDraft;
+                setPayload(mergedPayload);
+                if (keepDraft && state.selectedKey === activeKey) {
+                    state.draftValue = activeDraft;
                 }
             }
 
@@ -531,7 +578,7 @@ export function createConfigEditorController(callTool: ToolCall, trackConfigUiEv
     };
 }
 
-function render(container: HTMLElement, controller: ReturnType<typeof createConfigEditorController>, chrome: UiChromeState, hooks: RenderHooks = {}): void {
+export function renderConfigEditor(container: HTMLElement, controller: ReturnType<typeof createConfigEditorController>, chrome: UiChromeState, hooks: RenderHooks = {}): void {
     shellController?.dispose();
     shellController = undefined;
 
@@ -595,7 +642,7 @@ function render(container: HTMLElement, controller: ReturnType<typeof createConf
               ${description ? `<p>${escapeHtml(description)}</p>` : ''}
               <p class="setting-summary${summary ? '' : ' hidden'}" data-setting-summary-key="${escapeHtml(entry.key)}">${summary ? escapeHtml(summary) : ''}</p>
             </div>
-            <div class="setting-control">${controlHtml}</div>
+            <div class="setting-control"><span class="setting-save-status" data-save-status-key="${escapeHtml(entry.key)}" data-save-status-index="${index}" role="status" aria-live="polite" aria-atomic="true"></span>${controlHtml}</div>
           </section>
         `;
     }).join('');
@@ -642,10 +689,80 @@ function render(container: HTMLElement, controller: ReturnType<typeof createConf
         });
     };
 
-    const emitTooltip = (result: ApplyConfigResult): void => {
-        if (result.tooltip) {
-            hooks.onTooltip?.(result.tooltip);
+    // The host can rerender while a save is in flight. Keep generations,
+    // queued writes and announcements in a controller-scoped state object.
+    const feedback = feedbackFor(controller);
+    const statusForKey = (key: string): HTMLElement | null => {
+        // Match the DOM dataset value, never interpolate a raw config key
+        // into a selector. Keys can contain punctuation and quotes.
+        for (const status of container.querySelectorAll<HTMLElement>('.setting-save-status')) {
+            if (status.dataset.saveStatusKey === key) return status;
         }
+        return null;
+    };
+    // Rehydrate a still-live confirmation on any host-driven rerender.
+    for (const [key, deadline] of feedback.visibleUntil) {
+        if (deadline <= Date.now()) {
+            feedback.visibleUntil.delete(key);
+        } else {
+            const status = statusForKey(key);
+            if (status) status.textContent = 'Saved';
+        }
+    }
+    const applyWithFeedback = async (key: string): Promise<ApplyConfigResult> => {
+        const generation = (feedback.generations.get(key) ?? 0) + 1;
+        feedback.generations.set(key, generation);
+        const oldTimer = feedback.clearTimers.get(key);
+        if (oldTimer !== undefined) {
+            window.clearTimeout(oldTimer);
+            feedback.clearTimers.delete(key);
+        }
+        feedback.visibleUntil.delete(key);
+        const previousStatus = statusForKey(key);
+        if (previousStatus) previousStatus.textContent = '';
+
+        // Serialize the set_config_value + get_config cycle per key. A stale
+        // successful write must never overwrite a newer requested value.
+        // Capture the current draft now, before any queued operation awaits.
+        const request = { key, draftValue: controller.state.draftValue };
+        const previous = feedback.pendingByKey.get(key) ?? Promise.resolve();
+        const running = previous.catch(() => {}).then(() => controller.apply(request));
+        const settled = running.then(() => {}, () => {});
+        feedback.pendingByKey.set(key, settled);
+        let result: ApplyConfigResult;
+        try {
+            result = await running;
+        } finally {
+            if (feedback.pendingByKey.get(key) === settled) {
+                feedback.pendingByKey.delete(key);
+            }
+        }
+        if (feedback.generations.get(key) !== generation) {
+            return { ok: false, superseded: true };
+        }
+        if (!result.ok) {
+            if (result.tooltip) hooks.onTooltip?.(result.tooltip);
+            return result;
+        }
+        feedback.visibleUntil.set(key, Date.now() + 2200);
+        // Resolve the *current* live-region node after the await. The original
+        // row may have been replaced by a host-driven refresh meanwhile.
+        const status = statusForKey(key);
+        if (status) {
+            status.textContent = 'Saved';
+        } else {
+            hooks.onTooltip?.({ message: 'Saved', tone: 'success' });
+        }
+        const timeoutId = window.setTimeout(() => {
+            if (feedback.generations.get(key) === generation) {
+                feedback.visibleUntil.delete(key);
+                const currentStatus = statusForKey(key);
+                if (currentStatus) currentStatus.textContent = '';
+                feedback.clearTimers.delete(key);
+            }
+        }, 2200);
+        feedback.clearTimers.set(key, timeoutId);
+        return result;
     };
 
     const arrayModal = createArrayModalController({
@@ -655,10 +772,14 @@ function render(container: HTMLElement, controller: ReturnType<typeof createConf
         onSave: async (changedKey, items) => {
             controller.setSelection(changedKey);
             controller.setDraftValue(items.join('\n'));
-            const result = await controller.apply();
-            emitTooltip(result);
+            const result = await applyWithFeedback(changedKey);
             if (result.ok) {
                 emitConfigChanged(changedKey, items);
+            } else if (result.tooltip) {
+                // Keep the dialog and unsaved entries available for retry.
+                throw new Error(result.tooltip.message);
+            } else if (result.superseded) {
+                throw new Error('A newer save superseded this list change. Review the current setting.');
             }
         },
     });
@@ -678,8 +799,8 @@ function render(container: HTMLElement, controller: ReturnType<typeof createConf
                 const previousChecked = input.checked;
                 controller.setSelection(entry.key);
                 controller.setDraftValue(input.checked ? 'true' : 'false');
-                const result = await controller.apply();
-                emitTooltip(result);
+                const result = await applyWithFeedback(entry.key);
+                if (result.superseded) return;
                 const updatedEntry = getUpdatedEntryByKey(entry.key);
                 if (updatedEntry && typeof updatedEntry.value === 'boolean') {
                     input.checked = updatedEntry.value;
@@ -699,8 +820,8 @@ function render(container: HTMLElement, controller: ReturnType<typeof createConf
                 const previousValue = String(entry.value ?? '');
                 controller.setSelection(entry.key);
                 controller.setDraftValue(select.value);
-                const result = await controller.apply();
-                emitTooltip(result);
+                const result = await applyWithFeedback(entry.key);
+                if (result.superseded) return;
                 const updatedEntry = getUpdatedEntryByKey(entry.key);
                 if (updatedEntry) {
                     select.value = String(updatedEntry.value ?? previousValue);
@@ -719,8 +840,8 @@ function render(container: HTMLElement, controller: ReturnType<typeof createConf
                 const input = target as HTMLInputElement;
                 controller.setSelection(entry.key);
                 controller.setDraftValue(input.value);
-                const result = await controller.apply();
-                emitTooltip(result);
+                const result = await applyWithFeedback(entry.key);
+                if (result.superseded) return;
                 const updatedEntry = getUpdatedEntryByKey(entry.key);
                 input.value = String(updatedEntry?.value ?? controller.state.draftValue);
                 if (result.ok) {
@@ -743,8 +864,8 @@ function render(container: HTMLElement, controller: ReturnType<typeof createConf
                 customInput?.classList.add('hidden');
                 controller.setSelection(entry.key);
                 controller.setDraftValue(select.value);
-                const result = await controller.apply();
-                emitTooltip(result);
+                const result = await applyWithFeedback(entry.key);
+                if (result.superseded) return;
                 const updatedEntry = getUpdatedEntryByKey(entry.key);
                 const shellValue = String(updatedEntry?.value ?? select.value);
                 const shellCustomInput = container.querySelector(`input[data-action="shell-custom"][data-key-index="${keyIndex}"]`) as HTMLInputElement | null;
@@ -766,8 +887,8 @@ function render(container: HTMLElement, controller: ReturnType<typeof createConf
                 }
                 controller.setSelection(entry.key);
                 controller.setDraftValue(input.value.trim());
-                const result = await controller.apply();
-                emitTooltip(result);
+                const result = await applyWithFeedback(entry.key);
+                if (result.superseded) return;
                 const updatedEntry = getUpdatedEntryByKey(entry.key);
                 input.value = String(updatedEntry?.value ?? controller.state.draftValue);
                 if (result.ok) {
@@ -798,8 +919,8 @@ function render(container: HTMLElement, controller: ReturnType<typeof createConf
                 const input = target as HTMLInputElement;
                 controller.setSelection(entry.key);
                 controller.setDraftValue(input.value.replace(/\r?\n/g, ' '));
-                const result = await controller.apply();
-                emitTooltip(result);
+                const result = await applyWithFeedback(entry.key);
+                if (result.superseded) return;
                 const updatedEntry = getUpdatedEntryByKey(entry.key);
                 input.value = String(updatedEntry?.value ?? controller.state.draftValue);
                 if (result.ok) {
@@ -911,7 +1032,7 @@ export function bootstrapConfigEditorApp(): void {
         }
         renderFrameId = window.requestAnimationFrame(() => {
             renderFrameId = null;
-            render(container, controller, chrome, {
+            renderConfigEditor(container, controller, chrome, {
                 onConfigChanged: (change) => {
                     if (controller.state.payload) {
                         widgetState.write(controller.state.payload);
