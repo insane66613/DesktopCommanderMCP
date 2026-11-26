@@ -351,6 +351,12 @@ export function createMarkdownController(dependencies: MarkdownControllerDepende
         return stripReadStatusLine(payload.content);
     }
 
+    function joinDocumentChunks(left: string, right: string): string {
+        if (!left) return right;
+        if (!right) return left;
+        return `${left}${left.endsWith('\n') ? '' : '\n'}${right}`;
+    }
+
     function syncStateFromContent(
         state: MarkdownWorkspaceState,
         content: string,
@@ -432,6 +438,56 @@ export function createMarkdownController(dependencies: MarkdownControllerDepende
 
     function isUndoAvailable(state: MarkdownWorkspaceState): boolean {
         return state.draftContent !== state.fullDocumentContent;
+    }
+
+    /** Recover the historical partial-document expansion without discarding
+     * a dirty editor draft. Update sourceContent as well as the saved baseline
+     * so the next getState/render keeps this very same workspace instance.
+     */
+    function expandPartialPayload(
+        payload: RenderPayload,
+        direction: 'before' | 'after',
+        loadedContent: string,
+    ): RenderPayload {
+        const state = getState(payload);
+        const range = parseReadRange(payload.content);
+        if (!range?.isPartial) return payload;
+        if (state.saving) throw new Error('Finish saving before loading more document lines.');
+
+        const loaded = stripReadStatusLine(loadedContent);
+        if (!loaded) return payload;
+        const baseline = direction === 'before'
+            ? joinDocumentChunks(loaded, state.fullDocumentContent)
+            : joinDocumentChunks(state.fullDocumentContent, loaded);
+        const draft = direction === 'before'
+            ? joinDocumentChunks(loaded, state.draftContent)
+            : joinDocumentChunks(state.draftContent, loaded);
+        const fromLine = direction === 'before' ? 1 : range.fromLine;
+        const toLine = direction === 'after' ? range.totalLines : range.toLine;
+        const lineCount = toLine - fromLine + 1;
+        const remaining = range.totalLines - toLine;
+        const stillPartial = fromLine > 1 || toLine < range.totalLines;
+        const status = stillPartial
+            ? `[Reading ${lineCount} lines from ${fromLine === 1 ? 'start' : `line ${fromLine}`} (total: ${range.totalLines} lines, ${remaining} remaining)]\n`
+            : '';
+
+        // The original line-range coordinates may no longer match the new
+        // baseline after prepending; let the next diff calculate all hunks.
+        cancelAutosave();
+        state.sourceContent = baseline;
+        state.fullDocumentContent = baseline;
+        state.draftContent = draft;
+        state.dirty = draft !== baseline;
+        state.dirtyLineRanges = [];
+        state.outline = extractMarkdownOutline(draft);
+        if (!state.outline.some(item => item.id === state.activeHeadingId)) {
+            state.activeHeadingId = state.outline[0]?.id ?? null;
+        }
+        if (state.dirty) {
+            state.saveIndicator = 'idle';
+            scheduleAutosave();
+        }
+        return { ...payload, content: status + baseline };
     }
 
     function buildBody(payload: RenderPayload): RenderBodyResult {
@@ -804,8 +860,14 @@ export function createMarkdownController(dependencies: MarkdownControllerDepende
         state.error = null;
         state.notice = null;
 
+        // Editor events may arrive while edit_block is awaiting disk I/O.
+        // Snapshot the submitted revision and its baseline before that wait:
+        // committing this revision must never overwrite a newer user draft.
+        const baselineAtSaveStart = state.fullDocumentContent;
+        const draftAtSaveStart = state.draftContent;
+        const dirtyRangesAtSaveStart = [...state.dirtyLineRanges];
         try {
-            const blocks = computeEditBlocks(state.fullDocumentContent, state.draftContent, state.dirtyLineRanges);
+            const blocks = computeEditBlocks(baselineAtSaveStart, draftAtSaveStart, dirtyRangesAtSaveStart);
             if (blocks.length === 0) {
                 state.saving = false;
                 state.saveIndicator = 'idle';
@@ -857,15 +919,22 @@ export function createMarkdownController(dependencies: MarkdownControllerDepende
                 throw err;
             }
 
-            const savedContent = applyEditBlocksToText(state.fullDocumentContent, blocks);
+            const savedContent = applyEditBlocksToText(baselineAtSaveStart, blocks);
+            // Only the submitted draft was persisted. A newer draft remains
+            // visible, dirty, and queued for a subsequent save. This also
+            // handles a debounce timer firing while the previous save waited.
+            const draftChangedDuringSave = state.draftContent !== draftAtSaveStart;
             state.fullDocumentContent = savedContent;
             state.sourceContent = savedContent;
-            state.draftContent = savedContent;
-            state.outline = extractMarkdownOutline(state.sourceContent);
-            state.dirty = false;
+            if (!draftChangedDuringSave) state.draftContent = savedContent;
+            state.dirty = state.draftContent !== savedContent;
+            // Stale line coordinates from the old baseline must not constrain
+            // the next diff; empty ranges mean compare the complete documents.
             state.dirtyLineRanges = [];
+            state.outline = extractMarkdownOutline(state.draftContent);
             state.saving = false;
-            state.saveIndicator = 'saved';
+            state.saveIndicator = state.dirty ? 'idle' : 'saved';
+            if (state.dirty) scheduleAutosave();
             if (!state.outline.some((item) => item.id === state.activeHeadingId)) {
                 state.activeHeadingId = state.outline[0]?.id ?? null;
             }
@@ -881,13 +950,17 @@ export function createMarkdownController(dependencies: MarkdownControllerDepende
             if (revert) {
                 revert.disabled = !isUndoAvailable(state);
             }
-            flashSaveStatus('Saved', 'saved', 1800, () => {
-                if (!state.dirty && !state.saving) {
-                    state.saveIndicator = 'idle';
-                    return true;
-                }
-                return false;
-            });
+            if (state.dirty) {
+                dependencies.updateSaveStatus('Unsaved edits', 'saving');
+            } else {
+                flashSaveStatus('Saved', 'saved', 1800, () => {
+                    if (!state.dirty && !state.saving) {
+                        state.saveIndicator = 'idle';
+                        return true;
+                    }
+                    return false;
+                });
+            }
             dependencies.trackUiEvent?.('markdown_saved', {
                 file_extension: getFileExtensionForAnalytics(state.filePath),
                 blocks: blocks.length,
@@ -1195,6 +1268,7 @@ export function createMarkdownController(dependencies: MarkdownControllerDepende
         clear,
         disposeHandles,
         ensureCompletePayload,
+        expandPartialPayload,
         getCopyText,
         getState,
         handleInlineExitFromFullscreen,

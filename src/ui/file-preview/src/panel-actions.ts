@@ -180,6 +180,13 @@ export function attachPanelActions(options: {
             const newText = extractToolText(result);
 
             if (newText && typeof newText === 'string') {
+                if (options.payload.fileType === 'markdown') {
+                    const expanded = options.markdownController.expandPartialPayload(
+                        options.payload, direction, newText,
+                    );
+                    options.render(expanded, options.htmlMode, options.getIsExpanded());
+                    return;
+                }
                 const cleanNew = stripReadStatusLine(newText);
                 const merged = direction === 'before'
                     ? `${cleanNew}${cleanNew.endsWith('\n') ? '' : '\n'}${currentContent}`
