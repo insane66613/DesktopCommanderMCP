@@ -132,6 +132,38 @@ export function semanticReviewApproved(item, review) {
       !Array.isArray(review.consumerAudit.scopes) ||
       !['repository','automation','deployment'].every(scope=>review.consumerAudit.scopes.includes(scope)) ||
       !Array.isArray(review.commitMap) || review.commitMap.length === 0 ||
+      (item.uniqueMerges > 0 && (!Array.isArray(review.mergeMap) ||
+        review.mergeMap.length !== item.uniqueMerges)) ||
+      (review.mergeMap !== undefined && (!Array.isArray(review.mergeMap) ||
+        review.mergeMap.some(m => !/^[0-9a-f]{40}$/.test(m.sha || '') ||
+          !Array.isArray(m.parents) || m.parents.length !== 2 ||
+          m.parents.some(parent => !/^[0-9a-f]{40}$/.test(parent)) ||
+          ![0,1].includes(m.mainParentIndex) ||
+          !/^[0-9a-f]{64}$/i.test(m.remergeDiffSha256 || '') ||
+          typeof m.gitVersion !== 'string' || !/^git version [^\r\n]+$/.test(m.gitVersion) ||
+          !Array.isArray(m.parentDiffPathSha256) || m.parentDiffPathSha256.length !== 2 ||
+          m.parentDiffPathSha256.some(hash => !/^[0-9a-f]{64}$/i.test(hash)) ||
+          !Array.isArray(m.resolutionPaths) || m.resolutionPaths.length < 1 ||
+          m.resolutionPaths.some(file => typeof file !== 'string' || !file ||
+            file.includes('..') || file.startsWith('/') || file.includes('\\') ||
+            file.includes('\0') || file.includes(':') || file.includes('\n') ||
+            file.includes('\r') || file === '.git' || file.startsWith('.git/')) ||
+          new Set(m.resolutionPaths).size !== m.resolutionPaths.length ||
+          !Array.isArray(m.fileDispositions) ||
+          m.fileDispositions.length !== m.resolutionPaths.length ||
+          m.fileDispositions.some(f => !m.resolutionPaths.includes(f.path) ||
+            !/^[0-9a-f]{40}$/.test(f.mainBlobOid || '') ||
+            !['ADOPTED_AND_EXTENDED','ADOPTED_ROUTING_REPLACED','INTENTIONALLY_RETIRED']
+              .includes(f.classification) ||
+            typeof f.current !== 'string' || f.current.length < 8 ||
+            typeof f.testEvidence !== 'string' || f.testEvidence.length < 8 ||
+            f.ownerApproved !== true) ||
+          new Set(m.fileDispositions.map(f => f.path)).size !== m.resolutionPaths.length ||
+          typeof m.current !== 'string' || m.current.length < 8 ||
+          typeof m.testEvidence !== 'string' || m.testEvidence.length < 8 ||
+          m.ownerApproved !== true ||
+          !['ADOPTED_AND_EXTENDED','ADOPTED_ROUTING_REPLACED','INTENTIONALLY_RETIRED']
+            .includes(m.classification)))) ||
       !Array.isArray(review.reviewEvidence) || review.reviewEvidence.length < 2 ||
       review.reviewEvidence.some(e => !e.kind || !e.sourceId ||
         !isAbsolute(e.path || '') || !/^[0-9a-f]{64}$/i.test(e.sha256 || '')) ||
@@ -166,10 +198,68 @@ export function loadSemanticReview(cwd, item, args) {
   }
   const commits = git(['rev-list','--no-merges',item.mainSha + '..' + item.sha],cwd)
     .out.split(/\r?\n/).filter(Boolean).sort();
-  const merges = git(['rev-list','--merges',item.mainSha + '..' + item.sha],cwd).out;
+  const merges = git(['rev-list','--merges',item.mainSha + '..' + item.sha],cwd)
+    .out.split(/\r?\n/).filter(Boolean).sort();
   const mapped = review.commitMap.map(c => c.sha).sort();
-  if (merges || commits.length !== mapped.length || commits.some((c,i)=>c!==mapped[i])) {
-    throw new Error('Semantic review must map every unique commit and contain no unreviewed merges');
+  if (commits.length !== mapped.length || commits.some((c,i)=>c!==mapped[i])) {
+    throw new Error('Semantic review must map every unique commit (nonmerge commits in commitMap)');
+  }
+  const mergeMap = review.mergeMap || [];
+  const mappedMerges = mergeMap.map(m => m.sha).sort();
+  if (merges.length !== mappedMerges.length ||
+      merges.some((sha,i)=>sha !== mappedMerges[i])) {
+    throw new Error('Semantic review must map every unique merge commit');
+  }
+  // A merge is not automatically a pure synchronization operation. The exact
+  // recorded parents, conflict resolution, and affected paths must match live
+  // Git objects. A Git-version-dependent remerge diff may fail closed.
+  for (const entry of mergeMap) {
+    const ancestry = git(['rev-list','--parents','-n','1',entry.sha],cwd).out.split(/\s+/);
+    if (ancestry.length !== 3 || ancestry[0] !== entry.sha ||
+        ancestry[1] !== entry.parents[0] || ancestry[2] !== entry.parents[1]) {
+      throw new Error('Semantic merge parent identity changed or was not reviewed');
+    }
+    const version = git(['--version'],cwd).out;
+    if (version !== entry.gitVersion) {
+      throw new Error('Semantic merge Git version differs from reviewed evidence');
+    }
+    // Only merge a historical branch with an upstream side already reachable
+    // from current main. Other merge topologies require a separate review.
+    const inherited = entry.parents.map(parent =>
+      git(['merge-base','--is-ancestor',parent,item.mainSha],cwd,
+        {allowFailure:true}).status === 0);
+    if (inherited.filter(Boolean).length !== 1 || !inherited[entry.mainParentIndex]) {
+      throw new Error('Semantic merge main-parent lineage is ambiguous or missing');
+    }
+    for (let i = 0; i < 2; i++) {
+      const diffPaths = git(['diff','--name-only','-z','--no-renames',
+        entry.parents[i],entry.sha],cwd,{raw:true}).out;
+      if (sha256Text(diffPaths).toUpperCase() !==
+          entry.parentDiffPathSha256[i].toUpperCase()) {
+        throw new Error('Semantic merge parent/result path inventory changed');
+      }
+    }
+    const remerged = git(['show','--remerge-diff','--format=','--no-ext-diff',entry.sha],cwd,{raw:true}).out;
+    if (sha256Text(remerged).toUpperCase() !== entry.remergeDiffSha256.toUpperCase()) {
+      throw new Error('Semantic merge conflict-resolution diff SHA256 mismatch');
+    }
+    const paths = git(['show','--remerge-diff','--format=','--name-only',entry.sha],cwd)
+      .out.split(/\r?\n/).filter(Boolean).sort();
+    const expectedPaths = [...entry.resolutionPaths].sort();
+    if (paths.length !== expectedPaths.length || paths.some((file,i)=>file!==expectedPaths[i]) ||
+        expectedPaths.some(file=> !existsSync(resolve(cwd,file)))) {
+      throw new Error('Semantic merge resolution paths changed or successor source is missing');
+    }
+    for (const disposition of entry.fileDispositions) {
+      const blob = git(['rev-parse',item.mainSha + ':' + disposition.path],cwd).out;
+      if (blob !== disposition.mainBlobOid) {
+        throw new Error('Semantic merge successor source blob changed');
+      }
+      const entryMode = git(['ls-tree',item.mainSha,'--',disposition.path],cwd).out.split(/\s+/)[0];
+      if (!['100644','100755'].includes(entryMode)) {
+        throw new Error('Semantic merge successor is not a regular source file');
+      }
+    }
   }
   if (review.commitMap.some(c=>c.classification !== 'ADOPTED_AND_EXTENDED') &&
       review.knownDifferences.length === 0) {
