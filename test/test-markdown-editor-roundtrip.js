@@ -514,6 +514,16 @@ async function testListItemWithContinuationLine() {
   console.log('OK list item continuation preserved');
 }
 
+async function testLooseListBlankLinesPreserved() {
+  // Retained from historical issue-437 CodeMirror regression coverage.
+  // Blank lines distinguish loose Markdown list items from tight lists.
+  const input = '- first item\n\n- second item\n\n- third item\n';
+  const output = roundTrip(input);
+  assert.strictEqual(output, input,
+    'loose-list blank lines must not disappear during edit/preview round-trip');
+  console.log('OK loose-list blank lines preserved');
+}
+
 async function runAllTests() {
   const tests = [
     testPipeTableSurvivesRoundTrip,
@@ -540,6 +550,7 @@ async function runAllTests() {
     testBoldAroundInlineCodePreserved,
     testEscapedPipeInTableCellPreserved,
     testListItemWithContinuationLine,
+    testLooseListBlankLinesPreserved,
   ];
   let passed = 0;
   let failed = 0;
