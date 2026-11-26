@@ -21,6 +21,7 @@ import {
 } from './markdown/conflict-dialog.js';
 import type { RenderPayload } from './model.js';
 import { attachPanelActions } from './panel-actions.js';
+import { pickReadArgs } from './read-args.js';
 import {
     extractRenderPayload,
     extractToolText,
@@ -152,33 +153,8 @@ const markdownController = createMarkdownController({
     },
 });
 
-// Only read_file's own parameters may ride along on a re-read. Forwarding a
-// different tool's args (e.g. edit_block's old_string) makes the server prepend
-// an "unsupported params" warning that would pollute the pulled content.
-const READ_ARG_KEYS = ['path', 'offset', 'length', 'sheet', 'range', 'isUrl'] as const;
-
-function pickReadArgs(args: unknown): Record<string, unknown> | undefined {
-    if (!args || typeof args !== 'object') {
-        return undefined;
-    }
-    const src = args as Record<string, unknown>;
-    // edit_block calls the file "file_path"; read_file/write_file call it "path".
-    const path = typeof src.path === 'string'
-        ? src.path
-        : typeof src.file_path === 'string'
-            ? src.file_path
-            : undefined;
-    if (!path) {
-        return undefined;
-    }
-    const out: Record<string, unknown> = { path };
-    for (const key of READ_ARG_KEYS) {
-        if (key !== 'path' && src[key] !== undefined) {
-            out[key] = src[key];
-        }
-    }
-    return out;
-}
+// Only the original read_file parameters, including view_range, pass through
+// pickReadArgs. Shared logic lives in a DOM-free module with focused tests.
 
 // The host doesn't send the tool name with tool-input, so infer mutations from
 // their arg shape: write_file carries `content`; edit_block `old_string`/
