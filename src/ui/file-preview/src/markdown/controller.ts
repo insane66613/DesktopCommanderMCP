@@ -366,8 +366,12 @@ export function createMarkdownController(dependencies: MarkdownControllerDepende
         state.sourceContent = content;
         state.fullDocumentContent = content;
         state.draftContent = nextDraftContent;
-        state.outline = extractMarkdownOutline(content);
+        state.outline = extractMarkdownOutline(nextDraftContent);
         state.dirty = nextDraftContent !== content;
+        // syncStateFromContent is only called after an actual verified read or
+        // an explicit on-disk reload. Once a complete read succeeds, it lifts
+        // the barrier created by an earlier unverifiable partial save.
+        state.requiresDiskResync = false;
         state.dirtyLineRanges = [];
         state.fileDeleted = false;
         if (!state.outline.some((item) => item.id === state.activeHeadingId)) {
@@ -419,6 +423,7 @@ export function createMarkdownController(dependencies: MarkdownControllerDepende
                 outline,
                 mode: 'edit',
                 dirty: false,
+                requiresDiskResync: false,
                 dirtyLineRanges: [],
                 activeHeadingId: outline[0]?.id ?? null,
                 pendingAnchor: null,
@@ -836,6 +841,11 @@ export function createMarkdownController(dependencies: MarkdownControllerDepende
         if (!workspaceState) {
             return;
         }
+        if (workspaceState.requiresDiskResync) {
+            workspaceState.error = 'Cannot revert while the last partial save remains unverified. Retry Save to reload the current file first.';
+            dependencies.rerender();
+            return;
+        }
         const filePath = workspaceState.filePath;
         workspaceState.draftContent = workspaceState.fullDocumentContent;
         workspaceState.dirty = false;
@@ -868,13 +878,35 @@ export function createMarkdownController(dependencies: MarkdownControllerDepende
         state.error = null;
         state.notice = null;
 
-        // Editor events may arrive while edit_block is awaiting disk I/O.
-        // Snapshot the submitted revision and its baseline before that wait:
-        // committing this revision must never overwrite a newer user draft.
-        const baselineAtSaveStart = state.fullDocumentContent;
-        const draftAtSaveStart = state.draftContent;
-        const dirtyRangesAtSaveStart = [...state.dirtyLineRanges];
         try {
+            if (state.requiresDiskResync) {
+                // At least one earlier hunk reached disk, but the recovery
+                // read failed. Sending edits against the old baseline would
+                // replay mutations of unknown outcome. Require a complete
+                // actual disk read before computing any further edit blocks.
+                const fresh = await readCompletePayload(state.filePath).catch(() => null);
+                if (!ownsCurrentWorkspace()) {
+                    state.saving = false;
+                    state.saveIndicator = 'idle';
+                    return;
+                }
+                if (!fresh || fresh.filePath !== state.filePath || parseReadRange(fresh.content)?.isPartial) {
+                    state.saving = false;
+                    state.saveIndicator = 'idle';
+                    state.error = 'A prior save was partially applied, but the file could not be fully reloaded. No more edits will be sent until a verified disk read succeeds. Retry Save to attempt the reload.';
+                    dependencies.rerender();
+                    return;
+                }
+                syncStateFromContent(state, readPayloadContent(fresh), { keepDraft: true });
+                dependencies.storePayloadOverride(fresh);
+            }
+
+            // Editor events may arrive while edit_block is awaiting disk I/O.
+            // Snapshot the submitted revision and its verified baseline before
+            // that wait; late user typing must remain a separate dirty draft.
+            const baselineAtSaveStart = state.fullDocumentContent;
+            const draftAtSaveStart = state.draftContent;
+            const dirtyRangesAtSaveStart = [...state.dirtyLineRanges];
             const blocks = computeEditBlocks(baselineAtSaveStart, draftAtSaveStart, dirtyRangesAtSaveStart);
             if (blocks.length === 0) {
                 state.saving = false;
@@ -994,13 +1026,20 @@ export function createMarkdownController(dependencies: MarkdownControllerDepende
 
             const freshPayload = await readCompletePayload(state.filePath).catch(() => null);
             if (!ownsCurrentWorkspace()) return;
+            // Incomplete paginated reads are not a verified recovery baseline.
+            const verifiedFresh = freshPayload?.filePath === state.filePath &&
+                !parseReadRange(freshPayload.content)?.isPartial ? freshPayload : null;
+            if (appliedCount > 0 && !verifiedFresh) {
+                state.requiresDiskResync = true;
+                state.dirtyLineRanges = [];
+            }
             let reloadedFromDisk = false;
             let freshContentForDialog: string | null = null;
-            if (freshPayload) {
-                const freshContent = readPayloadContent(freshPayload);
+            if (verifiedFresh) {
+                const freshContent = readPayloadContent(verifiedFresh);
                 if (freshContent !== state.fullDocumentContent) {
                     syncStateFromContent(state, freshContent, { keepDraft: true });
-                    dependencies.storePayloadOverride(freshPayload);
+                    dependencies.storePayloadOverride(verifiedFresh);
                     reloadedFromDisk = true;
                     freshContentForDialog = freshContent;
                 }
@@ -1015,7 +1054,9 @@ export function createMarkdownController(dependencies: MarkdownControllerDepende
                 // truth: N saved, M skipped, with the skipped lines preserved
                 // in their draft so they can re-try or edit around the
                 // external change.
-                state.error = (
+                state.error = state.requiresDiskResync
+                    ? `${appliedCount} of ${totalCount} edits reached disk, but the file could not be fully reloaded. No further edits will be sent until the next Save successfully rereads it.`
+                    : (
                     `${appliedCount} of ${totalCount} edit${totalCount === 1 ? '' : 's'} saved. ` +
                     `${skippedCount} ${skippedCount === 1 ? 'edit' : 'edits'} did not apply because that text changed on disk — ` +
                     `your draft still has them; save again to merge.`

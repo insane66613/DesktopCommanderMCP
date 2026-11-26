@@ -12,6 +12,8 @@ export interface MarkdownWorkspaceState {
     outline: DocumentOutlineItem[];
     mode: 'edit';
     dirty: boolean;
+    /** A prior save partly reached disk but its latest contents could not be read. */
+    requiresDiskResync: boolean;
     dirtyLineRanges: MarkdownEditRange[];
     activeHeadingId: string | null;
     pendingAnchor: string | null;
