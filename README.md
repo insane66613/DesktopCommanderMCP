@@ -33,6 +33,7 @@ only when previous arguments and outputs are needed. Records are returned once i
 `onboarding_injection: false` and `user_surveys: false` disable optional conversation prompts.
 
 - [Features](#features)
+- [Use Case Library](docs/use-case-library.md)
 - [How to install](#how-to-install)
 - [Getting Started](#getting-started)
 - [Usage](#usage)
