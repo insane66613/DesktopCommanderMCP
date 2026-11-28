@@ -439,6 +439,9 @@ export function createConfigEditorController(callTool: ToolCall, trackConfigUiEv
     };
 
     let pendingPreviewPolicyWrite: Promise<void> = Promise.resolve();
+    // An acknowledged write with a failed get_config refresh makes local
+    // values uncertain. Never skip a later policy write based on stale UI.
+    let previewPolicyUncertain = false;
     const applyOne = async (request?: { key: string; draftValue: string }): Promise<ApplyConfigResult> => {
         // Capture the requested setting before asynchronous writes. Queued
         // requests must never borrow a later selection or draft from the UI.
@@ -477,7 +480,8 @@ export function createConfigEditorController(callTool: ToolCall, trackConfigUiEv
             };
         }
 
-        if (areConfigValuesEqual(parsed.value, selected.value)) {
+        if (areConfigValuesEqual(parsed.value, selected.value)
+            && !(PREVIEW_POLICY_KEYS.has(selected.key) && previewPolicyUncertain)) {
             if (state.selectedKey === selected.key && state.draftValue === requestedDraft) {
                 state.draftValue = stringifyValueForInput(selected.value);
             }
@@ -512,6 +516,12 @@ export function createConfigEditorController(callTool: ToolCall, trackConfigUiEv
                 };
             }
 
+            if (PREVIEW_POLICY_KEYS.has(selected.key)) {
+                // Only a complete successful refresh can reconcile the
+                // acknowledged durable value with the local UI snapshot.
+                previewPolicyUncertain = true;
+            }
+
             trackConfigUiEvent?.('config_update_success', {
                 tool_name: 'set_config_value',
                 ...buildConfigUpdateTelemetryParams({
@@ -533,6 +543,14 @@ export function createConfigEditorController(callTool: ToolCall, trackConfigUiEv
             }
 
             const refreshedPayload = extractPayload(refreshed);
+            if (!refreshedPayload) {
+                // A completed write still needs a valid config snapshot.
+                // Do not claim a settled UI or clear previewPolicyUncertain.
+                return {
+                    ok: false,
+                    tooltip: {message: 'Value was saved, but the configuration refresh returned invalid data.', tone: 'error'},
+                };
+            }
             if (refreshedPayload) {
                 // Normally update only the saved key: independent concurrent
                 // settings must not overwrite each other's in-flight edits.
@@ -557,6 +575,7 @@ export function createConfigEditorController(callTool: ToolCall, trackConfigUiEv
                 if (keepDraft && state.selectedKey === activeKey) {
                     state.draftValue = activeDraft;
                 }
+                if (isPreviewSave) previewPolicyUncertain = false;
             }
 
             return {
