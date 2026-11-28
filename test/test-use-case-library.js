@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-const readme = fs.readFileSync('README.md','utf8');
-const guide = fs.readFileSync('docs/use-case-library.md','utf8');
-const schemas = fs.readFileSync('src/tools/schemas.ts','utf8');
+const file = (relativePath) => fs.readFileSync(new URL(relativePath, import.meta.url), 'utf8');
+const readme = file('../README.md');
+const guide = file('../docs/use-case-library.md');
+const schemas = file('../src/tools/schemas.ts');
 
 assert.match(readme,/\[Use Case Library\]\(docs\/use-case-library\.md\)/);
 const names = [...guide.matchAll(/\*\*Tools:\*\* ([^\n]+)/g)]
