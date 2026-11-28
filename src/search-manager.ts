@@ -781,7 +781,11 @@ export interface SearchSessionOptions {
         if (code !== 0 && code !== 1) {
           finish(new DocxRegexError('DOCX regex search failed: ' +
             (stderr.trim() || 'ripgrep exit ' + code)));
-        } else if (stdinError) {
+        } else if (stdinError && !(code === 0 && results.length >= effectiveCap)) {
+          // Ripgrep may close its input pipe after --max-count hits the
+          // requested ceiling. Windows reports this as EOF, not always EPIPE.
+          // A successful capped match is valid even if the remaining input
+          // could not be written; other input failures must remain visible.
           finish(new DocxRegexError('DOCX regex input delivery failed: ' + stdinError.message));
         } else if (buffer.trim()) {
           finish(new DocxRegexError('DOCX regex returned an incomplete JSON line'));
