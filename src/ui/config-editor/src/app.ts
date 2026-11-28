@@ -404,6 +404,9 @@ export function createConfigEditorController(callTool: ToolCall, trackConfigUiEv
         selectedKey: null,
         draftValue: '',
     };
+    // Unsolicited host snapshots are unordered. Retain the last confirmed
+    // policy subset until a fresh get_config explicitly reconciles it.
+    let confirmedPreviewEntries = new Map<string, ConfigEntry>();
 
     const getSelectedEntry = (): ConfigEntry | undefined => {
         if (!state.payload || !state.selectedKey) {
@@ -412,12 +415,64 @@ export function createConfigEditorController(callTool: ToolCall, trackConfigUiEv
         return state.payload.entries.find((entry) => entry.key === state.selectedKey);
     };
 
-    const setPayload = (payload: ConfigEditorPayload | null): void => {
+    const setPayload = (incoming: ConfigEditorPayload | null, verified = false): boolean => {
+        let payload = incoming;
+        let accepted = true;
+        if (payload && !verified && state.payload &&
+            confirmedPreviewEntries.size === PREVIEW_POLICY_KEYS.size) {
+            const incomingPolicy = payload.entries.filter(entry => PREVIEW_POLICY_KEYS.has(entry.key));
+            const incomingByKey = new Map(incomingPolicy.map(entry => [entry.key, entry]));
+            const conflicts = incomingPolicy.length !== PREVIEW_POLICY_KEYS.size ||
+                incomingByKey.size !== PREVIEW_POLICY_KEYS.size ||
+                [...confirmedPreviewEntries].some(([key, known]) => {
+                    const entry = incomingByKey.get(key);
+                    return !entry || !areConfigValuesEqual(entry.value, known.value) ||
+                        entry.disabledReason !== known.disabledReason ||
+                        entry.parentKey !== known.parentKey ||
+                        entry.editable !== known.editable ||
+                        entry.valueType !== known.valueType;
+                });
+            if (conflicts) {
+                accepted = false;
+                const retained = new Map(state.payload.entries
+                    .filter(entry => PREVIEW_POLICY_KEYS.has(entry.key))
+                    .map(entry => [entry.key, entry]));
+                const existingKeys = new Set(payload.entries.map(entry => entry.key));
+                payload = {
+                    ...payload,
+                    entries: [
+                        ...payload.entries.map(entry =>
+                            retained.has(entry.key) ? retained.get(entry.key)! : entry),
+                        ...[...retained].filter(([key]) => !existingKeys.has(key))
+                            .map(([, entry]) => entry),
+                    ],
+                };
+            }
+        }
+        // The summary config and editable rows are one logical snapshot.
+        // When concurrent saves preserve newer rows, do not retain older
+        // values for those same keys in the summary object.
+        if (payload?.config) {
+            payload = {
+                ...payload,
+                config: {
+                    ...payload.config,
+                    ...Object.fromEntries(payload.entries.map(entry => [entry.key, entry.value])),
+                },
+            };
+        }
         state.payload = payload;
+        if (verified && payload) {
+            const verifiedEntries = payload.entries.filter(entry => PREVIEW_POLICY_KEYS.has(entry.key));
+            if (verifiedEntries.length === PREVIEW_POLICY_KEYS.size &&
+                new Set(verifiedEntries.map(entry => entry.key)).size === PREVIEW_POLICY_KEYS.size) {
+                confirmedPreviewEntries = new Map(verifiedEntries.map(entry => [entry.key, entry]));
+            }
+        }
         if (!payload || payload.entries.length === 0) {
             state.selectedKey = null;
             state.draftValue = '';
-            return;
+            return accepted;
         }
 
         if (!state.selectedKey || !payload.entries.some((entry) => entry.key === state.selectedKey)) {
@@ -426,6 +481,7 @@ export function createConfigEditorController(callTool: ToolCall, trackConfigUiEv
 
         const current = getSelectedEntry();
         state.draftValue = current ? stringifyValueForInput(current.value) : '';
+        return accepted;
     };
 
     const setSelection = (key: string): void => {
@@ -442,6 +498,8 @@ export function createConfigEditorController(callTool: ToolCall, trackConfigUiEv
     // An acknowledged write with a failed get_config refresh makes local
     // values uncertain. Never skip a later policy write based on stale UI.
     let previewPolicyUncertain = false;
+    let previewMutationEpoch = 0;
+    let confirmedPreviewSaveEpoch = 0;
     const applyOne = async (request?: { key: string; draftValue: string }): Promise<ApplyConfigResult> => {
         // Capture the requested setting before asynchronous writes. Queued
         // requests must never borrow a later selection or draft from the UI.
@@ -488,6 +546,13 @@ export function createConfigEditorController(callTool: ToolCall, trackConfigUiEv
             return { ok: false };
         }
 
+        // Once dispatched, a rejected or lost acknowledgement does not prove
+        // that the server rejected the write. A later opposite value must be
+        // sent even when it matches our pre-dispatch local snapshot.
+        if (PREVIEW_POLICY_KEYS.has(selected.key)) {
+            previewPolicyUncertain = true;
+            previewMutationEpoch++;
+        }
         try {
             const setResult = await callTool('set_config_value', {
                 key: selected.key,
@@ -514,12 +579,6 @@ export function createConfigEditorController(callTool: ToolCall, trackConfigUiEv
                         tone: 'error',
                     },
                 };
-            }
-
-            if (PREVIEW_POLICY_KEYS.has(selected.key)) {
-                // Only a complete successful refresh can reconcile the
-                // acknowledged durable value with the local UI snapshot.
-                previewPolicyUncertain = true;
             }
 
             trackConfigUiEvent?.('config_update_success', {
@@ -572,23 +631,35 @@ export function createConfigEditorController(callTool: ToolCall, trackConfigUiEv
                 const latestPayload = state.payload;
                 const refreshedByKey = new Map(refreshedPayload.entries.map(entry => [entry.key, entry]));
                 const isPreviewSave = PREVIEW_POLICY_KEYS.has(selected.key);
+                const existingKeys = new Set(latestPayload?.entries.map(entry => entry.key) ?? []);
                 const mergedPayload = latestPayload
                     ? {
                         ...refreshedPayload,
-                        entries: latestPayload.entries.map((entry) =>
-                            (entry.key === selected.key ||
-                                (isPreviewSave && PREVIEW_POLICY_KEYS.has(entry.key)))
-                                ? (refreshedByKey.get(entry.key) ?? entry) : entry),
+                        entries: [
+                            ...latestPayload.entries.map((entry) =>
+                                (entry.key === selected.key ||
+                                    (isPreviewSave && PREVIEW_POLICY_KEYS.has(entry.key)))
+                                    ? (refreshedByKey.get(entry.key) ?? entry) : entry),
+                            // Host snapshots may be partial. A complete server
+                            // refresh must restore omitted policy controls.
+                            ...(isPreviewSave
+                                ? refreshedPayload.entries.filter(entry =>
+                                    PREVIEW_POLICY_KEYS.has(entry.key) && !existingKeys.has(entry.key))
+                                : []),
+                        ],
                     }
                     : refreshedPayload;
                 const activeKey = state.selectedKey;
                 const activeDraft = state.draftValue;
                 const keepDraft = activeKey !== selected.key || activeDraft !== requestedDraft;
-                setPayload(mergedPayload);
+                setPayload(mergedPayload, true);
                 if (keepDraft && state.selectedKey === activeKey) {
                     state.draftValue = activeDraft;
                 }
-                if (isPreviewSave) previewPolicyUncertain = false;
+                if (isPreviewSave) {
+                    previewPolicyUncertain = false;
+                    confirmedPreviewSaveEpoch++;
+                }
             }
 
             return {
@@ -630,9 +701,16 @@ export function createConfigEditorController(callTool: ToolCall, trackConfigUiEv
         callTool,
         extractPayload,
         setPayload,
+        setVerifiedPayload: (payload: ConfigEditorPayload) => setPayload(payload, true),
         setSelection,
         setDraftValue,
         apply,
+        getPreviewReadToken: () => `${previewMutationEpoch}:${confirmedPreviewSaveEpoch}`,
+        setServerPayloadIfCurrent: (payload: ConfigEditorPayload, token: string): boolean => {
+            if (token !== `${previewMutationEpoch}:${confirmedPreviewSaveEpoch}`) return false;
+            setPayload(payload, true);
+            return true;
+        },
     };
 }
 
@@ -1143,21 +1221,33 @@ export function bootstrapConfigEditorApp(): void {
     };
 
     const applyPayload = (payload: ConfigEditorPayload): void => {
-        controller.setPayload(payload);
-        widgetState.write(payload);
+        const accepted = controller.setPayload(payload);
+        widgetState.write(controller.state.payload ?? payload);
         scheduleRender();
+        // A delayed host snapshot is not authoritative after our own saved
+        // write. A new server read can reconcile genuine external changes.
+        if (!accepted) void refreshConfigFromServer();
     };
 
-    const refreshConfigFromServer = async (): Promise<void> => {
-        try {
-            const result = await bridge.callTool('get_config', { origin: 'ui' });
-            const payload = controller.extractPayload(result);
-            if (payload) {
-                applyPayload(payload);
+    let refreshInFlight: Promise<void> | null = null;
+    const refreshConfigFromServer = (): Promise<void> => {
+        if (refreshInFlight) return refreshInFlight;
+        refreshInFlight = (async () => {
+            const startingToken = controller.getPreviewReadToken();
+            try {
+                const result = await bridge.callTool('get_config', { origin: 'ui' });
+                // A read that overlaps a write or its successful reconciliation
+                // is not current, even if the read began after write dispatch.
+                const payload = controller.extractPayload(result);
+                if (payload && controller.setServerPayloadIfCurrent(payload, startingToken)) {
+                    widgetState.write(controller.state.payload ?? payload);
+                    scheduleRender();
+                }
+            } catch {
+                // Best-effort refresh only
             }
-        } catch {
-            // Best-effort refresh only
-        }
+        })().finally(() => { refreshInFlight = null; });
+        return refreshInFlight;
     };
 
     app.ontoolresult = (result) => {
