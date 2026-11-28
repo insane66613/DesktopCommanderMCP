@@ -123,3 +123,31 @@ console.log('PASS: complete policy restoration and coherent configuration snapsh
   assert.equal(controller.state.payload.entries.find(e=>e.key==='filePreviewsEnabled').value,false);
 }
 console.log('PASS: pre-dispatch and overlapping server reads cannot overwrite confirmed writes');
+
+{
+  const server={...initial};
+  const tool=async(name,args)=>{
+    if(name==='set_config_value'){
+      server[args.key]=args.value;
+      return {content:[{type:'text',text:'saved'}]};
+    }
+    if(name==='get_config') return {structuredContent:{...payload(server),config:{...server}}};
+    throw new Error('unexpected tool');
+  };
+  const controller=createConfigEditorController(tool);
+  controller.setPayload({entries:entries(initial),config:{...initial}});
+  assert.equal((await controller.apply({key:'filePreviewsEnabled',draftValue:'false'})).ok,true);
+  controller.setPayload({entries:entries(initial),config:{...initial}}); // late host response
+  const token=controller.getPreviewReadToken();
+  const partial={entries:entries(server).slice(0,5),config:{...initial}};
+  assert.equal(controller.setServerPayloadIfCurrent(partial,token),false,
+    'partial corrective read must not pass the trusted refresh path');
+  assert.equal(controller.state.payload.entries.filter(e=>Object.hasOwn(initial,e.key)).length,6);
+  assert.equal(controller.state.payload.config.filePreviewsEnabled,false);
+  const duplicate={entries:entries(server)};
+  duplicate.entries[5]={...duplicate.entries[4]};
+  assert.equal(controller.setServerPayloadIfCurrent(duplicate,token),false,
+    'duplicate policy key must reject purported authoritative refresh');
+  assert.equal(controller.state.payload.entries.filter(e=>Object.hasOwn(initial,e.key)).length,6);
+}
+console.log('PASS: partial/duplicate corrective server reads preserve confirmed policy and config');

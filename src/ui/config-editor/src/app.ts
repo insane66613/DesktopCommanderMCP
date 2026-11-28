@@ -708,6 +708,14 @@ export function createConfigEditorController(callTool: ToolCall, trackConfigUiEv
         getPreviewReadToken: () => `${previewMutationEpoch}:${confirmedPreviewSaveEpoch}`,
         setServerPayloadIfCurrent: (payload: ConfigEditorPayload, token: string): boolean => {
             if (token !== `${previewMutationEpoch}:${confirmedPreviewSaveEpoch}`) return false;
+            // "Verified" means a complete authoritative snapshot, not merely
+            // that get_config returned a structured response. Otherwise a
+            // partial/duplicate read bypasses the host-snapshot preservation.
+            const policyEntries = payload.entries.filter(entry => PREVIEW_POLICY_KEYS.has(entry.key));
+            if (policyEntries.length !== PREVIEW_POLICY_KEYS.size ||
+                new Set(policyEntries.map(entry => entry.key)).size !== PREVIEW_POLICY_KEYS.size) {
+                return false;
+            }
             setPayload(payload, true);
             return true;
         },
