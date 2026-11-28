@@ -753,6 +753,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         - Images: <img src="/absolute/path/image.jpg" width="300" /> or ![alt](/path/image.jpg)
 
                         Supports standard markdown features including headers, lists, code blocks, tables, and basic formatting.
+                        For page sizing, background printing, stable multi-column layouts and full-page slides,
+                        use get_prompts(action='get_prompt', promptId='bp_pdf_styling') when available.
+                        Source checkouts also include docs/pdf-styling-best-practices.md.
 
                         Only works within allowed directories.
 
@@ -1444,6 +1447,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         3. Create organized knowledge base (promptId: 'onb2_03')
                         4. Analyze a data file (promptId: 'onb2_04')
                         5. Check system health and resources (promptId: 'onb2_05')
+
+                        Additional best-practice prompt: PDF Styling Best Practices
+                        (promptId: 'bp_pdf_styling'), available via direct get_prompt.
                         
                         USAGE:
                         When user says "1", "2", "3", "4", or "5" from onboarding:

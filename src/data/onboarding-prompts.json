@@ -1,7 +1,22 @@
 {
-  "version": "2.0.0",
-  "description": "Desktop Commander onboarding prompts - V2 simplified (5 prompts only)",
+  "version": "2.1.0",
+  "description": "Desktop Commander catalog: five onboarding prompts plus PDF best practices",
   "prompts": [
+    {
+      "id": "bp_pdf_styling",
+      "title": "PDF Styling Best Practices",
+      "description": "Reliable multi-column, page-break, slide and print-background patterns for write_pdf",
+      "prompt": "# PDF styling best practices for write_pdf\n\nUse options.pdf_options for page layout: format (A4/Letter), landscape (boolean), margin (CSS units), and printBackground (true for colored backgrounds). Example: {\"pdf_options\":{\"format\":\"A4\",\"landscape\":true,\"margin\":{\"top\":\"0\",\"right\":\"0\",\"bottom\":\"0\",\"left\":\"0\"},\"printBackground\":true}}.\n\nUse explicit <div style=\"page-break-before: always;\"></div> between sections or slides. A full-height slide can start with height:100vh and box-sizing:border-box, but verify actual pagination and avoid accidental overflow.\n\nFor reliable side-by-side sections, HTML tables with explicit cell widths and vertical-align:top often render more predictably than complicated flex layouts. Use padding containers instead of negative margins around rounded headers.\n\nKeep related blocks together with page-break-inside:avoid where supported. Use inline SVG or local image paths only after checking renderer support and file access. Verify rendered page count, clipped content, background printing and visible contrast.\n\nIn source checkouts, see docs/pdf-styling-best-practices.md for more patterns; the npm package may not include docs.",
+      "categories": [
+        "best-practices"
+      ],
+      "secondaryTag": "PDF",
+      "votes": 0,
+      "gaClicks": 0,
+      "icon": "FileText",
+      "author": "DC team",
+      "verified": true
+    },
     {
       "id": "onb2_01",
       "title": "Organize my Downloads folder",

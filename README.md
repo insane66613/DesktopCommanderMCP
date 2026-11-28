@@ -34,6 +34,7 @@ only when previous arguments and outputs are needed. Records are returned once i
 
 - [Features](#features)
 - [Use Case Library](docs/use-case-library.md)
+- [PDF Styling Best Practices](docs/pdf-styling-best-practices.md)
 - [How to install](#how-to-install)
 - [Getting Started](#getting-started)
 - [Usage](#usage)
