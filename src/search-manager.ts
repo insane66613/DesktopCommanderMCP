@@ -251,7 +251,8 @@ export interface SearchSessionOptions {
         options.maxResults,
         options.filePattern,
         options.literalSearch,  // Respect literalSearch flag for Office files
-        session.officeAbort?.signal
+        session.officeAbort?.signal,
+        () => { session.wasIncomplete = true; }
       ).then(docxResults => {
         if (session.isComplete) return;
         for (const result of docxResults) {
@@ -749,8 +750,10 @@ export interface SearchSessionOptions {
             const start = utf8.subarray(0, hit.start).toString('utf8').length;
             const end = utf8.subarray(0, hit.end).toString('utf8').length;
             if (results.length >= effectiveCap) {
+              // A global/session cap is expected truncation, not an engine
+              // failure that should discard matches from earlier documents.
               child.kill();
-              finish(new DocxRegexError('DOCX regex matched more than the bounded result limit'));
+              finish();
               return;
             }
             results.push({
@@ -809,7 +812,8 @@ export interface SearchSessionOptions {
     maxResults?: number,
     filePattern?: string,
     literalSearch?: boolean,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onTruncated?: () => void
   ): Promise<SearchResult[]> {
     if (signal?.aborted) throw new DocxRegexError('DOCX regex search aborted');
     const results: SearchResult[] = [];
@@ -837,12 +841,24 @@ export interface SearchSessionOptions {
       });
     }
 
+    // Enforce the regex ceiling across documents, not once per child.
+    // With no caller limit, reaching this ceiling is an incomplete scan.
+    const resultLimit = literalSearch ? maxResults :
+      Math.min(maxResults && maxResults > 0 ? maxResults : MAX_DOCX_REGEX_RESULTS,
+        MAX_DOCX_REGEX_RESULTS);
+    const noteLimit = () => {
+      if (!literalSearch && !maxResults) onTruncated?.();
+    };
+
     // PizZip, to open the DOCX files
     const PizZip = loadPizZip();
 
     for (const filePath of docxFiles) {
       if (signal?.aborted) throw new DocxRegexError('DOCX regex search aborted');
-      if (maxResults && results.length >= maxResults) break;
+      if (resultLimit && results.length >= resultLimit) {
+        noteLimit();
+        break;
+      }
 
       try {
         const buf = await fs.readFile(filePath);
@@ -868,7 +884,7 @@ export interface SearchSessionOptions {
 
         for (const xmlPath of xmlParts) {
           if (signal?.aborted) throw new DocxRegexError('DOCX regex search aborted');
-          if (maxResults && results.length >= maxResults) break;
+          if (resultLimit && results.length >= resultLimit) break;
 
           const file = zip.file(xmlPath);
           if (!file) continue;
@@ -880,7 +896,7 @@ export interface SearchSessionOptions {
           let lineNum = 0;
 
           while ((m = wtRe.exec(xml)) !== null) {
-            if (maxResults && results.length >= maxResults) break;
+            if (resultLimit && results.length >= resultLimit) break;
             const text = m[1];
             if (!text || !text.trim()) continue;
             lineNum++;
@@ -910,8 +926,11 @@ export interface SearchSessionOptions {
           }
         }
         if (!literalSearch && regexCells.length) {
-          const remaining = maxResults ? maxResults - results.length : undefined;
-          results.push(...await this.matchDocxRegexCells(regexCells, pattern, ignoreCase, remaining, signal));
+          const remaining = resultLimit ? resultLimit - results.length : undefined;
+          if (remaining && remaining > 0) {
+            results.push(...await this.matchDocxRegexCells(regexCells, pattern, ignoreCase, remaining, signal));
+          }
+          if (resultLimit && results.length >= resultLimit) noteLimit();
         }
       } catch (error) {
         // Invalid patterns, timeouts and regex execution failures must be
@@ -1165,6 +1184,9 @@ export interface SearchSessionOptions {
   private finishSearchIfReady(session: SearchSession, force = false): void {
     if (session.isComplete) return;
     if (!force && (!session.ripgrepClosed || (session.pendingOffice ?? 0) > 0)) return;
+    // Forced terminal transitions must stop Office subprocesses as well as
+    // suppress their late results. This includes primary ripgrep errors.
+    if (force) session.officeAbort?.abort();
 
     session.isComplete = true;
     session.endTime ??= Date.now();
@@ -1306,13 +1328,14 @@ export interface SearchSessionOptions {
       
       const result = this.parseLine(line, session.options.searchType);
       if (result) {
+        const isContext = result.type === 'content' && line.includes('"type":"context"');
+        // Ripgrep's --max-count applies per file. Excel/DOCX may have
+        // populated this session first, so enforce one cap for all producers.
+        const cap = session.options.maxResults;
+        if (!isContext && cap && cap > 0 && session.totalMatches >= cap) continue;
         session.results.push(result);
-        // Separate counting of matches vs context lines
-        if (result.type === 'content' && line.includes('"type":"context"')) {
-          session.totalContextLines++;
-        } else {
-          session.totalMatches++;
-        }
+        if (isContext) session.totalContextLines++;
+        else session.totalMatches++;
 
         // Early termination for exact filename matches (if enabled)
         if (session.options.earlyTermination !== false && // Default to true
