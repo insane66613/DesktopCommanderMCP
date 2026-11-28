@@ -87,6 +87,11 @@ body {
   opacity: 0.55;
 }
 
+.setting-switch--disabled,
+.setting-switch--disabled input {
+  cursor: not-allowed;
+}
+
 .setting-info .setting-disabled-reason {
   color: var(--cfg-muted);
   font-style: italic;

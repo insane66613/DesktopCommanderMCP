@@ -9,6 +9,14 @@ import { createUiEventTracker, type UiEventParams } from '../../shared/ui-event-
 import { createArrayModalController, renderArrayModalMarkup } from './array-modal.js';
 import { CONFIG_FIELD_DEFINITIONS, isConfigFieldKey } from '../../../config-field-definitions.js';
 
+// Preview switches share one effective-policy computation. Serialize their
+// UI write+refresh cycles so an older parent response cannot re-disable a
+// child that a later save has already enabled.
+const PREVIEW_POLICY_KEYS = new Set([
+    'mcpUiPreviewMode', 'mcpUiPreviewsEnabled', 'filePreviewsEnabled',
+    'showReadFileUI', 'showListDirectoryUI', 'showGetConfigUI',
+]);
+
 export interface ConfigEntry {
     key: string;
     label?: string;
@@ -430,7 +438,8 @@ export function createConfigEditorController(callTool: ToolCall, trackConfigUiEv
         state.draftValue = value;
     };
 
-    const apply = async (request?: { key: string; draftValue: string }): Promise<ApplyConfigResult> => {
+    let pendingPreviewPolicyWrite: Promise<void> = Promise.resolve();
+    const applyOne = async (request?: { key: string; draftValue: string }): Promise<ApplyConfigResult> => {
         // Capture the requested setting before asynchronous writes. Queued
         // requests must never borrow a later selection or draft from the UI.
         const selected = request
@@ -525,16 +534,20 @@ export function createConfigEditorController(callTool: ToolCall, trackConfigUiEv
 
             const refreshedPayload = extractPayload(refreshed);
             if (refreshedPayload) {
-                // Another setting may have completed a more recent save while
-                // this get_config response was pending. Update only the key
-                // that this operation owns, retaining the other live rows.
+                // Normally update only the saved key: independent concurrent
+                // settings must not overwrite each other's in-flight edits.
+                // Preview settings are coupled through disabledReason, so their
+                // serialized refresh replaces the whole policy subset.
                 const latestPayload = state.payload;
-                const updatedEntry = refreshedPayload.entries.find((entry) => entry.key === selected.key);
-                const mergedPayload = latestPayload && updatedEntry
+                const refreshedByKey = new Map(refreshedPayload.entries.map(entry => [entry.key, entry]));
+                const isPreviewSave = PREVIEW_POLICY_KEYS.has(selected.key);
+                const mergedPayload = latestPayload
                     ? {
                         ...refreshedPayload,
                         entries: latestPayload.entries.map((entry) =>
-                            entry.key === selected.key ? updatedEntry : entry),
+                            (entry.key === selected.key ||
+                                (isPreviewSave && PREVIEW_POLICY_KEYS.has(entry.key)))
+                                ? (refreshedByKey.get(entry.key) ?? entry) : entry),
                     }
                     : refreshedPayload;
                 const activeKey = state.selectedKey;
@@ -569,6 +582,15 @@ export function createConfigEditorController(callTool: ToolCall, trackConfigUiEv
                 },
             };
         }
+    };
+
+    const apply = (request?: { key: string; draftValue: string }): Promise<ApplyConfigResult> => {
+        const captured = request ?? {key: state.selectedKey ?? '', draftValue: state.draftValue};
+        if (!PREVIEW_POLICY_KEYS.has(captured.key)) return applyOne(captured);
+        const running = pendingPreviewPolicyWrite.then(() => applyOne(captured));
+        // A rejected operation must not permanently poison later policy saves.
+        pendingPreviewPolicyWrite = running.then(() => {}, () => {});
+        return running;
     };
 
     return {
@@ -608,6 +630,10 @@ export function renderConfigEditor(container: HTMLElement, controller: ReturnTyp
         const disabledAttr = unavailable ? ' disabled aria-disabled="true"' : '';
         const rowClasses = ['setting-row', entry.parentKey ? 'setting-row--child' : '',
             unavailable ? 'setting-row--disabled' : ''].filter(Boolean).join(' ');
+        const labelId = `config-entry-label-${index}`;
+        const reasonId = `config-entry-reason-${index}`;
+        const ariaInfo = ` aria-labelledby="${labelId}"` +
+            (unavailable ? ` aria-describedby="${reasonId}"` : '');
 
         let controlHtml: string;
         if (entry.key === 'defaultShell') {
@@ -634,7 +660,7 @@ export function renderConfigEditor(container: HTMLElement, controller: ReturnTyp
             controlHtml = `<select class="setting-inline-select" data-action="select-option" data-key-index="${index}">${options}</select>`;
         } else if (entry.valueType === 'boolean') {
             const checked = String(entry.value) === 'true' ? 'checked' : '';
-            controlHtml = `<label class="setting-switch"><input type="checkbox" data-action="toggle-boolean" data-key-index="${index}" ${checked}${disabledAttr}/><span class="config-boolean-slider"></span></label>`;
+            controlHtml = `<label class="setting-switch${unavailable ? ' setting-switch--disabled' : ''}"><input type="checkbox" data-action="toggle-boolean" data-key-index="${index}" ${checked}${disabledAttr}${ariaInfo}/><span class="config-boolean-slider"></span></label>`;
         } else if (entry.valueType === 'number') {
             controlHtml = `<input class="setting-inline-input" data-action="edit-number" data-key-index="${index}" type="number" step="any" value="${escapeHtml(String(entry.value ?? ''))}"/>`;
         } else if (entry.valueType === 'array') {
@@ -648,9 +674,9 @@ export function renderConfigEditor(container: HTMLElement, controller: ReturnTyp
         return `
           <section class="${rowClasses}" data-setting-key="${escapeHtml(entry.key)}" data-parent-key="${escapeHtml(entry.parentKey ?? '')}">
             <div class="setting-info">
-              <h3>${escapeHtml(keyTitle)}</h3>
+              <h3 id="${labelId}">${escapeHtml(keyTitle)}</h3>
               ${description ? `<p>${escapeHtml(description)}</p>` : ''}
-              ${unavailable ? `<p class="setting-disabled-reason" data-disabled-reason="${escapeHtml(entry.key)}">${escapeHtml(unavailable)}</p>` : ''}
+              ${unavailable ? `<p id="${reasonId}" class="setting-disabled-reason" data-disabled-reason="${escapeHtml(entry.key)}">${escapeHtml(unavailable)}</p>` : ''}
               <p class="setting-summary${summary ? '' : ' hidden'}" data-setting-summary-key="${escapeHtml(entry.key)}">${summary ? escapeHtml(summary) : ''}</p>
             </div>
             <div class="setting-control"><span class="setting-save-status" data-save-status-key="${escapeHtml(entry.key)}" data-save-status-index="${index}" role="status" aria-live="polite" aria-atomic="true"></span>${controlHtml}</div>
