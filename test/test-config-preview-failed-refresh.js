@@ -1,17 +1,22 @@
 import assert from 'node:assert/strict';
 import { createConfigEditorController } from '../dist/ui/config-editor/src/app.js';
 
-for (const failureMode of ['mcp-isError','transport-throw','invalid-response']) {
+for (const failureMode of ['mcp-isError','transport-throw','invalid-response',
+  'missing-key','duplicate-key','partial-policy','stale-value']) {
   let serverValue=true;
   let releaseRefresh;
   let notifyStarted;
   let refreshCalls=0;
   const writes=[];
   const firstRefreshStarted=new Promise(resolve=>{notifyStarted=resolve;});
-  const makeEntry=()=>({
-    key:'filePreviewsEnabled',value:serverValue,
-    valueType:'boolean',editable:true,parentKey:'mcpUiPreviewMode'
+  const policyKeys=['filePreviewsEnabled','showReadFileUI','showListDirectoryUI',
+    'showGetConfigUI','mcpUiPreviewsEnabled','mcpUiPreviewMode'];
+  const makeEntry=(key='filePreviewsEnabled')=>({
+    key,value:key==='filePreviewsEnabled'?serverValue:(key==='mcpUiPreviewMode'?'on':true),
+    valueType:key==='mcpUiPreviewMode'?'string':'boolean',editable:true,
+    parentKey:key==='filePreviewsEnabled'?'mcpUiPreviewMode':undefined
   });
+  const fullEntries=()=>policyKeys.map(key=>makeEntry(key));
   const tool=async(name,args)=>{
     if(name==='set_config_value'){
       writes.push(args.value);
@@ -24,7 +29,7 @@ for (const failureMode of ['mcp-isError','transport-throw','invalid-response']) 
         notifyStarted();
         return new Promise(resolve=>{releaseRefresh=resolve;});
       }
-      return {structuredContent:{entries:[makeEntry()]}};
+      return {structuredContent:{entries:fullEntries()}};
     }
     throw new Error('Unexpected tool '+name);
   };
@@ -40,6 +45,14 @@ for (const failureMode of ['mcp-isError','transport-throw','invalid-response']) 
     releaseRefresh({isError:true,content:[{type:'text',text:'refresh failed'}]});
   }else if(failureMode==='transport-throw'){
     releaseRefresh(Promise.reject(new Error('transport disconnected')));
+  }else if(failureMode==='missing-key'){
+    releaseRefresh({structuredContent:{entries:fullEntries().filter(e=>e.key!=='filePreviewsEnabled')}});
+  }else if(failureMode==='duplicate-key'){
+    releaseRefresh({structuredContent:{entries:[...fullEntries(),makeEntry()]}});
+  }else if(failureMode==='partial-policy'){
+    releaseRefresh({structuredContent:{entries:[makeEntry()]}});
+  }else if(failureMode==='stale-value'){
+    releaseRefresh({structuredContent:{entries:fullEntries().map(e=>e.key==='filePreviewsEnabled'?{...e,value:true}:e)}});
   }else{
     releaseRefresh({content:[{type:'text',text:'unexpected payload'}]});
   }

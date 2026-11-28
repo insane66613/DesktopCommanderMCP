@@ -543,7 +543,20 @@ export function createConfigEditorController(callTool: ToolCall, trackConfigUiEv
             }
 
             const refreshedPayload = extractPayload(refreshed);
-            if (!refreshedPayload) {
+            // A syntactically valid but incomplete policy snapshot is NOT a
+            // reconciliation. Missing/duplicate keys or a stale saved value
+            // must not clear uncertainty or suppress the next queued write.
+            const policyEntries = refreshedPayload?.entries.filter(entry =>
+                PREVIEW_POLICY_KEYS.has(entry.key)) ?? [];
+            const uniquePolicyKeys = new Set(policyEntries.map(entry => entry.key));
+            const savedPolicyEntry = policyEntries.find(entry => entry.key === selected.key);
+            const completePolicyRefresh = !PREVIEW_POLICY_KEYS.has(selected.key) || (
+                policyEntries.length === PREVIEW_POLICY_KEYS.size &&
+                uniquePolicyKeys.size === PREVIEW_POLICY_KEYS.size &&
+                savedPolicyEntry !== undefined &&
+                areConfigValuesEqual(savedPolicyEntry.value, parsed.value)
+            );
+            if (!refreshedPayload || !completePolicyRefresh) {
                 // A completed write still needs a valid config snapshot.
                 // Do not claim a settled UI or clear previewPolicyUncertain.
                 return {
