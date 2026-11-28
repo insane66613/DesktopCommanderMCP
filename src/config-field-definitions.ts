@@ -5,6 +5,7 @@ export type ConfigFieldDefinition = {
   description: string;
   valueType: ConfigFieldValueType;
   options?: readonly string[];
+  parentKey?: string;
 };
 
 // Single source of truth for user-editable configuration fields.
@@ -65,36 +66,41 @@ export const CONFIG_FIELD_DEFINITIONS = {
     description: 'Maximum number of initial command-output lines shown by start_process. Set to 0 to disable the initial output preview; full output remains available through read_process_output.',
     valueType: 'number',
   },
-  filePreviewsEnabled: {
-    label: 'File Previews',
-    description: 'Show the interactive file-preview UI for file tools. Turn this off to keep normal file tool results while preventing preview widgets and their UI-origin refresh calls.',
-    valueType: 'boolean',
-  },
-  showReadFileUI: {
-    label: 'Read File Widget',
-    description: 'When false, hide the read_file preview widget without affecting other file tools. True or unset inherits the global MCP UI and File Previews settings.',
-    valueType: 'boolean',
-  },
-  showListDirectoryUI: {
-    label: 'Directory Listing Widget',
-    description: 'When false, hide the list_directory preview widget without affecting other file tools. True or unset inherits the global MCP UI and File Previews settings.',
-    valueType: 'boolean',
-  },
-  showGetConfigUI: {
-    label: 'Config Editor Widget',
-    description: 'When true, get_config can show the interactive config editor in supported clients if MCP UI is enabled. False or unset preserves the plain configuration response.',
-    valueType: 'boolean',
-  },
-  mcpUiPreviewsEnabled: {
-    label: 'MCP UI Previews (Legacy)',
-    description: 'Legacy boolean: false always disables rich preview widgets in Legacy mode; otherwise old showMcpUI true/false takes precedence over A/B. In explicit Auto, On or Off modes, the legacy boolean is ignored.',
-    valueType: 'boolean',
-  },
   mcpUiPreviewMode: {
     label: 'MCP UI Preview Mode',
     description: 'Legacy preserves existing settings, including historical showMcpUI true/false if present. Auto explicitly follows the A/B experiment; On always shows supported widgets; Off always hides them. Selecting Auto, On or Off overrides legacy settings.',
     valueType: 'string',
     options: ['legacy', 'auto', 'on', 'off'],
+  },
+  filePreviewsEnabled: {
+    label: 'File Previews',
+    description: 'Show the interactive file-preview UI for file tools. Turn this off to keep normal file tool results while preventing preview widgets and their UI-origin refresh calls.',
+    valueType: 'boolean',
+    parentKey: 'mcpUiPreviewMode',
+  },
+  showReadFileUI: {
+    label: 'Read File Widget',
+    description: 'When false, hide the read_file preview widget without affecting other file tools. True or unset inherits the global MCP UI and File Previews settings.',
+    valueType: 'boolean',
+    parentKey: 'filePreviewsEnabled',
+  },
+  showListDirectoryUI: {
+    label: 'Directory Listing Widget',
+    description: 'When false, hide the list_directory preview widget without affecting other file tools. True or unset inherits the global MCP UI and File Previews settings.',
+    valueType: 'boolean',
+    parentKey: 'filePreviewsEnabled',
+  },
+  showGetConfigUI: {
+    label: 'Config Editor Widget',
+    description: 'When true, get_config can show the interactive config editor in supported clients if MCP UI is enabled. False or unset preserves the plain configuration response.',
+    valueType: 'boolean',
+    parentKey: 'mcpUiPreviewMode',
+  },
+  mcpUiPreviewsEnabled: {
+    label: 'MCP UI Previews (Legacy)',
+    description: 'Legacy boolean: false always disables rich preview widgets in Legacy mode; otherwise old showMcpUI true/false takes precedence over A/B. In explicit Auto, On or Off modes, the legacy boolean is ignored.',
+    valueType: 'boolean',
+    parentKey: 'mcpUiPreviewMode',
   },
 } as const satisfies Record<string, ConfigFieldDefinition>;
 

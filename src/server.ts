@@ -91,7 +91,7 @@ import {
     CONFIG_EDITOR_RESOURCE_URI,
 } from './ui/contracts.js';
 import { listUiResources, readUiResource } from './ui/resources.js';
-import { shouldShowMcpUiPreviews } from './utils/mcp-ui-ab-test.js';
+import { resolveToolPreviewAvailability, shouldShowMcpUiPreviews } from './utils/mcp-ui-ab-test.js';
 
 const uiPreviewReadCircuitBreaker = new UiPreviewReadCircuitBreaker();
 const FILE_PREVIEW_UI_TOOL_NAMES = new Set([
@@ -331,16 +331,13 @@ function shouldIncludeTool(toolName: string): boolean {
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
     try {
-        const showMcpUiPreviews = await shouldShowMcpUiPreviews();
         const config = await configManager.getConfig();
-        const showFilePreviews = showMcpUiPreviews && config.filePreviewsEnabled !== false;
-        // Historical per-tool opt-outs inherit global and file-preview policy.
-        // In particular, a true child setting cannot override explicit global off.
-        const showReadFilePreview = showFilePreviews && config.showReadFileUI !== false;
-        const showListDirectoryPreview = showFilePreviews && config.showListDirectoryUI !== false;
-        // The config editor remains plain by default. An explicit per-tool
-        // opt-in can expose its separately registered resource to MCP hosts.
-        const showGetConfigPreview = showMcpUiPreviews && config.showGetConfigUI === true;
+        // Share this exact effective-policy computation with get_config's UI
+        // hints. No second approximation of auto/legacy precedence in HTML.
+        const {
+            showMcpUiPreviews, showFilePreviews, showReadFilePreview,
+            showListDirectoryPreview, showGetConfigPreview,
+        } = resolveToolPreviewAvailability(config, await shouldShowMcpUiPreviews());
 
         // Include all independent overrides so tool-definition metadata and
         // cached tools/list snapshots change with the effective policy.

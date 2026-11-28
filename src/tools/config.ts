@@ -4,6 +4,8 @@ import { getSystemInfo } from '../utils/system-info.js';
 import { currentClient } from '../server.js';
 import { featureFlagManager } from '../utils/feature-flags.js';
 import { getDedupCounters } from '../utils/request-dedup.js';
+import { previewSettingDisabledReason, resolveToolPreviewAvailability,
+  shouldShowMcpUiPreviews } from '../utils/mcp-ui-ab-test.js';
 import { access, readFile } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import {
@@ -167,7 +169,9 @@ export async function getConfig(args?: unknown) {
       };
       const availableShells = await detectAvailableShells(systemInfo);
 
-      const entries: Array<{ key: string; value: unknown; valueType: string; editable: boolean }> = CONFIG_FIELD_KEYS.map((key) => {
+      const previewPolicy = resolveToolPreviewAvailability(config, await shouldShowMcpUiPreviews());
+      const entries: Array<{ key: string; value: unknown; valueType: string;
+        editable: boolean; parentKey?: string; disabledReason?: string }> = CONFIG_FIELD_KEYS.map((key) => {
         const definition = CONFIG_FIELD_DEFINITIONS[key];
         const value = (configWithSystemInfo as Record<string, unknown>)[key];
         // Older saved configs lack the per-tool opt-outs. Display their effective
@@ -178,6 +182,8 @@ export async function getConfig(args?: unknown) {
           value: value === undefined ? (inheritedPreviewOn ? true : null) : value,
           valueType: definition.valueType,
           editable: true,
+          parentKey: 'parentKey' in definition ? definition.parentKey : undefined,
+          disabledReason: previewSettingDisabledReason(key, config, previewPolicy),
         };
       });
 
@@ -230,7 +236,10 @@ export async function getConfig(args?: unknown) {
     // diagnostic identifiers belong to the full UI/verbose response above.
     for (const key of CONFIG_FIELD_KEYS) {
       if (!(key in compactConfig)) {
-        compactConfig[key] = config[key] ?? null;
+        // Match verbose get_config for legacy files that predate per-tool
+        // switches. Both formats must report the effective inherited value.
+        const inheritedPreviewOn = key === 'showReadFileUI' || key === 'showListDirectoryUI';
+        compactConfig[key] = config[key] ?? (inheritedPreviewOn ? true : null);
       }
     }
 

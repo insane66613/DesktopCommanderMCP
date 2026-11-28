@@ -16,6 +16,8 @@ export interface ConfigEntry {
     value: unknown;
     valueType: 'string' | 'number' | 'boolean' | 'array' | 'null' | string;
     editable: boolean;
+    parentKey?: string;
+    disabledReason?: string;
 }
 
 export interface ConfigEditorPayload {
@@ -194,6 +196,8 @@ function extractPayload(result: unknown): ConfigEditorPayload | null {
                 value: entry.value,
                 valueType: typeof entry.valueType === 'string' ? entry.valueType : 'string',
                 editable: entry.editable !== false,
+                parentKey: typeof entry.parentKey === 'string' ? entry.parentKey : undefined,
+                disabledReason: typeof entry.disabledReason === 'string' ? entry.disabledReason : undefined,
             };
         });
 
@@ -598,6 +602,12 @@ export function renderConfigEditor(container: HTMLElement, controller: ReturnTyp
         const description = entry.description ?? '';
         const summary = getSettingSummary(entry);
         const fieldOptions = getConfigFieldMetadata(entry.key)?.options;
+        // State is computed by the same server resolver used by tools/list.
+        // Do not guess legacy/auto/experiment precedence from a browser value.
+        const unavailable = entry.disabledReason;
+        const disabledAttr = unavailable ? ' disabled aria-disabled="true"' : '';
+        const rowClasses = ['setting-row', entry.parentKey ? 'setting-row--child' : '',
+            unavailable ? 'setting-row--disabled' : ''].filter(Boolean).join(' ');
 
         let controlHtml: string;
         if (entry.key === 'defaultShell') {
@@ -624,7 +634,7 @@ export function renderConfigEditor(container: HTMLElement, controller: ReturnTyp
             controlHtml = `<select class="setting-inline-select" data-action="select-option" data-key-index="${index}">${options}</select>`;
         } else if (entry.valueType === 'boolean') {
             const checked = String(entry.value) === 'true' ? 'checked' : '';
-            controlHtml = `<label class="setting-switch"><input type="checkbox" data-action="toggle-boolean" data-key-index="${index}" ${checked}/><span class="config-boolean-slider"></span></label>`;
+            controlHtml = `<label class="setting-switch"><input type="checkbox" data-action="toggle-boolean" data-key-index="${index}" ${checked}${disabledAttr}/><span class="config-boolean-slider"></span></label>`;
         } else if (entry.valueType === 'number') {
             controlHtml = `<input class="setting-inline-input" data-action="edit-number" data-key-index="${index}" type="number" step="any" value="${escapeHtml(String(entry.value ?? ''))}"/>`;
         } else if (entry.valueType === 'array') {
@@ -636,10 +646,11 @@ export function renderConfigEditor(container: HTMLElement, controller: ReturnTyp
         }
 
         return `
-          <section class="setting-row">
+          <section class="${rowClasses}" data-setting-key="${escapeHtml(entry.key)}" data-parent-key="${escapeHtml(entry.parentKey ?? '')}">
             <div class="setting-info">
               <h3>${escapeHtml(keyTitle)}</h3>
               ${description ? `<p>${escapeHtml(description)}</p>` : ''}
+              ${unavailable ? `<p class="setting-disabled-reason" data-disabled-reason="${escapeHtml(entry.key)}">${escapeHtml(unavailable)}</p>` : ''}
               <p class="setting-summary${summary ? '' : ' hidden'}" data-setting-summary-key="${escapeHtml(entry.key)}">${summary ? escapeHtml(summary) : ''}</p>
             </div>
             <div class="setting-control"><span class="setting-save-status" data-save-status-key="${escapeHtml(entry.key)}" data-save-status-index="${index}" role="status" aria-live="polite" aria-atomic="true"></span>${controlHtml}</div>
@@ -1038,6 +1049,10 @@ export function bootstrapConfigEditorApp(): void {
                         widgetState.write(controller.state.payload);
                     }
                     syncModelContext('widget-edit', change);
+                    if (['mcpUiPreviewMode', 'mcpUiPreviewsEnabled', 'filePreviewsEnabled',
+                        'showReadFileUI', 'showListDirectoryUI', 'showGetConfigUI'].includes(change.key)) {
+                        scheduleRender();
+                    }
                 },
                 onTooltip: showTooltip,
                 onExpandedChanged: (expanded) => {

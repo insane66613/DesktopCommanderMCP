@@ -7,6 +7,44 @@ export const MCP_UI_EXPERIMENT_NAME = 'McpUiPreviews';
 export const MCP_UI_SHOW_VARIANT = 'showMCPUi';
 export const MCP_UI_HIDE_VARIANT = 'notShowMCPUi';
 
+/** One source of truth for tools/list and config-editor effective preview status. */
+export function resolveToolPreviewAvailability(
+  config: { filePreviewsEnabled?: boolean; showReadFileUI?: boolean;
+    showListDirectoryUI?: boolean; showGetConfigUI?: boolean },
+  globalEnabled: boolean,
+) {
+  const showFilePreviews = globalEnabled && config.filePreviewsEnabled !== false;
+  return {
+    showMcpUiPreviews: globalEnabled,
+    showFilePreviews,
+    showReadFilePreview: showFilePreviews && config.showReadFileUI !== false,
+    showListDirectoryPreview: showFilePreviews && config.showListDirectoryUI !== false,
+    showGetConfigPreview: globalEnabled && config.showGetConfigUI === true,
+  };
+}
+
+/** Why a nested switch is currently ineffective. Keep the stored value. */
+export function previewSettingDisabledReason(
+  key: string,
+  config: { mcpUiPreviewMode?: string; filePreviewsEnabled?: boolean },
+  policy: ReturnType<typeof resolveToolPreviewAvailability>,
+): string | undefined {
+  if (key === 'mcpUiPreviewsEnabled' &&
+      config.mcpUiPreviewMode !== undefined && config.mcpUiPreviewMode !== 'legacy') {
+    return 'This compatibility switch only applies in Legacy preview mode.';
+  }
+  if (!['filePreviewsEnabled', 'showReadFileUI', 'showListDirectoryUI',
+    'showGetConfigUI'].includes(key)) return undefined;
+  if (!policy.showMcpUiPreviews) {
+    return 'MCP UI is currently disabled by the selected mode or experiment.';
+  }
+  if (['showReadFileUI', 'showListDirectoryUI'].includes(key) &&
+      !policy.showFilePreviews) {
+    return 'File Previews is off. Enable it before changing individual file widgets.';
+  }
+  return undefined;
+}
+
 export interface McpUiPreviewDecisionDeps {
   getExistingAssignment: () => Promise<unknown>;
   isFirstRun: () => boolean;

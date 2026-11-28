@@ -76,6 +76,24 @@ body {
   border-top: 1px solid color-mix(in srgb, var(--cfg-border) 40%, transparent);
 }
 
+/* Visual hierarchy follows server metadata, never local AB-mode guesses. */
+.setting-row--child {
+  margin-left: 12px;
+  padding-left: 16px;
+  border-left: 2px solid color-mix(in srgb, var(--cfg-border) 72%, transparent);
+}
+
+.setting-row--disabled .setting-control {
+  opacity: 0.55;
+}
+
+.setting-info .setting-disabled-reason {
+  color: var(--cfg-muted);
+  font-style: italic;
+  font-size: 11px;
+}
+
+
 .setting-info h3 {
   margin: 0;
   font-size: 14px;
