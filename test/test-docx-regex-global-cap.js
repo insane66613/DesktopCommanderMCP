@@ -21,6 +21,13 @@ try {
     '*.docx', false, undefined, () => { truncated++; });
   assert.equal(matches.length, 5000, '5000 cap must cover all DOCX documents combined');
   assert.ok(truncated > 0, 'global cap with no caller limit must report incomplete search');
+  let excessiveRequestTruncated = 0;
+  const explicitlyRequested = await manager.searchDocxFiles(root, 'needle', true, 6000,
+    '*.docx', false, undefined, () => { excessiveRequestTruncated++; });
+  assert.equal(explicitlyRequested.length, 5000,
+    'safety cap still applies when caller requests more than 5000');
+  assert.ok(excessiveRequestTruncated > 0,
+    'request above safety cap must not silently report complete');
   const context = {
     id:'test-limit', process:{}, options:{searchType:'content', maxResults:2},
     results:[{file:'office.docx', type:'content', match:'needle'}],

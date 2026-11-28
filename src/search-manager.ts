@@ -847,7 +847,11 @@ export interface SearchSessionOptions {
       Math.min(maxResults && maxResults > 0 ? maxResults : MAX_DOCX_REGEX_RESULTS,
         MAX_DOCX_REGEX_RESULTS);
     const noteLimit = () => {
-      if (!literalSearch && !maxResults) onTruncated?.();
+      // A local safety ceiling can truncate results even when the caller
+      // explicitly asked for more than the ceiling. Never report completed.
+      if (!literalSearch && (!maxResults || maxResults > MAX_DOCX_REGEX_RESULTS)) {
+        onTruncated?.();
+      }
     };
 
     // PizZip, to open the DOCX files
