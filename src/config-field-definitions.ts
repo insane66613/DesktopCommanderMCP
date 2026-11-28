@@ -80,6 +80,11 @@ export const CONFIG_FIELD_DEFINITIONS = {
     description: 'When false, hide the list_directory preview widget without affecting other file tools. True or unset inherits the global MCP UI and File Previews settings.',
     valueType: 'boolean',
   },
+  showGetConfigUI: {
+    label: 'Config Editor Widget',
+    description: 'When true, get_config can show the interactive config editor in supported clients if MCP UI is enabled. False or unset preserves the plain configuration response.',
+    valueType: 'boolean',
+  },
   mcpUiPreviewsEnabled: {
     label: 'MCP UI Previews (Legacy)',
     description: 'Legacy boolean: false always disables rich preview widgets in Legacy mode; otherwise old showMcpUI true/false takes precedence over A/B. In explicit Auto, On or Off modes, the legacy boolean is ignored.',

@@ -56,6 +56,7 @@ export interface ServerConfig {
   filePreviewsEnabled?: boolean; // User opt-out for interactive file-preview UI
   showReadFileUI?: boolean; // Optional read_file widget override; false hides only this widget
   showListDirectoryUI?: boolean; // Optional list_directory widget override; false hides only this widget
+  showGetConfigUI?: boolean; // Explicit opt-in to render get_config using the config editor widget
   mcpUiPreviewsEnabled?: boolean; // Legacy opt-out for rich MCP preview widgets
   mcpUiPreviewMode?: 'legacy' | 'auto' | 'on' | 'off'; // Explicit force-on/off/AB with backward-compatible legacy mode
   clientId?: string; // Unique client identifier for analytics
@@ -394,6 +395,7 @@ class ConfigManager {
       filePreviewsEnabled: true, // Preserve file-preview UI unless the user explicitly disables it
       showReadFileUI: true, // Inherit global preview policy unless explicitly disabled
       showListDirectoryUI: true, // Inherit global preview policy unless explicitly disabled
+      showGetConfigUI: false, // Explicit opt-in only; get_config stays plain by default
       mcpUiPreviewsEnabled: true, // Preserve existing behavior unless the user explicitly disables previews
       mcpUiPreviewMode: 'legacy', // Preserve prior boolean + A/B semantics until explicitly changed
       pendingWelcomeOnboarding: true, // New install flag - triggers A/B test for welcome page

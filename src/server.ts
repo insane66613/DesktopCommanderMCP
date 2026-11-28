@@ -88,6 +88,7 @@ import { logToStderr, logger } from './utils/logger.js';
 import {
     buildUiToolMeta,
     FILE_PREVIEW_RESOURCE_URI,
+    CONFIG_EDITOR_RESOURCE_URI,
 } from './ui/contracts.js';
 import { listUiResources, readUiResource } from './ui/resources.js';
 import { shouldShowMcpUiPreviews } from './utils/mcp-ui-ab-test.js';
@@ -337,10 +338,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         // In particular, a true child setting cannot override explicit global off.
         const showReadFilePreview = showFilePreviews && config.showReadFileUI !== false;
         const showListDirectoryPreview = showFilePreviews && config.showListDirectoryUI !== false;
+        // The config editor remains plain by default. An explicit per-tool
+        // opt-in can expose its separately registered resource to MCP hosts.
+        const showGetConfigPreview = showMcpUiPreviews && config.showGetConfigUI === true;
 
-        // Include both independent overrides so tool-definition metadata and
+        // Include all independent overrides so tool-definition metadata and
         // cached tools/list snapshots change with the effective policy.
-        const clientKey = `${currentClient?.name ?? ''}:${showMcpUiPreviews}:${showFilePreviews}:${showReadFilePreview}:${showListDirectoryPreview}`;
+        const clientKey = `${currentClient?.name ?? ''}:${showMcpUiPreviews}:${showFilePreviews}:${showReadFilePreview}:${showListDirectoryPreview}:${showGetConfigPreview}`;
         if (_toolListCache?.key === clientKey) {
             return { tools: _toolListCache.tools };
         }
@@ -365,6 +369,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         - filePreviewsEnabled (boolean user override for interactive file previews)
                         - showReadFileUI (boolean, optional read_file widget override; false hides only read_file)
                         - showListDirectoryUI (boolean, optional list_directory widget override; false hides only directory listing)
+                        - showGetConfigUI (boolean, optional config editor widget opt-in; default plain)
                         - mcpUiPreviewsEnabled (legacy boolean opt-out for rich MCP preview widgets)
                         - mcpUiPreviewMode (legacy | auto | on | off, explicit rich-preview control)
                         - telemetryEnabled (boolean for telemetry opt-in/out)
@@ -374,9 +379,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         - systemInfo (operating system and environment details)
                         ${CMD_PREFIX_DESCRIPTION}`,
                 inputSchema: zodToJsonSchema(GetConfigArgsSchema),
-                // Return plain structured configuration data by default. The config-editor
-                // resource remains registered for deliberate/on-demand use, but get_config
-                // no longer forces the widget to render on every invocation.
+                // Plain structured data by default. Only explicit showGetConfigUI
+                // with global MCP UI enabled advertises the config editor resource.
+                _meta: buildUiToolMeta(CONFIG_EDITOR_RESOURCE_URI, true, showGetConfigPreview),
                 annotations: {
                     title: "Get Configuration",
                     readOnlyHint: true,
@@ -411,6 +416,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         - filePreviewsEnabled (boolean, show interactive file-preview UI)
                         - showReadFileUI (boolean, optional read_file widget opt-out)
                         - showListDirectoryUI (boolean, optional list_directory widget opt-out)
+                        - showGetConfigUI (boolean, opt-in config editor widget)
                         - mcpUiPreviewsEnabled (legacy boolean, false disables rich MCP previews)
                         - mcpUiPreviewMode (legacy | auto | on | off, explicit rich-preview control)
                         - telemetryEnabled (boolean)
@@ -1694,7 +1700,7 @@ async function handleCallToolRequestCore(request: CallToolRequest, signal?: Abor
                         ? String((args as any).key ?? '') : '';
                     const affectsToolMetadata = [
                         'mcpUiPreviewMode', 'mcpUiPreviewsEnabled', 'filePreviewsEnabled',
-                        'showReadFileUI', 'showListDirectoryUI',
+                        'showReadFileUI', 'showListDirectoryUI', 'showGetConfigUI',
                     ].includes(changedConfigKey);
                     const previousValue = affectsToolMetadata
                         ? await configManager.getValue(changedConfigKey) : undefined;
