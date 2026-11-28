@@ -16,6 +16,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { getSystemInfo, getOSSpecificGuidance, getPathGuidance, getDevelopmentToolGuidance } from './utils/system-info.js';
+import { getEnvironmentInfo } from './tools/environment.js';
 
 // Get system information once at startup
 const SYSTEM_INFO = getSystemInfo();
@@ -46,6 +47,7 @@ import {
     MoveFileArgsSchema,
     GetFileInfoArgsSchema,
     GetConfigArgsSchema,
+    GetEnvironmentInfoArgsSchema,
     SetConfigValueArgsSchema,
     ListProcessesArgsSchema,
     EditBlockArgsSchema,
@@ -380,6 +382,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                     readOnlyHint: true,
                     destructiveHint: false,
                 },
+            },
+            {
+                name: "get_environment_info",
+                description: `Get current process and system diagnostics: process memory, uptime, CPU count, platform and host capacity. Optionally include local network interfaces. Never returns environment variables, credentials or command-line arguments.`,
+                inputSchema: zodToJsonSchema(GetEnvironmentInfoArgsSchema),
+                annotations: { title: "Get Environment Information", readOnlyHint: true, destructiveHint: false },
             },
             {
                 name: "set_config_value",
@@ -1653,6 +1661,16 @@ async function handleCallToolRequestCore(request: CallToolRequest, signal?: Abor
 
         switch (name) {
             // Config tools
+            case "get_environment_info":
+                try {
+                    const options = GetEnvironmentInfoArgsSchema.parse(args ?? {});
+                    const info = getEnvironmentInfo(options);
+                    result = { content: [{ type: "text", text: JSON.stringify(info) }],
+                        structuredContent: info };
+                } catch (error) {
+                    result = { content: [{ type: "text", text: `Environment diagnostics failed: ${error instanceof Error ? error.message : String(error)}` }], isError: true };
+                }
+                break;
             case "get_config":
                 try {
                     result = await getConfig(args);

@@ -2,6 +2,10 @@ import { z } from "zod";
 import { MAX_TOOL_RESPONSE_BYTES } from "../utils/response-budget.js";
 
 // Config tools schemas
+export const GetEnvironmentInfoArgsSchema = z.object({
+  includeNetwork: z.boolean().optional().default(false),
+});
+
 export const GetConfigArgsSchema = z.object({
   // 'ui' marks calls the config-editor widget fires programmatically; they are
   // excluded from tool-call telemetry (see isUiOriginCall in server.ts).
@@ -325,6 +329,7 @@ export const TrackUiEventArgsSchema = z.object({
  */
 export const toolArgSchemas: Record<string, z.ZodTypeAny> = {
   get_config: GetConfigArgsSchema,
+  get_environment_info: GetEnvironmentInfoArgsSchema,
   set_config_value: SetConfigValueArgsSchema,
   read_file: ReadFileArgsSchema,
   read_multiple_files: ReadMultipleFilesArgsSchema,
