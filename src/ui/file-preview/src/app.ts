@@ -21,7 +21,7 @@ import {
 } from './markdown/conflict-dialog.js';
 import type { RenderPayload } from './model.js';
 import { attachPanelActions } from './panel-actions.js';
-import { pickReadArgs } from './read-args.js';
+import { inferMutationTool, pickReadArgs } from './read-args.js';
 import {
     extractRenderPayload,
     extractToolText,
@@ -156,25 +156,8 @@ const markdownController = createMarkdownController({
 // Only the original read_file parameters, including view_range, pass through
 // pickReadArgs. Shared logic lives in a DOM-free module with focused tests.
 
-// The host doesn't send the tool name with tool-input, so infer mutations from
-// their arg shape: write_file carries `content`; edit_block `old_string`/
-// `new_string`. Drives two things: timing (a mutation's tool-input arrives
-// BEFORE the file changes, so those pull at tool-result time instead of input
-// time) and telemetry (the pulled payload's sourceTool is re-stamped with the
-// originating tool, since the pull itself is always a read_file).
-function inferMutationTool(args: unknown): 'write_file' | 'edit_block' | undefined {
-    if (!args || typeof args !== 'object') {
-        return undefined;
-    }
-    const src = args as Record<string, unknown>;
-    if (src.old_string !== undefined || src.new_string !== undefined) {
-        return 'edit_block';
-    }
-    if (src.content !== undefined) {
-        return 'write_file';
-    }
-    return undefined;
-}
+// Host tool-input does not include a tool name. The DOM-free read-args helper
+// identifies mutation shapes so widgets re-read only after edits complete.
 
 // Bound the RPC read so a stalled host response resolves to onFail instead of
 // hanging. Kept under the loading watchdog (PREVIEW_WATCHDOG_MS) so the pull

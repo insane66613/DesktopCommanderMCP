@@ -23,3 +23,21 @@ export function pickReadArgs(args: unknown): Record<string, unknown> | undefined
     }
     return picked;
 }
+
+// Tool-input lacks the method name. A spreadsheet edit_block uses
+// (file_path, range, content), not (old_string, new_string). Recognize it
+// before write_file, or the widget pulls the spreadsheet before the edit
+// and suppresses the post-result refresh as if the read were complete.
+export function inferMutationTool(args: unknown): 'write_file' | 'edit_block' | undefined {
+    if (!args || typeof args !== 'object') return undefined;
+    const src = args as Record<string, unknown>;
+    if (
+        src.old_string !== undefined || src.new_string !== undefined
+        || (typeof src.file_path === 'string'
+            && (src.range !== undefined || src.content !== undefined))
+    ) {
+        return 'edit_block';
+    }
+    if (src.content !== undefined) return 'write_file';
+    return undefined;
+}
